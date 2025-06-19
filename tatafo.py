@@ -6,32 +6,40 @@ import os
 import re
 import requests
 import datetime
-import subprocess
-import sys
 from io import BytesIO
-import os
-os.system("pip install matplotlib")
 import matplotlib
-matplotlib.use('Agg')  # Use a non-interactive backend (Agg is ideal for Streamlit)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 import nltk
+import nltk
+nltk.data.path.append("nltk_data")  # Ensures it uses local path
+nltk.download("punkt", download_dir="nltk_data")
+nltk.download("averaged_perceptron_tagger", download_dir="nltk_data")
+nltk.download("maxent_ne_chunker", download_dir="nltk_data")
+nltk.download("words", download_dir="nltk_data")
 from nltk.tokenize import PunktSentenceTokenizer, TreebankWordTokenizer
 from nltk import ne_chunk, pos_tag, word_tokenize
 from nltk.tree import Tree
 from difflib import get_close_matches
 
-# Ensure NLTK data is downloaded
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+# === NLTK Setup (cached) ===
+NLTK_PATH = os.path.join(os.getcwd(), 'nltk_data')
+nltk.data.path.append(NLTK_PATH)
 
-for pkg in ['averaged_perceptron_tagger', 'maxent_ne_chunker', 'words']:
-    try:
-        nltk.data.find(f'taggers/{pkg}' if "tagger" in pkg else f'chunkers/{pkg}' if "chunker" in pkg else f'corpora/{pkg}')
-    except LookupError:
-        nltk.download(pkg)
+REQUIRED_NLTK = {
+    'punkt': 'tokenizers/punkt',
+    'averaged_perceptron_tagger': 'taggers/averaged_perceptron_tagger',
+    'maxent_ne_chunker': 'chunkers/maxent_ne_chunker',
+    'words': 'corpora/words'
+}
+
+def ensure_nltk_data():
+    for pkg, path in REQUIRED_NLTK.items():
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            nltk.download(pkg, download_dir=NLTK_PATH)
 
 # === Entity Detection ===
 def extract_named_entities(text):
@@ -66,7 +74,7 @@ def get_default_responses():
         "where are you learning data science": "Sail Innovation Lab."
     }
 
-# === API and Info ===
+# === API and Info Functions ===
 def get_weather(text, key):
     if not key:
         return "No weather API key set."
@@ -96,22 +104,18 @@ def get_news(key):
 
 def get_wikipedia_summary(query):
     try:
-        # Clean the query to remove common prefixes
         query = query.lower().strip()
         query = re.sub(r"^(who|what|where|when|how)( is| was| are| does| do| did)?", "", query).strip()
         query = query if query else "Python (programming language)"
-
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}"
         res = requests.get(url).json()
-
         if "title" in res and res["title"].lower() == "not found":
-            return f"Sorry, I couldn't find anything useful on Wikipedia for '{query}'."
+            return f"No Wikipedia info for '{query}'."
         if "extract" in res:
             return res["extract"]
-        return "Wikipedia article not found or has no summary."
+        return "Wikipedia summary not found."
     except Exception as e:
         return f"Wikipedia lookup failed: {str(e)}"
-
 
 def get_crypto_price(text, key):
     if not key:
@@ -144,8 +148,9 @@ def get_sports_info(text, key):
         return "No sports API key set."
     return f"(Demo) Sports info for: {text}"
 
+# === CSV Upload & Charting ===
 def handle_csv_upload():
-    uploaded_file = st.sidebar.file_uploader("Upload your stock CSV file", type="csv")
+    uploaded_file = st.sidebar.file_uploader("Upload stock CSV", type="csv")
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         st.success("CSV uploaded and loaded.")
@@ -155,10 +160,10 @@ def handle_csv_upload():
         try:
             res = requests.get(url)
             df = pd.read_csv(BytesIO(res.content))
-            st.success("Sample CSV fetched from Yahoo.")
+            st.success("Sample CSV fetched.")
             return df
         except:
-            st.error("Failed to fetch sample CSV.")
+            st.error("Sample CSV fetch failed.")
     return None
 
 def plot_stock_chart(df):
@@ -178,14 +183,12 @@ def plot_stock_chart(df):
         else:
             st.warning("Start date must be before end date.")
 
-# === Chatbot Core ===
-sent_tokenizer = PunktSentenceTokenizer()
-word_tokenizer = TreebankWordTokenizer()
-
-# === Chatbot Core ===
+# === Response Generator ===
 def generate_response(user_input, data, api_keys):
     text = user_input.lower().strip()
     tokens = []
+    sent_tokenizer = PunktSentenceTokenizer()
+    word_tokenizer = TreebankWordTokenizer()
     for sent in sent_tokenizer.tokenize(text):
         tokens.extend(word_tokenizer.tokenize(sent))
 
@@ -200,7 +203,6 @@ def generate_response(user_input, data, api_keys):
             return data["custom_responses"][matched[0]]
         return get_default_responses()[matched[0]]
 
-    # Keyword triggers
     if "weather" in tokens:
         return get_weather(text, api_keys.get("weather"))
     elif "news" in tokens:
@@ -212,32 +214,32 @@ def generate_response(user_input, data, api_keys):
     elif any(w in tokens for w in ["ronaldo", "messi", "match", "haaland", "lebron"]):
         return get_sports_info(text, api_keys.get("sports"))
 
-    # Entity extraction for Wikipedia fallback
     entities = extract_named_entities(user_input)
     if entities:
         return get_wikipedia_summary(entities[0])
-
-    # Absolute fallback: try full user input as Wikipedia term
     return get_wikipedia_summary(user_input)
 
-# === Streamlit UI ===
-st.set_page_config(page_title="ChatBot App", layout="centered")
-st.title("Tatafo with AI 🗣️")
+# === Main Streamlit App ===
+def main():
+    ensure_nltk_data()
 
-st.sidebar.title("\U0001F511 API Input")
-api_keys = {}
+    st.set_page_config(page_title="ChatBot App", layout="centered")
+    st.title("Tatafo with AI 🗣️")
 
-def handle_api_keys():
-    mode = st.sidebar.radio("Choose how to provide API keys:", ["Load from file", "Manual input", "Skip"])
+    st.sidebar.title("🔐 API Input")
+    api_keys = {}
+    data = load_data()
+
+    mode = st.sidebar.radio("Provide API keys:", ["Load from file", "Manual input", "Skip"])
     if mode == "Load from file":
-        uploaded = st.sidebar.file_uploader("Upload .txt file with API keys (key=value per line)")
+        uploaded = st.sidebar.file_uploader("Upload .txt with API keys (key=value per line)")
         if uploaded:
             content = uploaded.read().decode("utf-8").splitlines()
             for line in content:
                 if "=" in line:
                     k, v = line.strip().split("=")
                     api_keys[k.strip()] = v.strip()
-            st.sidebar.success("\u2705 API keys loaded from file.")
+            st.sidebar.success("✅ API keys loaded.")
     elif mode == "Manual input":
         api_keys["weather"] = st.sidebar.text_input("Weather API Key")
         api_keys["news"] = st.sidebar.text_input("News API Key")
@@ -245,47 +247,44 @@ def handle_api_keys():
         api_keys["stock"] = st.sidebar.text_input("Stock API Key")
         api_keys["sports"] = st.sidebar.text_input("Sports API Key")
 
-        if st.sidebar.button("Save Keys to .txt"):
+        if st.sidebar.button("Save to .txt"):
             with open("api_keys.txt", "w") as f:
                 for k, v in api_keys.items():
                     f.write(f"{k}={v}\n")
-            st.sidebar.success("✅ Keys saved to api_keys.txt")
+            st.sidebar.success("Saved to api_keys.txt")
 
-handle_api_keys()
-
-# === Main Interaction ===
-data = load_data()
-user_input = st.text_input("You:")
-if user_input:
-    response = generate_response(user_input, data, api_keys)
-    data["history"].append({"user": user_input, "bot": response})
-    save_data(data)
-    st.write(f"**Bot:** {response}")
-
-# === Custom Commands ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("🤝 Add Custom Response")
-new_key = st.sidebar.text_input("Trigger phrase")
-new_resp = st.sidebar.text_area("Bot's response")
-if st.sidebar.button("Add Response"):
-    if new_key and new_resp:
-        data["custom_responses"][new_key.lower()] = new_resp
+    user_input = st.text_input("You:")
+    if user_input:
+        response = generate_response(user_input, data, api_keys)
+        data["history"].append({"user": user_input, "bot": response})
         save_data(data)
-        st.sidebar.success("Added!")
+        st.write(f"**Bot:** {response}")
 
-# === History ===
-if st.sidebar.button("❌ Clear Chat History"):
-    data["history"] = []
-    save_data(data)
-    st.sidebar.success("Chat history cleared.")
-
-if st.sidebar.checkbox("📓 Show Chat History"):
+    # Custom response
     st.sidebar.markdown("---")
-    for entry in data["history"]:
-        st.sidebar.write(f"**You:** {entry['user']}")
-        st.sidebar.write(f"**Bot:** {entry['bot']}")
+    st.sidebar.subheader("➕ Add Custom Response")
+    new_key = st.sidebar.text_input("Trigger")
+    new_resp = st.sidebar.text_area("Bot Response")
+    if st.sidebar.button("Add Response"):
+        if new_key and new_resp:
+            data["custom_responses"][new_key.lower()] = new_resp
+            save_data(data)
+            st.sidebar.success("Custom response added!")
 
-# === Stock Upload & Chart ===
-df_stock = handle_csv_upload()
-if df_stock is not None:
-    plot_stock_chart(df_stock)
+    if st.sidebar.button("🗑️ Clear Chat History"):
+        data["history"] = []
+        save_data(data)
+        st.sidebar.success("Chat history cleared.")
+
+    if st.sidebar.checkbox("📓 Show Chat History"):
+        st.sidebar.markdown("---")
+        for entry in data["history"]:
+            st.sidebar.write(f"**You:** {entry['user']}")
+            st.sidebar.write(f"**Bot:** {entry['bot']}")
+
+    df_stock = handle_csv_upload()
+    if df_stock is not None:
+        plot_stock_chart(df_stock)
+
+if __name__ == "__main__":
+    main()
