@@ -14,10 +14,7 @@ import pandas as pd
 import nltk
 import nltk
 nltk.data.path.append("nltk_data")  # Ensures it uses local path
-nltk.download("punkt", download_dir="nltk_data")
-nltk.download("averaged_perceptron_tagger", download_dir="nltk_data")
-nltk.download("maxent_ne_chunker", download_dir="nltk_data")
-nltk.download("words", download_dir="nltk_data")
+
 from nltk.tokenize import PunktSentenceTokenizer, TreebankWordTokenizer
 from nltk import ne_chunk, pos_tag, word_tokenize
 from nltk.tree import Tree
