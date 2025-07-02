@@ -1,0 +1,174 @@
+# data/rbac_capabilities.yaml
+
+# Defines specific capabilities that can be enabled/disabled for different roles.
+# The 'admin' role automatically bypasses all these checks.
+
+# Each capability can have a default value and then be overridden per role.
+# If a role is not listed for a capability, the default value applies.
+
+capabilities:
+  # --- General AI Assistant Capabilities ---
+  general_ai_assistant_access:
+    default: false
+    roles:
+      user: true
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+
+  # --- Data Analysis (Python REPL) Capability ---
+  data_analysis_enabled:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+      dev: true # Devs might need this for debugging/testing
+
+  # --- Web Search Capabilities ---
+  web_search_enabled:
+    default: false
+    roles:
+      user: true
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+  web_search_max_chars: # Max characters in snippet returned from web search
+    default: 500
+    roles:
+      basic: 1000
+      pro: 3000
+      premium: 5000
+      admin: 10000 # Admins get highest limit
+
+  # --- Document Upload & Query Capabilities ---
+  document_upload_enabled:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+  document_query_enabled:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+  document_query_max_results_k: # Max number of chunks to retrieve from vector DB
+    default: 3
+    roles:
+      pro: 5
+      premium: 10
+      admin: 20
+
+  # --- Summarization Capabilities ---
+  summarization_enabled:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+  summarization_max_input_chars: # Max chars of document content for summarization
+    default: 5000
+    roles:
+      pro: 10000
+      premium: 20000
+      admin: 50000
+
+  # --- Specialized AI Assistant Access ---
+  medical_assistant_access:
+    default: false
+    roles:
+      premium: true
+      admin: true
+  legal_assistant_access:
+    default: false
+    roles:
+      premium: true
+      admin: true
+  finance_assistant_access:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+  news_assistant_access:
+    default: false
+    roles:
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+  sports_assistant_access:
+    default: false
+    roles:
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+  weather_assistant_access:
+    default: false
+    roles:
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+  entertainment_assistant_access:
+    default: false
+    roles:
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+  mini_chatbot_access: # NEW capability for the mini-chatbot
+    default: false
+    roles:
+      user: true
+      basic: true
+      pro: true
+      premium: true
+      admin: true
+
+  # --- Chart Generation & Export Capabilities (Future) ---
+  chart_generation_enabled:
+    default: false
+    roles:
+      pro: true
+      premium: true
+      admin: true
+  chart_export_enabled:
+    default: false
+    roles:
+      premium: true
+      admin: true
+
+  # --- Admin Departmental Capabilities (Future Granular Control) ---
+  admin_user_management_enabled: # View/edit user tiers/roles
+    default: false
+    roles:
+      admin: true
+      management: true
+  admin_api_key_management_enabled: # View/edit API keys
+    default: false
+    roles:
+      admin: true
+      api_manager: true
+  admin_analytics_access: # Access to internal analytics dashboards
+    default: false
+    roles:
+      admin: true
+      analytics: true
+      management: true
+  admin_system_logs_access: # Access to detailed system logs
+    default: false
+    roles:
+      admin: true
+      dev: true
+  admin_customer_support_tools_access: # Access to specific customer support tools
+    default: false
+    roles:
+      admin: true
+      customer_care: true
+
