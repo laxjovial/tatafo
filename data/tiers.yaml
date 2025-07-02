@@ -1,0 +1,26 @@
+# data/tiers.yaml
+
+# Defines the hierarchy and properties of user tiers.
+# The 'level' determines the hierarchy (higher number means higher tier).
+# This is used for access control and feature differentiation.
+
+tiers:
+  free:
+    level: 0
+    description: "Basic access with limited features."
+  user: # A base tier for any registered user, often equivalent to 'free' but can be distinct
+    level: 1
+    description: "Standard registered user access."
+  basic:
+    level: 2
+    description: "Enhanced access to general AI features and basic web search."
+  pro:
+    level: 3
+    description: "Advanced features including data analysis, document management, and specialized AI assistants."
+  premium:
+    level: 4
+    description: "Full access to all features, including advanced specialized assistants and export capabilities."
+  admin: # Special tier for administrators, typically has all capabilities
+    level: 99
+    description: "Administrator access with full control over users and system settings."
+
