@@ -1,0 +1,50 @@
+# data/config.yml
+
+# --- LLM Configuration ---
+llm:
+  provider: openai # Options: openai, google, ollama (for local models)
+  model_name: gpt-4o # For OpenAI: gpt-3.5-turbo, gpt-4, gpt-4o; For Google: gemini-pro, gemini-1.5-flash
+  temperature: 0.7 # Controls randomness: 0.0 (deterministic) to 1.0 (creative)
+  max_tokens: 4096 # Maximum tokens in the LLM response
+  max_summary_input_chars: 10000 # Max characters for summarization input to LLM
+
+# --- RAG (Retrieval Augmented Generation) Configuration ---
+rag:
+  chunk_size: 1000 # Size of text chunks for vector database
+  chunk_overlap: 100 # Overlap between chunks to maintain context
+  max_query_results_k: 5 # Number of top relevant document chunks to retrieve for RAG
+
+# --- Web Scraping Configuration ---
+web_scraping:
+  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 # User-Agent header for requests
+  timeout_seconds: 15 # Timeout for web requests in seconds
+  max_search_results: 5 # Max number of search results to process from web search APIs (e.g., SerpAPI)
+
+# --- General Application Settings ---
+app_name: Unified AI Assistant
+default_user_tier: free # Default tier for new registrations
+default_user_roles: ["user"] # Default roles for new registrations
+
+# --- API Configuration Paths (used by config_manager to load specific API YAMLs) ---
+api_configs:
+  - finance_apis.yaml
+  - medical_apis.yaml
+  - legal_apis.yaml
+  - news_apis.yaml
+  - sports_apis.yaml
+  - weather_apis.yaml
+  - entertainment_apis.yaml
+
+# --- Payment Gateway Configuration (Future) ---
+payment_gateways:
+  default_currency: USD
+  flutterwave:
+    enabled: false
+    public_key_secret_path: "flutterwave_public_key" # Path in secrets.toml
+    secret_key_secret_path: "flutterwave_secret_key" # Path in secrets.toml
+    webhook_secret_hash_secret_path: "flutterwave_webhook_secret_hash" # Path in secrets.toml
+  paypal:
+    enabled: false
+    client_id_secret_path: "paypal_client_id"
+    client_secret_secret_path: "paypal_client_secret"
+  # Add other payment methods here
