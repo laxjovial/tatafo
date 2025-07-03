@@ -7,9 +7,9 @@ from typing import Annotated
 # Import API routers
 from backend.api import auth_api
 from backend.api import user_api
-from backend.api import tool_api # NEW: Import the tool_api router
+from backend.api import tool_api
+from backend.api import admin_api # NEW: Import the admin_api router
 # from backend.api import payment_api # Future: for payment processing
-# from backend.api import admin_api # Future: for granular admin controls
 
 # Import middleware dependencies (if applying at router level)
 from backend.middleware.auth_middleware import get_current_active_user, get_current_admin_user
@@ -41,10 +41,10 @@ app.add_middleware(
 # Include API routers
 app.include_router(auth_api.router, prefix="/auth", tags=["Authentication"])
 app.include_router(user_api.router, prefix="/users", tags=["User Management"])
-# NEW: Include the tool_api router, protected by authentication
 app.include_router(tool_api.router, prefix="/tools", tags=["AI Tools"], dependencies=[Depends(get_current_active_user)])
+# NEW: Include the admin_api router, protected by admin authentication
+app.include_router(admin_api.router, prefix="/admin", tags=["Admin Management"], dependencies=[Depends(get_current_admin_user)])
 # app.include_router(payment_api.router, prefix="/payments", tags=["Payments"], dependencies=[Depends(get_current_active_user)])
-# app.include_router(admin_api.router, prefix="/admin", tags=["Admin"], dependencies=[Depends(get_current_admin_user)])
 
 
 @app.get("/")
@@ -66,3 +66,4 @@ async def admin_protected_test_route(current_user: Annotated[dict, Depends(get_c
 
 # You would run this FastAPI app using Uvicorn:
 # uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+
