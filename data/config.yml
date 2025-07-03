@@ -7,6 +7,10 @@ llm:
   temperature: 0.7 # Controls randomness: 0.0 (deterministic) to 1.0 (creative)
   max_tokens: 4096 # Maximum tokens in the LLM response
   max_summary_input_chars: 10000 # Max characters for summarization input to LLM
+  
+  # --- Embedding Model Configuration (NEW) ---
+  embedding_provider: openai # Options: openai, google, huggingface (for local models)
+  embedding_model_name: text-embedding-ada-002 # For OpenAI: text-embedding-ada-002; For HuggingFace: sentence-transformers/all-MiniLM-L6-v2
 
 # --- RAG (Retrieval Augmented Generation) Configuration ---
 rag:
