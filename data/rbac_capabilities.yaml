@@ -1,174 +1,171 @@
 # data/rbac_capabilities.yaml
 
-# Defines specific capabilities that can be enabled/disabled for different roles.
-# The 'admin' role automatically bypasses all these checks.
-
-# Each capability can have a default value and then be overridden per role.
-# If a role is not listed for a capability, the default value applies.
+# This file defines the capabilities available in the application and
+# their default access levels, as well as role-specific overrides.
+# This serves as initial seed data for the Firestore-based dynamic RBAC.
 
 capabilities:
-  # --- General AI Assistant Capabilities ---
-  general_ai_assistant_access:
-    default: false
-    roles:
-      user: true
-      basic: true
-      pro: true
-      premium: true
-      admin: true
+  # --- Core AI Assistant Capabilities ---
+  general_chat_enabled:
+    default: True
+    description: "Allows basic conversational chat with the AI assistant."
+    roles: {} # No specific role overrides, everyone gets it by default
 
-  # --- Data Analysis (Python REPL) Capability ---
-  data_analysis_enabled:
-    default: false
-    roles:
-      pro: true
-      premium: true
-      admin: true
-      dev: true # Devs might need this for debugging/testing
-
-  # --- Web Search Capabilities ---
+  # --- Shared Tools Capabilities ---
   web_search_enabled:
-    default: false
+    default: False
+    description: "Allows the AI to search the internet for information."
     roles:
-      user: true
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-  web_search_max_chars: # Max characters in snippet returned from web search
-    default: 500
-    roles:
-      basic: 1000
-      pro: 3000
-      premium: 5000
-      admin: 10000 # Admins get highest limit
+      user: True # Basic registered users can use web search
+      pro: True
+      premium: True
+      admin: True
 
-  # --- Document Upload & Query Capabilities ---
+  data_analysis_enabled:
+    default: False
+    description: "Allows the AI to execute Python code for data analysis, calculations, etc."
+    roles:
+      pro: True
+      premium: True
+      admin: True
+      dev: True # Developers might also need this
+
+  summarization_enabled:
+    default: False
+    description: "Allows the AI to summarize documents (PDF, DOCX, TXT, CSV, XLSX)."
+    roles:
+      pro: True
+      premium: True
+      admin: True
+
+  summarization_max_input_chars:
+    default: 5000 # Default max characters for summarization input
+    description: "Maximum characters of document content that can be sent for summarization."
+    roles:
+      pro: 10000
+      premium: 20000
+      admin: 50000 # Effectively unlimited for admin
+
+  chart_generation_enabled:
+    default: False
+    description: "Allows the AI to generate charts from data."
+    roles:
+      pro: True
+      premium: True
+      admin: True
+
+  sentiment_analysis_enabled:
+    default: False
+    description: "Allows the AI to perform sentiment analysis on text."
+    roles:
+      user: True # Basic users can also use sentiment analysis
+      pro: True
+      premium: True
+      admin: True
+
   document_upload_enabled:
-    default: false
+    default: False
+    description: "Allows users to upload and index documents for RAG."
     roles:
-      pro: true
-      premium: true
-      admin: true
+      pro: True
+      premium: True
+      admin: True
+
   document_query_enabled:
-    default: false
+    default: False
+    description: "Allows the AI to query uploaded and indexed documents (RAG)."
     roles:
-      pro: true
-      premium: true
-      admin: true
-  document_query_max_results_k: # Max number of chunks to retrieve from vector DB
-    default: 3
+      pro: True
+      premium: True
+      admin: True
+
+  document_query_max_results_k:
+    default: 3 # Default number of top results to retrieve from vector store
+    description: "Maximum number of relevant document chunks to retrieve for RAG queries."
     roles:
       pro: 5
       premium: 10
       admin: 20
 
-  # --- Summarization Capabilities ---
-  summarization_enabled:
-    default: false
-    roles:
-      pro: true
-      premium: true
-      admin: true
-  summarization_max_input_chars: # Max chars of document content for summarization
-    default: 5000
-    roles:
-      pro: 10000
-      premium: 20000
-      admin: 50000
-
-  # --- Specialized AI Assistant Access ---
-  medical_assistant_access:
-    default: false
-    roles:
-      premium: true
-      admin: true
-  legal_assistant_access:
-    default: false
-    roles:
-      premium: true
-      admin: true
-  finance_assistant_access:
-    default: false
-    roles:
-      pro: true
-      premium: true
-      admin: true
-  news_assistant_access:
-    default: false
-    roles:
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-  sports_assistant_access:
-    default: false
-    roles:
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-  weather_assistant_access:
-    default: false
-    roles:
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-  entertainment_assistant_access:
-    default: false
-    roles:
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-  mini_chatbot_access: # NEW capability for the mini-chatbot
-    default: false
-    roles:
-      user: true
-      basic: true
-      pro: true
-      premium: true
-      admin: true
-
-  # --- Chart Generation & Export Capabilities (Future) ---
-  chart_generation_enabled:
-    default: false
-    roles:
-      pro: true
-      premium: true
-      admin: true
   chart_export_enabled:
-    default: false
+    default: False
+    description: "Allows users to export generated charts and queried document results."
     roles:
-      premium: true
-      admin: true
+      premium: True
+      admin: True
 
-  # --- Admin Departmental Capabilities (Future Granular Control) ---
-  admin_user_management_enabled: # View/edit user tiers/roles
-    default: false
+  # --- Domain-Specific Tools Capabilities ---
+  finance_tool_access:
+    default: False
+    description: "Allows access to general financial tools (stock prices, company news)."
     roles:
-      admin: true
-      management: true
-  admin_api_key_management_enabled: # View/edit API keys
-    default: false
-    roles:
-      admin: true
-      api_manager: true
-  admin_analytics_access: # Access to internal analytics dashboards
-    default: false
-    roles:
-      admin: true
-      analytics: true
-      management: true
-  admin_system_logs_access: # Access to detailed system logs
-    default: false
-    roles:
-      admin: true
-      dev: true
-  admin_customer_support_tools_access: # Access to specific customer support tools
-    default: false
-    roles:
-      admin: true
-      customer_care: true
+      pro: True
+      premium: True
+      admin: True
 
+  historical_data_access:
+    default: False
+    description: "Allows access to historical financial data (stocks, crypto, etc.)."
+    roles:
+      premium: True
+      admin: True
+
+  crypto_tool_access:
+    default: False
+    description: "Allows access to cryptocurrency-specific tools (prices, historical data)."
+    roles:
+      pro: True
+      premium: True
+      admin: True
+
+  news_tool_access:
+    default: False
+    description: "Allows access to general news retrieval tools."
+    roles:
+      user: True # Basic users can access news
+      pro: True
+      premium: True
+      admin: True
+
+  medical_tool_access:
+    default: False
+    description: "Allows access to medical information tools."
+    roles:
+      premium: True
+      admin: True
+
+  legal_tool_access:
+    default: False
+    description: "Allows access to legal information tools."
+    roles:
+      premium: True
+      admin: True
+
+  entertainment_tool_access:
+    default: False
+    description: "Allows access to entertainment-related tools."
+    roles:
+      user: True
+      pro: True
+      premium: True
+      admin: True
+
+  weather_tool_access:
+    default: False
+    description: "Allows access to weather information tools."
+    roles:
+      user: True
+      pro: True
+      premium: True
+      admin: True
+
+  sports_tool_access:
+    default: False
+    description: "Allows access to sports information tools."
+    roles:
+      user: True
+      pro: True
+      premium: True
+      admin: True
+
+  # Add more capabilities as new features/tools are introduced
