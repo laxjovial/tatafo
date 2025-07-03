@@ -1,39 +1,63 @@
-Implementing utils/ Directory - Part 1: user_manager.py
-The utils/user_manager.py file is central to our user authentication, session management, and RBAC logic. We need to update it to load and utilize the new data/rbac_capabilities.yaml and data/tiers.yaml files. This will make our RBAC system much more flexible and configurable.
+We will now refactor utils/user_manager.py to load RBAC capabilities and tier hierarchy directly from Firestore using firestore_manager.py. This is where the dynamic loading will truly happen. This will also require careful handling of asynchronous calls during module initialization.
 
-1. utils/user_manager.py (Updated to Load Capabilities and Tiers)
-This update will modify get_user_tier_capability to check the rbac_capabilities.yaml file for granular permissions based on roles and tiers. It will also load the TIER_HIERARCHY from tiers.yaml.
-utils/user_manager.py (Updated for RBAC Capabilities and Tiers)
-Jul 2, 7:19 AM
+Please type "next" when you are ready.
+Here is our updated main To-Do list. We are now working on the utils/ directory to enable dynamic RBAC configuration.
+
+[x] backend/
+
+[x] config/
+
+[x] data/
+
+[x] database/
+
+[x] shared_tools/
+
+[ ] domain_tools/ (and its sub-folders)
+
+[ ] ui/
+
+[ ] utils/ (Refactoring user_manager.py)
+
+[ ] tests/
+
+[ ] docs/
+
+[ ] scripts/
+
+[ ] requirements.txt
+
+[ ] .streamlit/
+
+[ ] .gitignore
+
+[ ] README.md
+
+Implementing Dynamic RBAC - Part 3: Refactor utils/user_manager.py
+This is a crucial step. We will modify utils/user_manager.py to load the _RBAC_CAPABILITIES and _TIER_HIERARCHY directly from Firestore using the firestore_manager. This will allow administrators to dynamically update these configurations via the backend/UI.
+
+Since Firestore operations are asynchronous, we need to adapt the loading mechanism. For module-level initialization, we'll use asyncio.run to execute the async loading functions once.
+
+1. utils/user_manager.py (Refactored for Dynamic RBAC from Firestore)
+utils/user_manager.py (Refactored for Dynamic RBAC from Firestore)
+Jul 3, 2:26 AM
 
 Open
 
 Key Changes in utils/user_manager.py:
 
-Firebase Initialization: The initialize_firebase() function is now called directly when user_manager.py is imported. This ensures Firebase is set up early.
+Firebase Initialization: The explicit initialize_firebase() function is now a no-op, as Firebase initialization is handled by the firestore_manager singleton's instantiation (_ = firestore_manager). This ensures Firebase is initialized before any Firestore calls.
 
-RBAC Config Loading:
+Dynamic RBAC and Tier Loading from Firestore:
 
-_RBAC_CAPABILITIES and _TIER_HIERARCHY global variables are introduced.
+_RBAC_CAPABILITIES and _TIER_HIERARCHY are now populated by _load_dynamic_rbac_config() and _load_dynamic_tier_hierarchy(), which are async functions that call firestore_manager.get_global_config().
 
-_load_rbac_config() and _load_tier_hierarchy() functions are added to parse data/rbac_capabilities.yaml and data/tiers.yaml respectively. These are called on module import.
+Asynchronous Loading at Module Level: asyncio.run() is used within _ensure_dynamic_configs_loaded_sync() to execute the async loading functions during module import. This allows the global variables to be populated before other functions try to access them.
 
-get_user_tier_capability Logic Update:
+Config Refresh Mechanism: _LAST_CONFIG_LOAD_TIME and _CONFIG_REFRESH_INTERVAL_SECONDS are introduced. _ensure_dynamic_configs_loaded_sync() is called by get_user_tier_capability to refresh the configurations from Firestore periodically (every 5 minutes by default). This ensures that changes made via the admin UI/backend are eventually reflected in the running application without a full restart.
 
-Now directly uses _RBAC_CAPABILITIES.
+get_user_tier_capability Update: This function now explicitly calls _ensure_dynamic_configs_loaded_sync() at its beginning to ensure the latest configurations are loaded before performing the capability check. It now accesses _RBAC_CAPABILITIES directly (which is populated from Firestore).
 
-It first checks if the user has the "admin" role and, if so, grants maximum access (True for booleans, float('inf') for numbers). This implements your "super admin" override.
+Firebase Auth Methods Made async: Several Firebase Admin SDK methods (auth.create_user, auth.get_user, auth.set_custom_user_claims, auth.revoke_refresh_tokens, auth.generate_password_reset_link, auth.verify_password_reset_code, auth.confirm_password_reset) are now correctly awaited as they are asynchronous operations.
 
-It then iterates through the user's roles to check for specific overrides defined in rbac_capabilities.yaml.
-
-If no role-specific override is found, it falls back to the default value defined for that capability in the YAML.
-
-Improved logging for debugging capability checks.
-
-get_current_user(): Updated to correctly fetch custom claims (tier and roles) from Firebase Auth when a user's ID token is available in st.session_state. It also now correctly uses config_manager.get("default_user_tier", "free") and config_manager.get("default_user_roles", ["user"]) as fallbacks.
-
-authenticate_user(): Added a warning that it's a server-side placeholder and client-side Firebase JS SDK handles primary login. It now also uses the mock user database from backend.api.auth_api for consistency in testing.
-
-update_user_tier_and_roles(): Added auth.revoke_refresh_tokens(user_id) to ensure that changes to custom claims (tier/roles) take effect immediately on the client side by forcing a token refresh.
-
-Now, we need to update ui/main_app.py to use the _TIER_HIERARCHY from utils/user_manager.py instead of its own hardcoded version.
+Logging: Enhanced logging to trace when configurations are loaded or refreshed.
