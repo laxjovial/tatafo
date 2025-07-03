@@ -4,11 +4,11 @@
 llm:
   provider: openai # Options: openai, google, ollama (for local models)
   model_name: gpt-4o # For OpenAI: gpt-3.5-turbo, gpt-4, gpt-4o; For Google: gemini-pro, gemini-1.5-flash
-  temperature: 0.7 # Controls randomness: 0.0 (deterministic) to 1.0 (creative)
+  temperature: 0.7 # Controls randomness: 0.0 (deterministic) to 1.0 (creative) - Global Default
   max_tokens: 4096 # Maximum tokens in the LLM response
   max_summary_input_chars: 10000 # Max characters for summarization input to LLM
   
-  # --- Embedding Model Configuration (NEW) ---
+  # --- Embedding Model Configuration ---
   embedding_provider: openai # Options: openai, google, huggingface (for local models)
   embedding_model_name: text-embedding-ada-002 # For OpenAI: text-embedding-ada-002; For HuggingFace: sentence-transformers/all-MiniLM-L6-v2
 
