@@ -20,6 +20,7 @@ class ChatRequest(BaseModel):
     prompt: str = Field(..., description="The user's current prompt or message.")
     chat_history: List[Dict[str, str]] = Field(default_factory=list, description="The full chat history, as a list of {'role': str, 'content': str} dictionaries.")
     user_token: str = Field(..., description="The user's authentication token (e.g., Firebase ID token or mock token).")
+    temperature: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional: The LLM temperature (creativity) for this request. Must be between 0.0 and 1.0.") # NEW FIELD
 
 # Pydantic model for outgoing chat responses
 class ChatResponse(BaseModel):
@@ -33,7 +34,7 @@ async def chat_with_ai_agent(request: ChatRequest):
     Endpoint for interacting with the AI agent.
     The agent can use various tools based on the user's prompt and capabilities.
     """
-    logger.info(f"Received chat request from user: {request.user_token}, prompt: '{request.prompt[:100]}...'")
+    logger.info(f"Received chat request from user: {request.user_token}, prompt: '{request.prompt[:100]}...', temp: {request.temperature}")
     
     try:
         # Call the LLMService's chat_with_agent method
@@ -41,7 +42,8 @@ async def chat_with_ai_agent(request: ChatRequest):
         agent_response_content = await llm_service.chat_with_agent(
             prompt=request.prompt,
             chat_history=request.chat_history,
-            user_token=request.user_token
+            user_token=request.user_token,
+            user_provided_temperature=request.temperature # NEW: Pass temperature
         )
         
         # In a more advanced setup, the agent_response_content might be a structured object
