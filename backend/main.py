@@ -7,11 +7,11 @@ from typing import Annotated
 # Import API routers
 from backend.api import auth_api
 from backend.api import user_api
-# from backend.api import tool_api # Future: for exposing tools via API
+from backend.api import tool_api # NEW: Import the tool_api router
 # from backend.api import payment_api # Future: for payment processing
 # from backend.api import admin_api # Future: for granular admin controls
 
-# Import middleware dependencies
+# Import middleware dependencies (if applying at router level)
 from backend.middleware.auth_middleware import get_current_active_user, get_current_admin_user
 
 # Initialize FastAPI app
@@ -39,11 +39,10 @@ app.add_middleware(
 )
 
 # Include API routers
-# Note: Dependencies can be added at the router level for all routes in that router
-# For authentication, we will apply dependencies directly to specific routes for more control.
 app.include_router(auth_api.router, prefix="/auth", tags=["Authentication"])
 app.include_router(user_api.router, prefix="/users", tags=["User Management"])
-# app.include_router(tool_api.router, prefix="/tools", tags=["AI Tools"], dependencies=[Depends(get_current_active_user)])
+# NEW: Include the tool_api router, protected by authentication
+app.include_router(tool_api.router, prefix="/tools", tags=["AI Tools"], dependencies=[Depends(get_current_active_user)])
 # app.include_router(payment_api.router, prefix="/payments", tags=["Payments"], dependencies=[Depends(get_current_active_user)])
 # app.include_router(admin_api.router, prefix="/admin", tags=["Admin"], dependencies=[Depends(get_current_admin_user)])
 
