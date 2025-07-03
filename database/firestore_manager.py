@@ -5,6 +5,7 @@ from firebase_admin import credentials, firestore, auth
 import logging
 import json
 from typing import Optional, Dict, Any, List, Union
+import asyncio # For async operations in tests
 
 # Import config_manager to get Firebase config from secrets.toml if __firebase_config is not available
 from config.config_manager import config_manager
@@ -234,6 +235,23 @@ class FirestoreManager:
     async def get_all_api_keys(self) -> List[Dict[str, Any]]:
         """Retrieves all API keys from the 'api_keys' collection."""
         return await self.get_collection("api_keys", is_public=True)
+
+    # --- NEW: Global Configuration Management Methods (for RBAC capabilities, tiers) ---
+    async def get_global_config(self, config_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves a global configuration document (e.g., 'rbac_capabilities', 'tiers')
+        from the 'app_configs' public collection.
+        """
+        logger.info(f"Getting global config: {config_name}")
+        return await self.get_document("app_configs", config_name, is_public=True)
+
+    async def set_global_config(self, config_name: str, data: Dict[str, Any]) -> None:
+        """
+        Sets (creates or overwrites) a global configuration document (e.g., 'rbac_capabilities', 'tiers')
+        in the 'app_configs' public collection.
+        """
+        logger.info(f"Setting global config: {config_name}")
+        await self.set_document("app_configs", config_name, data, is_public=True)
 
 # Instantiate the FirestoreManager as a singleton
 firestore_manager = FirestoreManager()
