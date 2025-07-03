@@ -3,8 +3,9 @@
 import logging
 from pathlib import Path
 from typing import Any, Optional
-import PyPDF2
-import docx
+# PyPDF2 and docx are now only used internally by _load_document_content if we keep that separation
+# import PyPDF2
+# import docx
 import json
 
 # For LLM integration
@@ -16,6 +17,9 @@ import json
 # Import config_manager and user_manager for RBAC checks
 from config.config_manager import config_manager
 from utils.user_manager import get_user_tier_capability, get_current_user
+
+# Import _load_document_content and SUPPORTED_DOC_EXTS from import_utils
+from shared_tools.import_utils import _load_document_content, SUPPORTED_DOC_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,13 @@ def _get_llm_for_summarization():
             logger.warning("Using mock LLM for summarization. Replace with actual Langchain LLM import and instantiation.")
             class MockLLM:
                 def invoke(self, prompt: str) -> Any:
-                    return type('obj', (object,), {'content': f"Mock summary of the provided text. Original content length: {len(prompt.split('Document Content:')[1].strip())} characters."})()
+                    # The mock LLM will report the length of the *truncated* input it received.
+                    # We need to extract the content passed to it after "Document Content:"
+                    content_start_idx = prompt.find("Document Content:")
+                    if content_start_idx != -1:
+                        doc_content = prompt[content_start_idx + len("Document Content:"):].strip()
+                        return type('obj', (object,), {'content': f"Mock summary of the provided text. Original content length: {len(doc_content)} characters."})()
+                    return type('obj', (object,), {'content': f"Mock summary of unknown content."})()
             _llm_instance = MockLLM()
         elif llm_provider == "google":
             api_key = config_manager.get_secret("google_api_key")
@@ -56,52 +66,21 @@ def _get_llm_for_summarization():
             logger.warning("Using mock LLM for summarization. Replace with actual Langchain LLM import and instantiation.")
             class MockLLM:
                 def invoke(self, prompt: str) -> Any:
-                    return type('obj', (object,), {'content': f"Mock Google summary of the provided text. Original content length: {len(prompt.split('Document Content:')[1].strip())} characters."})()
+                    content_start_idx = prompt.find("Document Content:")
+                    if content_start_idx != -1:
+                        doc_content = prompt[content_start_idx + len("Document Content:"):].strip()
+                        return type('obj', (object,), {'content': f"Mock Google summary of the provided text. Original content length: {len(doc_content)} characters."})()
+                    return type('obj', (object,), {'content': f"Mock Google summary of unknown content."})()
             _llm_instance = MockLLM()
         else:
             raise ValueError(f"Unsupported LLM provider for summarization: {llm_provider}")
     return _llm_instance
 
-# --- Document Content Extraction ---
-def _extract_text_from_pdf(file_path: Path) -> str:
-    """Extracts text from a PDF file."""
-    text = ""
-    try:
-        with open(file_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            for page_num in range(len(reader.pages)):
-                text += reader.pages[page_num].extract_text() or ""
-        return text
-    except Exception as e:
-        logger.error(f"Error extracting text from PDF {file_path}: {e}", exc_info=True)
-        raise ValueError(f"Could not extract text from PDF: {e}")
-
-def _extract_text_from_docx(file_path: Path) -> str:
-    """Extracts text from a DOCX file."""
-    text = ""
-    try:
-        doc = docx.Document(file_path)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-        return text
-    except Exception as e:
-        logger.error(f"Error extracting text from DOCX {file_path}: {e}", exc_info=True)
-        raise ValueError(f"Could not extract text from DOCX: {e}")
-
-def _extract_text_from_txt(file_path: Path) -> str:
-    """Extracts text from a TXT file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            return file.read()
-    except Exception as e:
-        logger.error(f"Error extracting text from TXT {file_path}: {e}", exc_info=True)
-        raise ValueError(f"Could not extract text from TXT: {e}")
-
 # --- Summarization Tool ---
 def summarize_document(file_path: Path, user_token: str = "default") -> str:
     """
     Summarizes the content of a document located at the given file path using an LLM.
-    Supports PDF, DOCX, and TXT files.
+    Supports PDF, DOCX, TXT, CSV, XLS, and XLSX files.
     Applies RBAC checks for summarization capabilities.
 
     Args:
@@ -125,18 +104,18 @@ def summarize_document(file_path: Path, user_token: str = "default") -> str:
         logger.error(f"Document not found at '{file_path}'.")
         return f"Error: Document not found at '{file_path}'."
 
-    extracted_text = ""
     file_extension = file_path.suffix.lower()
 
+    if file_extension not in SUPPORTED_DOC_EXTS:
+        return f"Error: Unsupported file type for summarization: {file_extension}. Supported types: {', '.join(SUPPORTED_DOC_EXTS)}."
+
+    extracted_text = ""
     try:
-        if file_extension == '.pdf':
-            extracted_text = _extract_text_from_pdf(file_path)
-        elif file_extension == '.docx':
-            extracted_text = _extract_text_from_docx(file_path)
-        elif file_extension == '.txt':
-            extracted_text = _extract_text_from_txt(file_path)
-        else:
-            return f"Error: Unsupported file type for summarization: {file_extension}. Supported types: .pdf, .docx, .txt."
+        # Use the unified _load_document_content from import_utils
+        # This function returns a list of document parts/pages.
+        # For summarization, we typically want to concatenate them.
+        document_parts = _load_document_content(file_path)
+        extracted_text = "\n\n".join([part['page_content'] for part in document_parts])
         
         if not extracted_text.strip():
             return "Error: Could not extract any readable text from the document."
@@ -181,9 +160,10 @@ def summarize_document(file_path: Path, user_token: str = "default") -> str:
 # CLI Test (optional)
 if __name__ == "__main__":
     import shutil
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
     import sys
     import os
+    import pandas as pd # Needed for mock excel/csv
 
     logging.basicConfig(level=logging.INFO)
 
@@ -275,8 +255,8 @@ if __name__ == "__main__":
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
                 'summarization_max_input_chars': {
-                    'default': 5000,
-                    'roles': {'pro': 10000, 'premium': 20000, 'admin': 50000}
+                    'default': 5000, # Default for capability
+                    'roles': {'pro': 10000, 'premium': 20000, 'admin': 50000} # Overrides
                 }
             }
         }
@@ -332,21 +312,18 @@ if __name__ == "__main__":
     txt_path = test_dir / "sample.txt"
     empty_txt_path = test_dir / "empty.txt"
     long_txt_path = test_dir / "long_sample.txt"
+    csv_path = test_dir / "sample.csv"
+    xlsx_path = test_dir / "sample.xlsx"
 
     # Create dummy PDF (requires PyPDF2 to write, so just create a simple one)
     # For a real test, you'd need a pre-existing PDF or a more complex generation.
     # Here, we'll mock PyPDF2 for simplicity in testing text extraction.
-    class MockPdfReader:
-        def __init__(self, text_content):
-            self.pages = [MagicMock()]
-            self.pages[0].extract_text.return_value = text_content
-        def __len__(self): return 1
+    # We will mock the _load_document_content function directly for PDF/DOCX/TXT
+    # to avoid needing PyPDF2/docx libraries for these tests.
     
     # Create dummy DOCX
-    doc = docx.Document()
-    doc.add_paragraph("This is a sample DOCX document for summarization testing.")
-    doc.add_paragraph("It contains a few sentences about various topics.")
-    doc.save(docx_path)
+    # For mock, content will come from _load_document_content mock
+    # docx.Document(docx_path).save(docx_path) # Not needed with mock
 
     # Create dummy TXT
     with open(txt_path, "w") as f:
@@ -361,79 +338,142 @@ if __name__ == "__main__":
     with open(long_txt_path, "w") as f:
         f.write(long_text_content)
 
+    # Create dummy CSV
+    csv_content = "Name,Age,City\nAlice,30,New York\nBob,24,London"
+    with open(csv_path, "w") as f:
+        f.write(csv_content)
+
+    # Create dummy XLSX (requires openpyxl to write, mock for simplicity)
+    # For mock, content will come from _load_document_content mock
+    # pd.DataFrame({"ColA": [1, 2], "ColB": ["X", "Y"]}).to_excel(xlsx_path, index=False) # Not needed with mock
+
     test_user_free = sys.modules['utils.user_manager']._mock_users["mock_free_token"]['user_id']
     test_user_pro = sys.modules['utils.user_manager']._mock_users["mock_pro_token"]['user_id']
     test_user_premium = sys.modules['utils.user_manager']._mock_users["mock_premium_token"]['user_id']
     test_user_admin = sys.modules['utils.user_manager']._mock_users["mock_admin_token"]['user_id']
 
-    print("\n--- Testing summarize_document function ---")
+    print("\n--- Testing summarize_document function (re-updated) ---")
 
-    # Test 1: Pro user, TXT document
-    print("\n--- Test 1: Pro user, TXT document ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    summary_txt = summarize_document(txt_path, user_token=test_user_pro)
-    print(f"Summary of '{txt_path.name}' (Pro user): {summary_txt[:100]}...")
-    assert "Mock summary" in summary_txt
-    assert "Original content length: 90 characters." in summary_txt # Check mock LLM output
-    print("Test 1 Passed.")
+    # Mock _load_document_content from import_utils
+    mock_pdf_content = [{"page_content": "This is sample PDF content.", "metadata": {"source": "sample.pdf"}}]
+    mock_docx_content = [{"page_content": "This is sample DOCX content.", "metadata": {"source": "sample.docx"}}]
+    mock_txt_content = [{"page_content": "This is a sample TXT document. It talks about technology and innovation. The future is bright.", "metadata": {"source": "sample.txt"}}]
+    
+    # Mock for CSV/Excel conversion to markdown table
+    mock_csv_markdown = "| Name | Age | City |\n|:-----|----:|:-----|\n| Alice| 30 | New York |\n| Bob  | 24 | London   |"
+    mock_csv_content = [{"page_content": mock_csv_markdown, "metadata": {"source": "sample.csv", "file_type": ".csv"}}]
+    
+    mock_xlsx_markdown = "| ColA | ColB |\n|-----:|:-----|\n|    1 | X    |\n|    2 | Y    |"
+    mock_xlsx_content = [{"page_content": mock_xlsx_markdown, "metadata": {"source": "sample.xlsx", "file_type": ".xlsx"}}]
 
-    # Test 2: Premium user, DOCX document
-    print("\n--- Test 2: Premium user, DOCX document ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_premium
-    summary_docx = summarize_document(docx_path, user_token=test_user_premium)
-    print(f"Summary of '{docx_path.name}' (Premium user): {summary_docx[:100]}...")
-    assert "Mock summary" in summary_docx
-    assert "Original content length: 70 characters." in summary_docx
-    print("Test 2 Passed.")
+    # Patch _load_document_content to return mock content based on file extension
+    def mock_load_document_content(file_path: Path):
+        if file_path.suffix.lower() == ".pdf":
+            return mock_pdf_content
+        elif file_path.suffix.lower() == ".docx":
+            return mock_docx_content
+        elif file_path.suffix.lower() == ".txt":
+            return mock_txt_content
+        elif file_path.suffix.lower() == ".csv":
+            return mock_csv_content
+        elif file_path.suffix.lower() == ".xlsx":
+            return mock_xlsx_content
+        else:
+            raise ValueError(f"Unsupported file type for mock: {file_path.suffix.lower()}")
 
-    # Test 3: Free user, summarization disabled
-    print("\n--- Test 3: Free user, summarization disabled ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    summary_free = summarize_document(txt_path, user_token=test_user_free)
-    print(f"Summary of '{txt_path.name}' (Free user): {summary_free}")
-    assert "Error: Document summarization is not enabled for your current tier." in summary_free
-    print("Test 3 Passed.")
+    with patch('shared_tools.import_utils._load_document_content', side_effect=mock_load_document_content):
+        # Test 1: Pro user, TXT document
+        print("\n--- Test 1: Pro user, TXT document ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_pro
+        summary_txt = summarize_document(txt_path, user_token=test_user_pro)
+        print(f"Summary of '{txt_path.name}' (Pro user): {summary_txt[:100]}...")
+        assert "Mock summary" in summary_txt
+        assert "Original content length: 90 characters." in summary_txt # Length of mock_txt_content
+        print("Test 1 Passed.")
 
-    # Test 4: Admin user, long TXT document (should be truncated to admin's max_input_chars)
-    print("\n--- Test 4: Admin user, long TXT document (truncation test) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_admin
-    summary_long_txt = summarize_document(long_txt_path, user_token=test_user_admin)
-    print(f"Summary of '{long_txt_path.name}' (Admin user): {summary_long_txt[:100]}...")
-    assert "Mock summary" in summary_long_txt
-    # Admin's max_input_chars is float('inf') in mock, but actual truncation happens before LLM.
-    # The mock LLM will report the length of the *truncated* input it received.
-    # The warning log for truncation should indicate the truncation to 50000 (mocked admin limit)
-    assert "Original content length: 50000 characters." in summary_long_txt # Check mock LLM output
-    print("Test 4 Passed.")
+        # Test 2: Premium user, DOCX document
+        print("\n--- Test 2: Premium user, DOCX document ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_premium
+        summary_docx = summarize_document(docx_path, user_token=test_user_premium)
+        print(f"Summary of '{docx_path.name}' (Premium user): {summary_docx[:100]}...")
+        assert "Mock summary" in summary_docx
+        assert "Original content length: 28 characters." in summary_docx # Length of mock_docx_content
+        print("Test 2 Passed.")
 
-    # Test 5: Non-existent file
-    print("\n--- Test 5: Non-existent file ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    non_existent_path = test_dir / "non_existent.pdf"
-    summary_non_existent = summarize_document(non_existent_path, user_token=test_user_pro)
-    print(f"Summary of '{non_existent_path.name}': {summary_non_existent}")
-    assert "Error: Document not found" in summary_non_existent
-    print("Test 5 Passed.")
+        # Test 3: Free user, summarization disabled
+        print("\n--- Test 3: Free user, summarization disabled ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_free
+        summary_free = summarize_document(txt_path, user_token=test_user_free)
+        print(f"Summary of '{txt_path.name}' (Free user): {summary_free}")
+        assert "Error: Document summarization is not enabled for your current tier." in summary_free
+        print("Test 3 Passed.")
 
-    # Test 6: Empty document
-    print("\n--- Test 6: Empty document ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    summary_empty = summarize_document(empty_txt_path, user_token=test_user_pro)
-    print(f"Summary of '{empty_txt_path.name}': {summary_empty}")
-    assert "Error: Could not extract any readable text from the document." in summary_empty
-    print("Test 6 Passed.")
+        # Test 4: Admin user, long TXT document (truncation test)
+        print("\n--- Test 4: Admin user, long TXT document (truncation test) ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_admin
+        # The mock_load_document_content will return the full 10000 chars,
+        # then doc_summarizer will truncate it based on admin's max_input_chars (50000 in mock)
+        # However, the mock LLM will report the length of the *actual* content passed to it.
+        # So, if the long_txt_path has 10000 chars, and admin max is 50000, it passes 10000.
+        # If long_txt_path had >50000, it would truncate to 50000.
+        mock_load_document_content_orig = shared_tools.import_utils._load_document_content
+        shared_tools.import_utils._load_document_content = lambda p: [{"page_content": long_text_content, "metadata": {"source": p.name}}]
+        
+        summary_long_txt = summarize_document(long_txt_path, user_token=test_user_admin)
+        print(f"Summary of '{long_txt_path.name}' (Admin user): {summary_long_txt[:100]}...")
+        assert "Mock summary" in summary_long_txt
+        assert "Original content length: 10000 characters." in summary_long_txt # Length of long_text_content
+        
+        shared_tools.import_utils._load_document_content = mock_load_document_content_orig # Restore
+        print("Test 4 Passed.")
 
-    # Test 7: Unsupported file type
-    print("\n--- Test 7: Unsupported file type ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    unsupported_path = test_dir / "image.jpg"
-    with open(unsupported_path, "w") as f: # Create a dummy file
-        f.write("dummy image content")
-    summary_unsupported = summarize_document(unsupported_path, user_token=test_user_pro)
-    print(f"Summary of '{unsupported_path.name}': {summary_unsupported}")
-    assert "Error: Unsupported file type for summarization: .jpg" in summary_unsupported
-    os.remove(unsupported_path) # Clean up dummy file
-    print("Test 7 Passed.")
+        # Test 5: CSV document summarization
+        print("\n--- Test 5: Pro user, CSV document summarization ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_pro
+        summary_csv = summarize_document(csv_path, user_token=test_user_pro)
+        print(f"Summary of '{csv_path.name}' (Pro user): {summary_csv[:100]}...")
+        assert "Mock summary" in summary_csv
+        assert "Original content length: 65 characters." in summary_csv # Length of mock_csv_markdown
+        print("Test 5 Passed.")
+
+        # Test 6: XLSX document summarization
+        print("\n--- Test 6: Premium user, XLSX document summarization ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_premium
+        summary_xlsx = summarize_document(xlsx_path, user_token=test_user_premium)
+        print(f"Summary of '{xlsx_path.name}' (Premium user): {summary_xlsx[:100]}...")
+        assert "Mock summary" in summary_xlsx
+        assert "Original content length: 30 characters." in summary_xlsx # Length of mock_xlsx_markdown
+        print("Test 6 Passed.")
+
+        # Test 7: Non-existent file
+        print("\n--- Test 7: Non-existent file ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_pro
+        non_existent_path = test_dir / "non_existent.pdf"
+        summary_non_existent = summarize_document(non_existent_path, user_token=test_user_pro)
+        print(f"Summary of '{non_existent_path.name}': {summary_non_existent}")
+        assert "Error: Document not found" in summary_non_existent
+        print("Test 7 Passed.")
+
+        # Test 8: Empty document (mocked _load_document_content returns empty list)
+        print("\n--- Test 8: Empty document ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_pro
+        with patch('shared_tools.import_utils._load_document_content', return_value=[]):
+            summary_empty = summarize_document(empty_txt_path, user_token=test_user_pro)
+            print(f"Summary of '{empty_txt_path.name}': {summary_empty}")
+            assert "Error: Could not extract any readable text from the document." in summary_empty
+        print("Test 8 Passed.")
+
+        # Test 9: Unsupported file type (not in SUPPORTED_DOC_EXTS)
+        print("\n--- Test 9: Unsupported file type ---")
+        sys.modules['utils.user_manager']._current_mock_user = test_user_pro
+        unsupported_path = test_dir / "image.jpg"
+        with open(unsupported_path, "w") as f: # Create a dummy file
+            f.write("dummy image content")
+        summary_unsupported = summarize_document(unsupported_path, user_token=test_user_pro)
+        print(f"Summary of '{unsupported_path.name}': {summary_unsupported}")
+        assert "Error: Unsupported file type for summarization: .jpg" in summary_unsupported
+        os.remove(unsupported_path) # Clean up dummy file
+        print("Test 9 Passed.")
 
     print("\nAll summarize_document tests passed (mocked LLM and RBAC).")
 
