@@ -1,6 +1,7 @@
 # backend/services/llm_service.py
 
 import logging
+import json # Added for chart_generation_tool mock
 from typing import List, Dict, Any, Optional
 from fastapi import HTTPException, status # Import HTTPException for error handling
 from datetime import datetime, timedelta # Needed for mock agent's date calculations
@@ -28,8 +29,10 @@ from shared_tools.sentiment_analysis_tool import analyze_sentiment
 from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 
 # Import domain-specific tools
-from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices
+from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices, lookup_stock_symbol
+from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
 # from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info # Future medical tools
+# from domain_tools.news_tools.news_tool import get_general_news # Future news tools
 
 logger = logging.getLogger(__name__)
 
@@ -86,48 +89,84 @@ class LLMService:
                     # It's a very simplified agent loop for testing.
                     prompt = inputs.get('input', '').lower()
                     tools_available_names = [t.name for t in inputs.get('tools', [])] # Extract tool names from mock tools list
+                    user_token_for_tools = inputs.get('user_token', 'default') # Pass user_token to mock tool calls
                     
+                    # Helper to check if tool is available by name
+                    def is_tool_available(tool_name: str) -> bool:
+                        return any(t.name == tool_name for t in tools_available_names)
+
                     # Simulate tool calls based on prompt keywords and available tools
-                    if "stock price" in prompt and "get_stock_price" in tools_available_names:
-                        symbol = "AAPL" # Hardcoded for mock
-                        mock_tool_output = get_stock_price(symbol, user_token=inputs.get('user_token', 'default'))
+                    if "stock price" in prompt and is_tool_available("get_stock_price"):
+                        # Prioritize symbol lookup if company name is mentioned
+                        if "apple" in prompt and is_tool_available("lookup_stock_symbol"):
+                            symbol = lookup_stock_symbol("Apple", user_token=user_token_for_tools)
+                            if "Error" not in symbol:
+                                mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
+                                return {"output": f"I used lookup_stock_symbol and then get_stock_price. Output:\n{mock_tool_output}"}
+                        symbol = "AAPL" # Default to a symbol for mock if no lookup
+                        mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
                         return {"output": f"I used get_stock_price. Output:\n{mock_tool_output}"}
                     
-                    if "historical stock prices" in prompt and "get_historical_stock_prices" in tools_available_names:
+                    if "historical stock prices" in prompt and is_tool_available("get_historical_stock_prices"):
                         symbol = "MSFT" # Hardcoded for mock
-                        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-                        end_date = datetime.now().strftime("%Y-%m-%d")
-                        mock_tool_output = get_historical_stock_prices(symbol, start_date, end_date, user_token=inputs.get('user_token', 'default'))
+                        start_date = "2023-01-01" # Hardcoded for mock
+                        end_date = "2023-01-05" # Hardcoded for mock
+                        mock_tool_output = get_historical_stock_prices(symbol, start_date, end_date, user_token=user_token_for_tools)
                         return {"output": f"I used get_historical_stock_prices. Output:\n{mock_tool_output}"}
 
-                    if "company news" in prompt and "get_company_news" in tools_available_names:
+                    if "company news" in prompt and is_tool_available("get_company_news"):
                         symbol = "TSLA" # Hardcoded for mock
                         from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
                         to_date = datetime.now().strftime("%Y-%m-%d")
-                        mock_tool_output = get_company_news(symbol, from_date, to_date, user_token=inputs.get('user_token', 'default'))
+                        mock_tool_output = get_company_news(symbol, from_date, to_date, user_token=user_token_for_tools)
                         return {"output": f"I used get_company_news. Output:\n{mock_tool_output}"}
                     
-                    if "analyze data" in prompt or "run python" in prompt and "python_interpreter_with_rbac" in tools_available_names:
-                        code_to_run = "print('Mock Python analysis result.')"
-                        mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=inputs.get('user_token', 'default'))
+                    if "lookup stock symbol" in prompt and is_tool_available("lookup_stock_symbol"):
+                        company_name = "Google" # Hardcoded for mock
+                        mock_tool_output = lookup_stock_symbol(company_name, user_token=user_token_for_tools)
+                        return {"output": f"I used lookup_stock_symbol. Output:\n{mock_tool_output}"}
+
+                    if "crypto price" in prompt and is_tool_available("get_crypto_price"):
+                        if "bitcoin" in prompt and is_tool_available("get_crypto_id_by_symbol"):
+                            coin_id = get_crypto_id_by_symbol("btc", user_token=user_token_for_tools)
+                            if "Error" not in coin_id:
+                                mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
+                                return {"output": f"I used get_crypto_id_by_symbol and then get_crypto_price. Output:\n{mock_tool_output}"}
+                        coin_id = "ethereum" # Default for mock
+                        mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
+                        return {"output": f"I used get_crypto_price. Output:\n{mock_tool_output}"}
+
+                    if "historical crypto prices" in prompt and is_tool_available("get_historical_crypto_prices"):
+                        coin_id = "bitcoin" # Hardcoded for mock
+                        mock_tool_output = get_historical_crypto_prices(coin_id, "usd", 7, user_token=user_token_for_tools)
+                        return {"output": f"I used get_historical_crypto_prices. Output:\n{mock_tool_output}"}
+
+                    if "lookup crypto id" in prompt and is_tool_available("get_crypto_id_by_symbol"):
+                        symbol = "sol" # Hardcoded for mock
+                        mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
+                        return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
+                    
+                    if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
+                        code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
+                        mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=user_token_for_tools)
                         return {"output": f"I used python_interpreter_with_rbac. Output:\n{mock_tool_output}"}
                     
-                    if "search web" in prompt and "scrape_web" in tools_available_names:
-                        mock_tool_output = scrape_web("mock web search query", user_token=inputs.get('user_token', 'default'))
+                    if "search web" in prompt and is_tool_available("scrape_web"):
+                        mock_tool_output = scrape_web("mock web search query", user_token=user_token_for_tools)
                         return {"output": f"I used scrape_web. Output:\n{mock_tool_output}"}
 
-                    if "sentiment" in prompt and "analyze_sentiment" in tools_available_names:
+                    if "sentiment" in prompt and is_tool_available("analyze_sentiment"):
                         text_for_sentiment = "This is a test sentence for sentiment analysis."
                         mock_tool_output = analyze_sentiment(text_for_sentiment)
                         return {"output": f"I used analyze_sentiment. Output:\n{mock_tool_output}"}
 
-                    if "query document" in prompt and "query_uploaded_docs" in tools_available_names:
-                        mock_tool_output = query_uploaded_docs("mock document query", user_token=inputs.get('user_token', 'default'), section="general")
+                    if "query document" in prompt and is_tool_available("query_uploaded_docs"):
+                        mock_tool_output = query_uploaded_docs("mock document query", user_token=user_token_for_tools, section="general")
                         return {"output": f"I used query_uploaded_docs. Output:\n{mock_tool_output}"}
                     
-                    if "generate chart" in prompt and "generate_and_save_chart" in tools_available_names:
+                    if "generate chart" in prompt and is_tool_available("generate_and_save_chart"):
                         mock_data = json.dumps([{"x": 1, "y": 10}, {"x": 2, "y": 20}])
-                        mock_tool_output = generate_and_save_chart(mock_data, "line", "x", "y", user_token=inputs.get('user_token', 'default'))
+                        mock_tool_output = generate_and_save_chart(mock_data, "line", "x", "y", user_token=user_token_for_tools)
                         return {"output": f"I used generate_and_save_chart. Output:\n{mock_tool_output}"}
 
                     # Fallback if no specific tool action is simulated
@@ -224,23 +263,21 @@ class LLMService:
 
         # Domain-specific Tools
         if get_user_tier_capability(user_token, 'finance_tool_access', False):
-            available_tools.extend([get_stock_price, get_company_news])
-            logger.debug(f"Finance tools (current price, company news) added for user {user_token}")
+            available_tools.extend([get_stock_price, get_company_news, lookup_stock_symbol]) # Added lookup_stock_symbol
+            logger.debug(f"Finance tools (current price, company news, symbol lookup) added for user {user_token}")
         
-        # NEW: Add historical data tool based on capability
         if get_user_tier_capability(user_token, 'historical_data_access', False):
             available_tools.append(get_historical_stock_prices)
             logger.debug(f"Tool 'get_historical_stock_prices' added for user {user_token}")
+
+        if get_user_tier_capability(user_token, 'crypto_tool_access', False):
+            available_tools.extend([get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol])
+            logger.debug(f"Crypto tools added for user {user_token}")
 
         # Future Medical Tools
         # if get_user_tier_capability(user_token, 'medical_tool_access', False):
         #     available_tools.extend([get_drug_info, get_symptom_info])
         #     logger.debug(f"Medical tools added for user {user_token}")
-
-        # Future Crypto Tools
-        # if get_user_tier_capability(user_token, 'crypto_tool_access', False):
-        #     available_tools.extend([get_crypto_price, get_historical_crypto_prices])
-        #     logger.debug(f"Crypto tools added for user {user_token}")
 
         # Future News Tools
         # if get_user_tier_capability(user_token, 'news_tool_access', False):
@@ -264,17 +301,23 @@ class LLMService:
                 "For web search, use `scrape_web`. "
                 "For sentiment analysis, use `analyze_sentiment`. "
                 "For current stock prices, use `get_stock_price`. "
-                "For historical stock prices, use `get_historical_stock_prices`. " # Added to prompt
+                "For historical stock prices, use `get_historical_stock_prices`. "
                 "For company news, use `get_company_news`. "
+                "To find a stock symbol from a company name, use `lookup_stock_symbol`. " # Added to prompt
+                "For current cryptocurrency prices, use `get_crypto_price`. "
+                "For historical cryptocurrency prices, use `get_historical_crypto_prices`. "
+                "To find a cryptocurrency ID from its symbol, use `get_crypto_id_by_symbol`. " # Added to prompt
                 "For querying uploaded documents, use `query_uploaded_docs`. "
-                "For data analysis or complex calculations, use the `python_interpreter_with_rbac` tool. "
+                "For data analysis, complex calculations, time series analysis, regression analysis, "
+                "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. " # Enhanced ML prompting
                 "For generating charts from data, use `generate_and_save_chart`. "
                 "Always provide comprehensive answers based on tool outputs. "
                 "If a tool call fails, inform the user and try to explain why or suggest alternatives."
-                "When providing historical data, if asked to plot, use `generate_and_save_chart` with the JSON output from `get_historical_stock_prices`."
+                "When providing historical data, if asked to plot, use `generate_and_save_chart` with the JSON output from `get_historical_stock_prices` or `get_historical_crypto_prices`."
                 "When analyzing data from uploaded documents, use `query_uploaded_docs` first, then pass the relevant content to `python_interpreter_with_rbac` for analysis."
-                "If asked for time series analysis, use `python_interpreter_with_rbac`."
-                "Remember to pass the `user_token` to any tool that requires it." # Explicit reminder for LLM
+                "Remember to pass the `user_token` to any tool that requires it."
+                "If a user asks for a stock by name (e.g., 'Apple'), first use `lookup_stock_symbol` to get the ticker, then use the appropriate stock tool." # Explicit chaining
+                "If a user asks for crypto by symbol (e.g., 'btc'), first use `get_crypto_id_by_symbol` to get the ID, then use the appropriate crypto tool." # Explicit chaining
             ),
             *langchain_chat_history, # Previous chat history
             HumanMessage(content="{input}"), # Current user input
@@ -303,19 +346,32 @@ class LLMService:
                 def is_tool_available(tool_name: str) -> bool:
                     return any(t.name == tool_name for t in self.tools)
 
-                # Mock tool calls based on prompt keywords and available tools
+                # Simulate tool calls based on prompt keywords and available tools
+                # Prioritize lookup tools if relevant keywords are present
+                if ("price of apple" in prompt_text or "apple stock" in prompt_text) and is_tool_available("lookup_stock_symbol") and is_tool_available("get_stock_price"):
+                    mock_symbol = lookup_stock_symbol("Apple", user_token=user_token_for_tools)
+                    if "Error" not in mock_symbol:
+                        mock_tool_output = get_stock_price(mock_symbol, user_token=user_token_for_tools)
+                        return {"output": f"I used lookup_stock_symbol to get '{mock_symbol}' and then get_stock_price. Output:\n{mock_tool_output}"}
+                
+                if ("price of bitcoin" in prompt_text or "btc price" in prompt_text) and is_tool_available("get_crypto_id_by_symbol") and is_tool_available("get_crypto_price"):
+                    mock_coin_id = get_crypto_id_by_symbol("btc", user_token=user_token_for_tools)
+                    if "Error" not in mock_coin_id:
+                        mock_tool_output = get_crypto_price(mock_coin_id, user_token=user_token_for_tools)
+                        return {"output": f"I used get_crypto_id_by_symbol to get '{mock_coin_id}' and then get_crypto_price. Output:\n{mock_tool_output}"}
+
+                if "stock price" in prompt_text and is_tool_available("get_stock_price"):
+                    symbol = "AAPL" # Default to a symbol for mock if no lookup
+                    mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
+                    return {"output": f"I used get_stock_price. Output:\n{mock_tool_output}"}
+                
                 if "historical stock prices" in prompt_text and is_tool_available("get_historical_stock_prices"):
                     symbol = "MSFT" # Hardcoded for mock
                     start_date = "2023-01-01" # Hardcoded for mock
                     end_date = "2023-01-05" # Hardcoded for mock
                     mock_tool_output = get_historical_stock_prices(symbol, start_date, end_date, user_token=user_token_for_tools)
                     return {"output": f"I used get_historical_stock_prices. Output:\n{mock_tool_output}"}
-                
-                if "stock price" in prompt_text and is_tool_available("get_stock_price"):
-                    symbol = "AAPL" # Hardcoded for mock
-                    mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
-                    return {"output": f"I used get_stock_price. Output:\n{mock_tool_output}"}
-                
+
                 if "company news" in prompt_text and is_tool_available("get_company_news"):
                     symbol = "TSLA" # Hardcoded for mock
                     from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -323,8 +379,28 @@ class LLMService:
                     mock_tool_output = get_company_news(symbol, from_date, to_date, user_token=user_token_for_tools)
                     return {"output": f"I used get_company_news. Output:\n{mock_tool_output}"}
                 
-                if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
-                    code_to_run = "print('Mock Python analysis result for your data.')"
+                if "lookup stock symbol" in prompt_text and is_tool_available("lookup_stock_symbol"):
+                    company_name = "Google" # Hardcoded for mock
+                    mock_tool_output = lookup_stock_symbol(company_name, user_token=user_token_for_tools)
+                    return {"output": f"I used lookup_stock_symbol. Output:\n{mock_tool_output}"}
+
+                if "crypto price" in prompt_text and is_tool_available("get_crypto_price"):
+                    coin_id = "ethereum" # Default for mock
+                    mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
+                    return {"output": f"I used get_crypto_price. Output:\n{mock_tool_output}"}
+
+                if "historical crypto prices" in prompt_text and is_tool_available("get_historical_crypto_prices"):
+                    coin_id = "bitcoin" # Hardcoded for mock
+                    mock_tool_output = get_historical_crypto_prices(coin_id, "usd", 7, user_token=user_token_for_tools)
+                    return {"output": f"I used get_historical_crypto_prices. Output:\n{mock_tool_output}"}
+
+                if "lookup crypto id" in prompt_text and is_tool_available("get_crypto_id_by_symbol"):
+                    symbol = "sol" # Hardcoded for mock
+                    mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
+                    return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
+                
+                if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
+                    code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
                     mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=user_token_for_tools)
                     return {"output": f"I used python_interpreter_with_rbac. Output:\n{mock_tool_output}"}
                 
