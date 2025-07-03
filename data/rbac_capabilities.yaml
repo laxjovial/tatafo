@@ -11,6 +11,33 @@ capabilities:
     description: "Allows basic conversational chat with the AI assistant."
     roles: {} # No specific role overrides, everyone gets it by default
 
+  llm_temperature_control_enabled: # NEW CAPABILITY
+    default: False
+    description: "Allows the user to set the LLM's temperature (creativity) via the UI."
+    roles:
+      pro: True # Pro users can set temperature
+      premium: True
+      admin: True
+  
+  llm_default_temperature: # NEW CAPABILITY
+    default: 0.7 # Global default temperature if not overridden by tier/role
+    description: "The default LLM temperature for users who cannot control it, or the maximum allowed if control is enabled."
+    roles:
+      free: 0.5 # Free users get a more conservative temperature
+      user: 0.6
+      pro: 0.7
+      premium: 0.8
+      admin: 0.9 # Admins can have highest creativity by default
+
+  llm_max_temperature: # NEW CAPABILITY (Optional, but good for safety)
+    default: 1.0
+    description: "The maximum LLM temperature a user can set, even if control is enabled."
+    roles:
+      pro: 0.8
+      premium: 0.9
+      admin: 1.0
+
+
   # --- Shared Tools Capabilities ---
   web_search_enabled:
     default: False
@@ -97,7 +124,7 @@ capabilities:
   # --- Domain-Specific Tools Capabilities ---
   finance_tool_access:
     default: False
-    description: "Allows access to general financial tools (stock prices, company news)."
+    description: "Allows access to general financial tools (stock prices, company news, symbol lookup)."
     roles:
       pro: True
       premium: True
@@ -112,7 +139,7 @@ capabilities:
 
   crypto_tool_access:
     default: False
-    description: "Allows access to cryptocurrency-specific tools (prices, historical data)."
+    description: "Allows access to cryptocurrency-specific tools (prices, historical data, ID lookup)."
     roles:
       pro: True
       premium: True
