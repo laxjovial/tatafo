@@ -11,6 +11,9 @@ class ConfigManager:
     """
     Manages application configuration loaded from config.yml and Streamlit secrets.
     Implemented as a singleton to ensure a single, consistent configuration instance.
+    This manager now focuses on static application settings and secrets.
+    Dynamic configurations like RBAC capabilities and tier hierarchy are handled
+    by UserManager loading directly from Firestore.
     """
     _instance = None
     _is_loaded = False
@@ -85,8 +88,6 @@ class ConfigManager:
         """
         Retrieves a secret value.
         Prioritizes loaded Streamlit secrets (if available), otherwise looks in _secrets_data.
-        In a future backend-managed API key system, this method would be extended
-        to fetch from the database if not found locally.
         
         Args:
             key (str): The key for the secret value.
@@ -99,15 +100,6 @@ class ConfigManager:
         if key in self._secrets_data:
             return self._secrets_data[key]
         
-        # In a real backend, if not found in _secrets_data, you might try to fetch from a database
-        # Example (conceptual, requires database integration):
-        # from database.firestore_manager import FirestoreManager
-        # firestore_db = FirestoreManager().db
-        # api_keys_ref = firestore_db.collection("api_keys").document(key)
-        # api_key_doc = api_keys_ref.get()
-        # if api_key_doc.exists:
-        #     return api_key_doc.to_dict().get('value', default)
-
         logger.warning(f"Secret '{key}' not found in loaded secrets or Streamlit secrets.")
         return default
 
@@ -123,4 +115,5 @@ class ConfigManager:
 
 # Instantiate the ConfigManager as a singleton
 config_manager = ConfigManager()
+
 
