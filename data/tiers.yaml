@@ -1,26 +1,30 @@
 # data/tiers.yaml
 
-# Defines the hierarchy and properties of user tiers.
-# The 'level' determines the hierarchy (higher number means higher tier).
-# This is used for access control and feature differentiation.
+# This file defines the different user tiers and their hierarchical levels.
+# This serves as initial seed data for the Firestore-based dynamic tier management.
 
 tiers:
   free:
     level: 0
     description: "Basic access with limited features."
-  user: # A base tier for any registered user, often equivalent to 'free' but can be distinct
+  user: # A base tier for registered users, might have slightly more than 'free'
     level: 1
-    description: "Standard registered user access."
-  basic:
+    description: "Registered user with access to general features."
+  basic: # An entry-level paid tier, if applicable
     level: 2
-    description: "Enhanced access to general AI features and basic web search."
+    description: "Enhanced access with more capabilities."
   pro:
     level: 3
-    description: "Advanced features including data analysis, document management, and specialized AI assistants."
+    description: "Professional tier with advanced tools and higher limits."
   premium:
     level: 4
-    description: "Full access to all features, including advanced specialized assistants and export capabilities."
-  admin: # Special tier for administrators, typically has all capabilities
-    level: 99
-    description: "Administrator access with full control over users and system settings."
+    description: "Premium tier with full access to most features and highest limits."
+  admin:
+    level: 99 # Highest level, typically grants all capabilities
+    description: "Administrator access with full control over users and configurations."
+  dev: # New tier for developers, useful for testing specific features
+    level: 90
+    description: "Developer access for testing and debugging advanced features."
 
+# The actual capabilities for each tier are defined in rbac_capabilities.yaml
+# and managed dynamically via the admin panel.
