@@ -48,3 +48,24 @@ Specific Helper Methods: get_user_data, set_user_data, update_user_data, get_all
 Logging and Error Handling: Includes logging for operations and raises exceptions on errors for proper handling in calling functions.
 
 Now that we have firestore_manager.py, we need to update the backend/api/auth_api.py and backend/api/user_api.py to use this real Firestore integration instead of the mock dictionaries.
+
+
+
+1. database/firestore_manager.py (Updated for Global Config Management)
+I'm adding get_global_config and set_global_config methods to handle documents in a dedicated app_configs collection, which will store our rbac_capabilities and tiers data.
+database/firestore_manager.py (Updated for Global Config Management)
+Jul 3, 2:26 AM
+
+Open
+
+Key Changes in database/firestore_manager.py:
+
+New Global Config Methods:
+
+get_global_config(config_name: str): Retrieves a document (e.g., "rbac_capabilities", "tiers") from the app_configs public collection.
+
+set_global_config(config_name: str, data: Dict[str, Any]): Sets (creates or overwrites) a document in the app_configs public collection. This is what the admin UI/backend will use to update these configurations.
+
+Asynchronous Operations: All new methods are async to align with Firestore's asynchronous client library.
+
+Logging and Error Handling: Standard logging and exception handling are included.
