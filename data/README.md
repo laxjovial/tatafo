@@ -23,3 +23,17 @@ Jul 2, 7:12 AM
 Open
 
 Next Step: We need to update utils/user_manager.py to load and use these new rbac_capabilities.yaml and tiers.yaml files, making get_user_tier_capability more robust and flexible. We will also need to update main_app.py to load the tiers.yaml for its TIER_HIERARCHY.
+
+
+Implementing Dynamic RBAC - Part 5: Update data/rbac_capabilities.yaml and data/tiers.yaml (Initial Seed Data)
+These updates will serve as the initial default configurations that will be loaded into Firestore when the application first runs or when an admin explicitly seeds them.
+
+1. data/rbac_capabilities.yaml (Updated with New Capabilities)
+data/rbac_capabilities.yaml (Updated with New Capabilities - Seed Data)
+Jul 3, 2:49 AM
+
+Open
+
+2. data/tiers.yaml (Updated with New Tiers and Capabilities)
+data/tiers.yaml (Updated with New Tiers and Capabilities - Seed Data)
+Jul 3, 2:49 AM
