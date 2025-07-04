@@ -12,7 +12,7 @@ from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI # Example LLM for OpenAI
 from langchain_community.llms import GoogleGenerativeAI # Example LLM for Google
-from langchain_community.chat_models import ChatOllama # NEW: For Ollama
+from langchain_community.chat_models import ChatOllama # For Ollama
 from langchain_core.tools import Tool
 
 # Import config_manager
@@ -32,7 +32,7 @@ from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 # Import domain-specific tools
 from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices, lookup_stock_symbol
 from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
-# from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info # Future medical tools
+from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info # NEW: Import medical tools
 # from domain_tools.news_tools.news_tool import get_general_news # Future news tools
 
 logger = logging.getLogger(__name__)
@@ -176,6 +176,16 @@ class LLMService:
                         mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                         return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
                     
+                    if ("drug info" in prompt or "medication" in prompt) and is_tool_available("get_drug_info"): # NEW: Mock medical tool call
+                        drug_name = "Aspirin"
+                        mock_tool_output = get_drug_info(drug_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_drug_info. Output:\n{mock_tool_output}"}
+                    
+                    if ("symptom info" in prompt or "what causes" in prompt) and is_tool_available("get_symptom_info"): # NEW: Mock medical tool call
+                        symptom_name = "Headache"
+                        mock_tool_output = get_symptom_info(symptom_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_symptom_info. Output:\n{mock_tool_output}"}
+
                     if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
                         code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
                         mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=user_token_for_tools)
@@ -200,7 +210,7 @@ class LLMService:
                         return {"output": f"I used generate_and_save_chart. Output:\n{mock_tool_output}"}
 
                     # Fallback if no specific tool action is simulated
-                    return {"output": f"Mock LLM agent response (provider={self.model_name}, temp={self.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
+                    return {"output": f"Mock LLM agent response (provider={self.model_name.split('-')[0]}, model={self.model_name}, temp={self.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
 
             return MockLLM(effective_temperature, effective_model_name)
 
@@ -233,7 +243,7 @@ class LLMService:
                     return {"output": f"Mock Google LLM agent response (provider={self.model_name}, temp={self.temperature}) to: {prompt}. (Tool actions would be simulated here)"}
             return MockLLM(effective_temperature, effective_model_name)
 
-        elif effective_llm_provider == "ollama": # NEW: Ollama support
+        elif effective_llm_provider == "ollama":
             # UNCOMMENT THIS FOR REAL SETUP
             # return ChatOllama(model=effective_model_name, temperature=effective_temperature)
             
@@ -273,8 +283,7 @@ class LLMService:
             str: The AI's response content.
         """
         try:
-            # For chat_completion, we'll load a temporary LLM instance with the specified parameters
-            temp_llm = self._load_llm(user_token="default", # Use default user for chat_completion if no agent context
+            temp_llm = self._load_llm(user_token="default",
                                       user_provided_temperature=temperature,
                                       user_provided_llm_provider=llm_provider,
                                       user_provided_model_name=model_name)
@@ -307,10 +316,8 @@ class LLMService:
         """
         logger.info(f"Agent chat initiated for user: {user_token}, prompt: '{prompt[:100]}...', user_provided_temp: {user_provided_temperature}, user_provided_provider: {user_provided_llm_provider}, user_provided_model: {user_provided_model_name}")
 
-        # Load LLM for this request with the determined temperature and model selection
         self.llm = self._load_llm(user_token, user_provided_temperature, user_provided_llm_provider, user_provided_model_name)
 
-        # Dynamically collect tools based on user's capabilities
         available_tools = []
 
         # Shared Tools
@@ -347,10 +354,9 @@ class LLMService:
             available_tools.extend([get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol])
             logger.debug(f"Crypto tools added for user {user_token}")
 
-        # Future Medical Tools
-        # if get_user_tier_capability(user_token, 'medical_tool_access', False):
-        #     available_tools.extend([get_drug_info, get_symptom_info])
-        #     logger.debug(f"Medical tools added for user {user_token}")
+        if get_user_tier_capability(user_token, 'medical_tool_access', False): # NEW: Add medical tools
+            available_tools.extend([get_drug_info, get_symptom_info])
+            logger.debug(f"Medical tools added for user {user_token}")
 
         # Future News Tools
         # if get_user_tier_capability(user_token, 'news_tool_access', False):
@@ -369,7 +375,6 @@ class LLMService:
         langchain_chat_history = [self._convert_to_langchain_message(msg) for msg in chat_history]
 
         # Define the prompt template for the agent
-        # This prompt guides the LLM to use the tools effectively.
         prompt_template = ChatPromptTemplate.from_messages([
             SystemMessage(
                 "You are a helpful AI assistant with access to various tools. "
@@ -383,7 +388,8 @@ class LLMService:
                 "For current cryptocurrency prices, use `get_crypto_price`. "
                 "For historical cryptocurrency prices, use `get_historical_crypto_prices`. "
                 "To find a cryptocurrency ID from its symbol, use `get_crypto_id_by_symbol`. "
-                "For querying uploaded documents, use `query_uploaded_docs`. "
+                "For drug information, use `get_drug_info`. " # NEW: Added to prompt
+                "For symptom information, use `get_symptom_info`. " # NEW: Added to prompt
                 "For **data analysis**, complex calculations, time series analysis, regression analysis, "
                 "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
@@ -471,7 +477,17 @@ class LLMService:
                     mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                     return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
                 
-                if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
+                if ("drug info" in prompt_text or "medication" in prompt_text) and is_tool_available("get_drug_info"):
+                    drug_name = "Aspirin"
+                    mock_tool_output = get_drug_info(drug_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_drug_info. Output:\n{mock_tool_output}"}
+                
+                if ("symptom info" in prompt_text or "what causes" in prompt_text) and is_tool_available("get_symptom_info"):
+                    symptom_name = "Headache"
+                    mock_tool_output = get_symptom_info(symptom_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_symptom_info. Output:\n{mock_tool_output}"}
+
+                if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
                     code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
                     mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=user_token_for_tools)
                     return {"output": f"I used python_interpreter_with_rbac. Output:\n{mock_tool_output}"}
