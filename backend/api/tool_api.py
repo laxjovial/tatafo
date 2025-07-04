@@ -60,3 +60,4 @@ async def chat_with_ai_agent(request: ChatRequest):
         logger.critical(f"Unexpected error in chat_with_ai_agent: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
 
+ 
