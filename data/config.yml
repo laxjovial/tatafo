@@ -52,3 +52,4 @@ payment_gateways:
     client_id_secret_path: "paypal_client_id"
     client_secret_secret_path: "paypal_client_secret"
   # Add other payment methods here
+ 
