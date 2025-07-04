@@ -20,7 +20,9 @@ class ChatRequest(BaseModel):
     prompt: str = Field(..., description="The user's current prompt or message.")
     chat_history: List[Dict[str, str]] = Field(default_factory=list, description="The full chat history, as a list of {'role': str, 'content': str} dictionaries.")
     user_token: str = Field(..., description="The user's authentication token (e.g., Firebase ID token or mock token).")
-    temperature: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional: The LLM temperature (creativity) for this request. Must be between 0.0 and 1.0.") # NEW FIELD
+    temperature: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional: The LLM temperature (creativity) for this request. Must be between 0.0 and 1.0.")
+    llm_provider: Optional[str] = Field(None, description="Optional: The desired LLM provider (e.g., 'openai', 'google', 'ollama').") # NEW FIELD
+    model_name: Optional[str] = Field(None, description="Optional: The desired LLM model name (e.g., 'gpt-4o', 'gemini-pro', 'llama2').") # NEW FIELD
 
 # Pydantic model for outgoing chat responses
 class ChatResponse(BaseModel):
@@ -34,7 +36,7 @@ async def chat_with_ai_agent(request: ChatRequest):
     Endpoint for interacting with the AI agent.
     The agent can use various tools based on the user's prompt and capabilities.
     """
-    logger.info(f"Received chat request from user: {request.user_token}, prompt: '{request.prompt[:100]}...', temp: {request.temperature}")
+    logger.info(f"Received chat request from user: {request.user_token}, prompt: '{request.prompt[:100]}...', temp: {request.temperature}, provider: {request.llm_provider}, model: {request.model_name}")
     
     try:
         # Call the LLMService's chat_with_agent method
@@ -43,7 +45,9 @@ async def chat_with_ai_agent(request: ChatRequest):
             prompt=request.prompt,
             chat_history=request.chat_history,
             user_token=request.user_token,
-            user_provided_temperature=request.temperature # NEW: Pass temperature
+            user_provided_temperature=request.temperature,
+            user_provided_llm_provider=request.llm_provider, # NEW: Pass provider
+            user_provided_model_name=request.model_name # NEW: Pass model name
         )
         
         # In a more advanced setup, the agent_response_content might be a structured object
@@ -59,5 +63,3 @@ async def chat_with_ai_agent(request: ChatRequest):
     except Exception as e:
         logger.critical(f"Unexpected error in chat_with_ai_agent: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
-
- 
