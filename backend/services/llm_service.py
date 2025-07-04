@@ -1,10 +1,10 @@
 # backend/services/llm_service.py
 
 import logging
-import json # Added for chart_generation_tool mock
+import json
 from typing import List, Dict, Any, Optional
-from fastapi import HTTPException, status # Import HTTPException for error handling
-from datetime import datetime, timedelta # Needed for mock agent's date calculations
+from fastapi import HTTPException, status
+from datetime import datetime, timedelta
 
 # Langchain Imports - UNCOMMENT THESE FOR REAL SETUP
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -12,7 +12,8 @@ from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI # Example LLM for OpenAI
 from langchain_community.llms import GoogleGenerativeAI # Example LLM for Google
-from langchain_core.tools import Tool # This is already imported by @tool decorator, but good to have explicitly
+from langchain_community.chat_models import ChatOllama # NEW: For Ollama
+from langchain_core.tools import Tool
 
 # Import config_manager
 from config.config_manager import config_manager
@@ -23,7 +24,7 @@ from utils.user_manager import get_user_tier_capability, get_current_user
 # Import all shared tools
 from shared_tools.python_interpreter_tool import python_interpreter_with_rbac
 from shared_tools.scraper_tool import scrape_web
-from shared_tools.doc_summarizer import summarize_document # Not directly a @tool, will be wrapped if needed
+from shared_tools.doc_summarizer import summarize_document
 from shared_tools.chart_generation_tool import generate_and_save_chart
 from shared_tools.sentiment_analysis_tool import analyze_sentiment
 from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
@@ -50,99 +51,128 @@ class LLMService:
         return cls._instance
 
     def _initialize(self):
-        """Initializes LLM and related components."""
-        self.llm = self._load_llm()
-        # Agent executor will be created dynamically per request based on user tools
-        logger.info("LLMService initialized.")
+        """Initializes LLM and related components. LLM is now loaded dynamically per request."""
+        logger.info("LLMService initialized. LLM will be loaded per request based on user preferences and RBAC.")
+        self.llm = None # Initialize as None, will be set in chat_with_agent
 
-    def _load_llm(self):
-        """Loads the appropriate LLM based on configuration."""
-        llm_provider = config_manager.get("llm.provider", "openai")
-        model_name = config_manager.get("llm.model_name", "gpt-3.5-turbo")
-        temperature = config_manager.get("llm.temperature", 0.5)
-        api_key = None
+    def _load_llm(self, user_token: str, 
+                  user_provided_temperature: Optional[float] = None,
+                  user_provided_llm_provider: Optional[str] = None,
+                  user_provided_model_name: Optional[str] = None):
+        """
+        Loads the appropriate LLM based on configuration, user's RBAC capabilities,
+        and user-provided selections for temperature, provider, and model name.
+        """
+        # Determine effective temperature based on RBAC
+        can_control_temp = get_user_tier_capability(user_token, 'llm_temperature_control_enabled', False)
+        tier_default_temp = get_user_tier_capability(user_token, 'llm_default_temperature', config_manager.get('llm.temperature', 0.7))
+        max_allowed_temp = get_user_tier_capability(user_token, 'llm_max_temperature', 1.0)
 
-        if llm_provider == "openai":
+        effective_temperature = tier_default_temp
+        if can_control_temp and user_provided_temperature is not None:
+            effective_temperature = min(user_provided_temperature, max_allowed_temp)
+            logger.info(f"User {user_token} can control temperature. Using provided {user_provided_temperature}, capped at {max_allowed_temp}. Effective: {effective_temperature}")
+        else:
+            logger.info(f"User {user_token} cannot control temperature or none provided. Using tier default: {effective_temperature}")
+
+        # Determine effective LLM provider and model name based on RBAC
+        can_select_model = get_user_tier_capability(user_token, 'llm_model_selection_enabled', False)
+        
+        effective_llm_provider = config_manager.get("llm.provider", "openai")
+        effective_model_name = config_manager.get("llm.model_name", "gpt-3.5-turbo")
+
+        if can_select_model:
+            if user_provided_llm_provider:
+                effective_llm_provider = user_provided_llm_provider
+            if user_provided_model_name:
+                effective_model_name = user_provided_model_name
+            logger.info(f"User {user_token} can select model. Using provided provider '{user_provided_llm_provider}' and model '{user_provided_model_name}'. Effective: {effective_llm_provider}/{effective_model_name}")
+        else:
+            logger.info(f"User {user_token} cannot select model. Using config defaults: {effective_llm_provider}/{effective_model_name}")
+
+        api_key = None # Will be set based on provider
+
+        if effective_llm_provider == "openai":
             api_key = config_manager.get_secret("openai_api_key")
             if not api_key:
                 logger.error("OpenAI API key not found in secrets.")
-                # For a real app, this should be a critical error or a fallback to a free model
                 raise ValueError("OpenAI API key is required for OpenAI LLM provider.")
             
             # UNCOMMENT THIS FOR REAL SETUP
-            # return ChatOpenAI(model_name=model_name, temperature=temperature, api_key=api_key)
+            # return ChatOpenAI(model_name=effective_model_name, temperature=effective_temperature, api_key=api_key)
             
-            logger.warning("Using mock LLM for backend. Uncomment Langchain LLM import and instantiation for real use.")
+            logger.warning(f"Using mock LLM for backend (OpenAI). Temp: {effective_temperature}, Model: {effective_model_name}. Uncomment Langchain LLM import and instantiation for real use.")
             class MockLLM:
+                def __init__(self, temp: float, model: str):
+                    self.temperature = temp
+                    self.model_name = model
+                    logger.info(f"Mock LLM initialized with temperature: {self.temperature}, model: {self.model_name}")
+
                 def invoke(self, messages: List[BaseMessage]) -> Any:
-                    # Simulate LLM response for chat_completion
                     last_user_message = messages[-1].content if messages and isinstance(messages[-1], HumanMessage) else "No user message"
-                    return AIMessage(content=f"Mock LLM response to: {last_user_message}")
+                    return AIMessage(content=f"Mock LLM response (provider=OpenAI, model={self.model_name}, temp={self.temperature}) to: {last_user_message}")
                 
                 def stream(self, messages: List[BaseMessage]) -> Any:
-                    yield AIMessage(content=f"Mock streaming part 1...")
-                    yield AIMessage(content=f"Mock streaming part 2...")
+                    yield AIMessage(content=f"Mock streaming part 1 (OpenAI, {self.model_name}, {self.temperature})...")
+                    yield AIMessage(content=f"Mock streaming part 2 (OpenAI, {self.model_name}, {self.temperature})...")
                 
-                # Mock for agent's invoke method (simplified)
-                def _call(self, inputs: Dict[str, Any], stop: Optional[List[str]] = None) -> Dict[str, Any]:
-                    # This mock simulates an agent's response, potentially calling a tool.
-                    # It's a very simplified agent loop for testing.
+                async def _call(self, inputs: Dict[str, Any], stop: Optional[List[str]] = None) -> Dict[str, Any]:
                     prompt = inputs.get('input', '').lower()
-                    tools_available_names = [t.name for t in inputs.get('tools', [])] # Extract tool names from mock tools list
-                    user_token_for_tools = inputs.get('user_token', 'default') # Pass user_token to mock tool calls
+                    tools_available_names = [t.name for t in inputs.get('tools', [])]
+                    user_token_for_tools = inputs.get('user_token', 'default')
                     
-                    # Helper to check if tool is available by name
                     def is_tool_available(tool_name: str) -> bool:
-                        return any(t.name == tool_name for t in tools_available_names)
+                        return tool_name in tools_available_names
 
                     # Simulate tool calls based on prompt keywords and available tools
+                    if ("price of apple" in prompt or "apple stock" in prompt) and is_tool_available("lookup_stock_symbol") and is_tool_available("get_stock_price"):
+                        mock_symbol = lookup_stock_symbol("Apple", user_token=user_token_for_tools)
+                        if "Error" not in mock_symbol:
+                            mock_tool_output = get_stock_price(mock_symbol, user_token=user_token_for_tools)
+                            return {"output": f"I used lookup_stock_symbol to get '{mock_symbol}' and then get_stock_price. Output:\n{mock_tool_output}"}
+                    
+                    if ("price of bitcoin" in prompt or "btc price" in prompt) and is_tool_available("get_crypto_id_by_symbol") and is_tool_available("get_crypto_price"):
+                        mock_coin_id = get_crypto_id_by_symbol("btc", user_token=user_token_for_tools)
+                        if "Error" not in mock_coin_id:
+                            mock_tool_output = get_crypto_price(mock_coin_id, user_token=user_token_for_tools)
+                            return {"output": f"I used get_crypto_id_by_symbol to get '{mock_coin_id}' and then get_crypto_price. Output:\n{mock_tool_output}"}
+
                     if "stock price" in prompt and is_tool_available("get_stock_price"):
-                        # Prioritize symbol lookup if company name is mentioned
-                        if "apple" in prompt and is_tool_available("lookup_stock_symbol"):
-                            symbol = lookup_stock_symbol("Apple", user_token=user_token_for_tools)
-                            if "Error" not in symbol:
-                                mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
-                                return {"output": f"I used lookup_stock_symbol and then get_stock_price. Output:\n{mock_tool_output}"}
-                        symbol = "AAPL" # Default to a symbol for mock if no lookup
+                        symbol = "AAPL"
                         mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
                         return {"output": f"I used get_stock_price. Output:\n{mock_tool_output}"}
                     
                     if "historical stock prices" in prompt and is_tool_available("get_historical_stock_prices"):
-                        symbol = "MSFT" # Hardcoded for mock
-                        start_date = "2023-01-01" # Hardcoded for mock
-                        end_date = "2023-01-05" # Hardcoded for mock
+                        symbol = "MSFT"
+                        start_date = "2023-01-01"
+                        end_date = "2023-01-05"
                         mock_tool_output = get_historical_stock_prices(symbol, start_date, end_date, user_token=user_token_for_tools)
                         return {"output": f"I used get_historical_stock_prices. Output:\n{mock_tool_output}"}
 
                     if "company news" in prompt and is_tool_available("get_company_news"):
-                        symbol = "TSLA" # Hardcoded for mock
+                        symbol = "TSLA"
                         from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
                         to_date = datetime.now().strftime("%Y-%m-%d")
                         mock_tool_output = get_company_news(symbol, from_date, to_date, user_token=user_token_for_tools)
                         return {"output": f"I used get_company_news. Output:\n{mock_tool_output}"}
                     
                     if "lookup stock symbol" in prompt and is_tool_available("lookup_stock_symbol"):
-                        company_name = "Google" # Hardcoded for mock
+                        company_name = "Google"
                         mock_tool_output = lookup_stock_symbol(company_name, user_token=user_token_for_tools)
                         return {"output": f"I used lookup_stock_symbol. Output:\n{mock_tool_output}"}
 
                     if "crypto price" in prompt and is_tool_available("get_crypto_price"):
-                        if "bitcoin" in prompt and is_tool_available("get_crypto_id_by_symbol"):
-                            coin_id = get_crypto_id_by_symbol("btc", user_token=user_token_for_tools)
-                            if "Error" not in coin_id:
-                                mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
-                                return {"output": f"I used get_crypto_id_by_symbol and then get_crypto_price. Output:\n{mock_tool_output}"}
-                        coin_id = "ethereum" # Default for mock
+                        coin_id = "ethereum"
                         mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
                         return {"output": f"I used get_crypto_price. Output:\n{mock_tool_output}"}
 
                     if "historical crypto prices" in prompt and is_tool_available("get_historical_crypto_prices"):
-                        coin_id = "bitcoin" # Hardcoded for mock
+                        coin_id = "bitcoin"
                         mock_tool_output = get_historical_crypto_prices(coin_id, "usd", 7, user_token=user_token_for_tools)
                         return {"output": f"I used get_historical_crypto_prices. Output:\n{mock_tool_output}"}
 
                     if "lookup crypto id" in prompt and is_tool_available("get_crypto_id_by_symbol"):
-                        symbol = "sol" # Hardcoded for mock
+                        symbol = "sol"
                         mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                         return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
                     
@@ -170,59 +200,97 @@ class LLMService:
                         return {"output": f"I used generate_and_save_chart. Output:\n{mock_tool_output}"}
 
                     # Fallback if no specific tool action is simulated
-                    return {"output": f"Mock LLM agent response to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
+                    return {"output": f"Mock LLM agent response (provider={self.model_name}, temp={self.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
 
-            return MockLLM()
+            return MockLLM(effective_temperature, effective_model_name)
 
-        elif llm_provider == "google":
+        elif effective_llm_provider == "google":
             api_key = config_manager.get_secret("google_api_key")
             if not api_key:
                 logger.error("Google API key not found in secrets.")
                 raise ValueError("Google API key is required for Google LLM provider.")
             
             # UNCOMMENT THIS FOR REAL SETUP
-            # return GoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=api_key)
+            # return GoogleGenerativeAI(model=effective_model_name, temperature=effective_temperature, google_api_key=api_key)
             
-            logger.warning("Using mock LLM for backend. Uncomment Langchain LLM import and instantiation for real use.")
+            logger.warning(f"Using mock LLM for backend (Google). Temp: {effective_temperature}, Model: {effective_model_name}. Uncomment Langchain LLM import and instantiation for real use.")
             class MockLLM:
+                def __init__(self, temp: float, model: str):
+                    self.temperature = temp
+                    self.model_name = model
+                    logger.info(f"Mock Google LLM initialized with temperature: {self.temperature}, model: {self.model_name}")
+
                 def invoke(self, messages: List[BaseMessage]) -> Any:
                     last_user_message = messages[-1].content if messages and isinstance(messages[-1], HumanMessage) else "No user message"
-                    return AIMessage(content=f"Mock Google LLM response to: {last_user_message}")
+                    return AIMessage(content=f"Mock Google LLM response (provider=Google, model={self.model_name}, temp={self.temperature}) to: {last_user_message}")
                 
                 def stream(self, messages: List[BaseMessage]) -> Any:
-                    yield AIMessage(content=f"Mock Google streaming part 1...")
-                    yield AIMessage(content=f"Mock Google streaming part 2...")
+                    yield AIMessage(content=f"Mock Google streaming part 1 (Google, {self.model_name}, {self.temperature})...")
+                    yield AIMessage(content=f"Mock Google streaming part 2 (Google, {self.model_name}, {self.temperature})...")
                 
-                def _call(self, inputs: Dict[str, Any], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+                async def _call(self, inputs: Dict[str, Any], stop: Optional[List[str]] = None) -> Dict[str, Any]:
                     prompt = inputs.get('input', '')
-                    # Simplified agent mock for Google LLM
-                    return {"output": f"Mock Google LLM agent response to: {prompt}. (Tool actions would be simulated here)"}
-            return MockLLM()
-        else:
-            raise ValueError(f"Unsupported LLM provider: {llm_provider}")
+                    return {"output": f"Mock Google LLM agent response (provider={self.model_name}, temp={self.temperature}) to: {prompt}. (Tool actions would be simulated here)"}
+            return MockLLM(effective_temperature, effective_model_name)
 
-    def chat_completion(self, messages: List[Dict[str, str]]) -> str:
+        elif effective_llm_provider == "ollama": # NEW: Ollama support
+            # UNCOMMENT THIS FOR REAL SETUP
+            # return ChatOllama(model=effective_model_name, temperature=effective_temperature)
+            
+            logger.warning(f"Using mock LLM for backend (Ollama). Temp: {effective_temperature}, Model: {effective_model_name}. Uncomment Langchain LLM import and instantiation for real use.")
+            class MockLLM:
+                def __init__(self, temp: float, model: str):
+                    self.temperature = temp
+                    self.model_name = model
+                    logger.info(f"Mock Ollama LLM initialized with temperature: {self.temperature}, model: {self.model_name}")
+
+                def invoke(self, messages: List[BaseMessage]) -> Any:
+                    last_user_message = messages[-1].content if messages and isinstance(messages[-1], HumanMessage) else "No user message"
+                    return AIMessage(content=f"Mock Ollama LLM response (provider=Ollama, model={self.model_name}, temp={self.temperature}) to: {last_user_message}")
+                
+                def stream(self, messages: List[BaseMessage]) -> Any:
+                    yield AIMessage(content=f"Mock Ollama streaming part 1 (Ollama, {self.model_name}, {self.temperature})...")
+                    yield AIMessage(content=f"Mock Ollama streaming part 2 (Ollama, {self.model_name}, {self.temperature})...")
+                
+                async def _call(self, inputs: Dict[str, Any], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+                    prompt = inputs.get('input', '')
+                    return {"output": f"Mock Ollama LLM agent response (provider={self.model_name}, temp={self.temperature}) to: {prompt}. (Tool actions would be simulated here)"}
+            return MockLLM(effective_temperature, effective_model_name)
+        else:
+            raise ValueError(f"Unsupported LLM provider: {effective_llm_provider}")
+
+    def chat_completion(self, messages: List[Dict[str, str]], temperature: Optional[float] = None,
+                        llm_provider: Optional[str] = None, model_name: Optional[str] = None) -> str:
         """
         Generates a basic chat completion using the configured LLM (without tools).
         
         Args:
-            messages (List[Dict[str, str]]): A list of message dictionaries
-                                             (e.g., [{"role": "user", "content": "Hello"}]).
-        
+            messages (List[Dict[str, str]]): A list of message dictionaries.
+            temperature (float, optional): The LLM temperature to use for this completion.
+            llm_provider (str, optional): The LLM provider to use for this completion.
+            model_name (str, optional): The LLM model name to use for this completion.
         Returns:
             str: The AI's response content.
         """
         try:
-            # Convert dict messages to Langchain BaseMessage objects
+            # For chat_completion, we'll load a temporary LLM instance with the specified parameters
+            temp_llm = self._load_llm(user_token="default", # Use default user for chat_completion if no agent context
+                                      user_provided_temperature=temperature,
+                                      user_provided_llm_provider=llm_provider,
+                                      user_provided_model_name=model_name)
+            
             langchain_messages = [self._convert_to_langchain_message(msg) for msg in messages]
-            response = self.llm.invoke(langchain_messages)
+            response = temp_llm.invoke(langchain_messages)
             
             return response.content
         except Exception as e:
             logger.error(f"Error during LLM chat completion: {e}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"LLM chat completion failed: {e}")
 
-    async def chat_with_agent(self, prompt: str, chat_history: List[Dict[str, str]], user_token: str) -> str:
+    async def chat_with_agent(self, prompt: str, chat_history: List[Dict[str, str]], user_token: str, 
+                              user_provided_temperature: Optional[float] = None,
+                              user_provided_llm_provider: Optional[str] = None,
+                              user_provided_model_name: Optional[str] = None) -> str:
         """
         Orchestrates a chat with an agent, dynamically providing tools based on user's capabilities.
         This method is now fully implemented to use Langchain's AgentExecutor.
@@ -231,11 +299,16 @@ class LLMService:
             prompt (str): The current user prompt.
             chat_history (List[Dict[str, str]]): The full chat history.
             user_token (str): The user's authentication token for RBAC checks within tools.
-        
+            user_provided_temperature (float, optional): The temperature provided by the user from the frontend.
+            user_provided_llm_provider (str, optional): The LLM provider provided by the user from the frontend.
+            user_provided_model_name (str, optional): The LLM model name provided by the user from the frontend.
         Returns:
             str: The agent's response.
         """
-        logger.info(f"Agent chat initiated for user: {user_token}, prompt: '{prompt[:100]}...'")
+        logger.info(f"Agent chat initiated for user: {user_token}, prompt: '{prompt[:100]}...', user_provided_temp: {user_provided_temperature}, user_provided_provider: {user_provided_llm_provider}, user_provided_model: {user_provided_model_name}")
+
+        # Load LLM for this request with the determined temperature and model selection
+        self.llm = self._load_llm(user_token, user_provided_temperature, user_provided_llm_provider, user_provided_model_name)
 
         # Dynamically collect tools based on user's capabilities
         available_tools = []
@@ -263,7 +336,7 @@ class LLMService:
 
         # Domain-specific Tools
         if get_user_tier_capability(user_token, 'finance_tool_access', False):
-            available_tools.extend([get_stock_price, get_company_news, lookup_stock_symbol]) # Added lookup_stock_symbol
+            available_tools.extend([get_stock_price, get_company_news, lookup_stock_symbol])
             logger.debug(f"Finance tools (current price, company news, symbol lookup) added for user {user_token}")
         
         if get_user_tier_capability(user_token, 'historical_data_access', False):
@@ -287,7 +360,10 @@ class LLMService:
 
         if not available_tools:
             logger.info(f"No specialized tools available for user {user_token}. Falling back to chat completion.")
-            return self.chat_completion(chat_history + [{"role": "user", "content": prompt}])
+            return self.chat_completion(chat_history + [{"role": "user", "content": prompt}], 
+                                        temperature=user_provided_temperature,
+                                        llm_provider=user_provided_llm_provider,
+                                        model_name=user_provided_model_name)
 
         # Convert chat history to Langchain BaseMessage format
         langchain_chat_history = [self._convert_to_langchain_message(msg) for msg in chat_history]
@@ -303,25 +379,25 @@ class LLMService:
                 "For current stock prices, use `get_stock_price`. "
                 "For historical stock prices, use `get_historical_stock_prices`. "
                 "For company news, use `get_company_news`. "
-                "To find a stock symbol from a company name, use `lookup_stock_symbol`. " # Added to prompt
+                "To find a stock symbol from a company name, use `lookup_stock_symbol`. "
                 "For current cryptocurrency prices, use `get_crypto_price`. "
                 "For historical cryptocurrency prices, use `get_historical_crypto_prices`. "
-                "To find a cryptocurrency ID from its symbol, use `get_crypto_id_by_symbol`. " # Added to prompt
+                "To find a cryptocurrency ID from its symbol, use `get_crypto_id_by_symbol`. "
                 "For querying uploaded documents, use `query_uploaded_docs`. "
-                "For data analysis, complex calculations, time series analysis, regression analysis, "
-                "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. " # Enhanced ML prompting
+                "For **data analysis**, complex calculations, time series analysis, regression analysis, "
+                "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
                 "Always provide comprehensive answers based on tool outputs. "
                 "If a tool call fails, inform the user and try to explain why or suggest alternatives."
                 "When providing historical data, if asked to plot, use `generate_and_save_chart` with the JSON output from `get_historical_stock_prices` or `get_historical_crypto_prices`."
                 "When analyzing data from uploaded documents, use `query_uploaded_docs` first, then pass the relevant content to `python_interpreter_with_rbac` for analysis."
                 "Remember to pass the `user_token` to any tool that requires it."
-                "If a user asks for a stock by name (e.g., 'Apple'), first use `lookup_stock_symbol` to get the ticker, then use the appropriate stock tool." # Explicit chaining
-                "If a user asks for crypto by symbol (e.g., 'btc'), first use `get_crypto_id_by_symbol` to get the ID, then use the appropriate crypto tool." # Explicit chaining
+                "If a user asks for a stock by name (e.g., 'Apple'), first use `lookup_stock_symbol` to get the ticker, then use the appropriate stock tool."
+                "If a user asks for crypto by symbol (e.g., 'btc'), first use `get_crypto_id_by_symbol` to get the ID, then use the appropriate crypto tool."
             ),
-            *langchain_chat_history, # Previous chat history
-            HumanMessage(content="{input}"), # Current user input
-            AIMessage(content="{agent_scratchpad}"), # Where agent's thoughts and tool calls go
+            *langchain_chat_history,
+            HumanMessage(content="{input}"),
+            AIMessage(content="{agent_scratchpad}"),
         ])
 
         # Create the Langchain agent
@@ -335,19 +411,15 @@ class LLMService:
                 self.llm = llm
                 self.tools = tools
                 self.prompt = prompt
-                logger.info(f"MockAgentExecutor initialized with {len(tools)} tools.")
+                logger.info(f"MockAgentExecutor initialized with {len(tools)} tools. LLM Provider: {self.llm.model_name.split('-')[0]}, Model: {self.llm.model_name}, Temp: {self.llm.temperature}")
 
             async def invoke(self, inputs: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-                # Simulate agent logic: check prompt for keywords and simulate tool calls
                 prompt_text = inputs.get('input', '').lower()
-                user_token_for_tools = inputs.get('user_token', 'default') # Pass user_token to mock tool calls
+                user_token_for_tools = inputs.get('user_token', 'default')
                 
-                # Helper to check if tool is available by name
                 def is_tool_available(tool_name: str) -> bool:
                     return any(t.name == tool_name for t in self.tools)
 
-                # Simulate tool calls based on prompt keywords and available tools
-                # Prioritize lookup tools if relevant keywords are present
                 if ("price of apple" in prompt_text or "apple stock" in prompt_text) and is_tool_available("lookup_stock_symbol") and is_tool_available("get_stock_price"):
                     mock_symbol = lookup_stock_symbol("Apple", user_token=user_token_for_tools)
                     if "Error" not in mock_symbol:
@@ -361,41 +433,41 @@ class LLMService:
                         return {"output": f"I used get_crypto_id_by_symbol to get '{mock_coin_id}' and then get_crypto_price. Output:\n{mock_tool_output}"}
 
                 if "stock price" in prompt_text and is_tool_available("get_stock_price"):
-                    symbol = "AAPL" # Default to a symbol for mock if no lookup
+                    symbol = "AAPL"
                     mock_tool_output = get_stock_price(symbol, user_token=user_token_for_tools)
                     return {"output": f"I used get_stock_price. Output:\n{mock_tool_output}"}
                 
                 if "historical stock prices" in prompt_text and is_tool_available("get_historical_stock_prices"):
-                    symbol = "MSFT" # Hardcoded for mock
-                    start_date = "2023-01-01" # Hardcoded for mock
-                    end_date = "2023-01-05" # Hardcoded for mock
+                    symbol = "MSFT"
+                    start_date = "2023-01-01"
+                    end_date = "2023-01-05"
                     mock_tool_output = get_historical_stock_prices(symbol, start_date, end_date, user_token=user_token_for_tools)
                     return {"output": f"I used get_historical_stock_prices. Output:\n{mock_tool_output}"}
 
                 if "company news" in prompt_text and is_tool_available("get_company_news"):
-                    symbol = "TSLA" # Hardcoded for mock
+                    symbol = "TSLA"
                     from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
                     to_date = datetime.now().strftime("%Y-%m-%d")
                     mock_tool_output = get_company_news(symbol, from_date, to_date, user_token=user_token_for_tools)
                     return {"output": f"I used get_company_news. Output:\n{mock_tool_output}"}
                 
                 if "lookup stock symbol" in prompt_text and is_tool_available("lookup_stock_symbol"):
-                    company_name = "Google" # Hardcoded for mock
+                    company_name = "Google"
                     mock_tool_output = lookup_stock_symbol(company_name, user_token=user_token_for_tools)
                     return {"output": f"I used lookup_stock_symbol. Output:\n{mock_tool_output}"}
 
                 if "crypto price" in prompt_text and is_tool_available("get_crypto_price"):
-                    coin_id = "ethereum" # Default for mock
+                    coin_id = "ethereum"
                     mock_tool_output = get_crypto_price(coin_id, user_token=user_token_for_tools)
                     return {"output": f"I used get_crypto_price. Output:\n{mock_tool_output}"}
 
                 if "historical crypto prices" in prompt_text and is_tool_available("get_historical_crypto_prices"):
-                    coin_id = "bitcoin" # Hardcoded for mock
+                    coin_id = "bitcoin"
                     mock_tool_output = get_historical_crypto_prices(coin_id, "usd", 7, user_token=user_token_for_tools)
                     return {"output": f"I used get_historical_crypto_prices. Output:\n{mock_tool_output}"}
 
                 if "lookup crypto id" in prompt_text and is_tool_available("get_crypto_id_by_symbol"):
-                    symbol = "sol" # Hardcoded for mock
+                    symbol = "sol"
                     mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                     return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
                 
@@ -423,11 +495,11 @@ class LLMService:
                     return {"output": f"I used generate_and_save_chart. Output:\n{mock_tool_output}"}
 
                 # Fallback if no specific tool action is simulated
-                return {"output": f"Mock LLM agent response to: '{prompt_text}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
+                return {"output": f"Mock LLM agent response (provider={self.llm.model_name.split('-')[0]}, model={self.llm.model_name}, temp={self.llm.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
 
-        agent_executor = MockAgentExecutor(self.llm, available_tools, prompt_template) # Use mock agent executor
+        agent_executor = MockAgentExecutor(self.llm, available_tools, prompt_template)
 
-        response = await agent_executor.invoke({"input": prompt, "chat_history": langchain_chat_history, "user_token": user_token, "tools": available_tools}) # Pass available_tools to mock agent
+        response = await agent_executor.invoke({"input": prompt, "chat_history": langchain_chat_history, "user_token": user_token, "tools": available_tools})
 
         return response["output"]
 
