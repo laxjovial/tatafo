@@ -32,8 +32,8 @@ from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 # Import domain-specific tools
 from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices, lookup_stock_symbol
 from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
-from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info # NEW: Import medical tools
-# from domain_tools.news_tools.news_tool import get_general_news # Future news tools
+from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
+from domain_tools.news_tools.news_tool import get_general_news # NEW: Import news tool
 
 logger = logging.getLogger(__name__)
 
@@ -176,15 +176,20 @@ class LLMService:
                         mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                         return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
                     
-                    if ("drug info" in prompt or "medication" in prompt) and is_tool_available("get_drug_info"): # NEW: Mock medical tool call
+                    if ("drug info" in prompt or "medication" in prompt) and is_tool_available("get_drug_info"):
                         drug_name = "Aspirin"
                         mock_tool_output = get_drug_info(drug_name, user_token=user_token_for_tools)
                         return {"output": f"I used get_drug_info. Output:\n{mock_tool_output}"}
                     
-                    if ("symptom info" in prompt or "what causes" in prompt) and is_tool_available("get_symptom_info"): # NEW: Mock medical tool call
+                    if ("symptom info" in prompt or "what causes" in prompt) and is_tool_available("get_symptom_info"):
                         symptom_name = "Headache"
                         mock_tool_output = get_symptom_info(symptom_name, user_token=user_token_for_tools)
                         return {"output": f"I used get_symptom_info. Output:\n{mock_tool_output}"}
+
+                    if ("general news" in prompt or "latest news" in prompt) and is_tool_available("get_general_news"): # NEW: Mock news tool call
+                        news_query = "technology" # Hardcoded for mock
+                        mock_tool_output = get_general_news(news_query, user_token=user_token_for_tools)
+                        return {"output": f"I used get_general_news. Output:\n{mock_tool_output}"}
 
                     if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
                         code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
@@ -210,7 +215,7 @@ class LLMService:
                         return {"output": f"I used generate_and_save_chart. Output:\n{mock_tool_output}"}
 
                     # Fallback if no specific tool action is simulated
-                    return {"output": f"Mock LLM agent response (provider={self.model_name.split('-')[0]}, model={self.model_name}, temp={self.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
+                    return {"output": f"Mock LLM agent response (provider={self.llm.model_name.split('-')[0]}, model={self.llm.model_name}, temp={self.llm.temperature}) to: '{prompt}'. I considered the available tools but didn't find a direct match for a tool call based on keywords. If you need a specific tool, please be explicit."}
 
             return MockLLM(effective_temperature, effective_model_name)
 
@@ -354,14 +359,13 @@ class LLMService:
             available_tools.extend([get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol])
             logger.debug(f"Crypto tools added for user {user_token}")
 
-        if get_user_tier_capability(user_token, 'medical_tool_access', False): # NEW: Add medical tools
+        if get_user_tier_capability(user_token, 'medical_tool_access', False):
             available_tools.extend([get_drug_info, get_symptom_info])
             logger.debug(f"Medical tools added for user {user_token}")
 
-        # Future News Tools
-        # if get_user_tier_capability(user_token, 'news_tool_access', False):
-        #     available_tools.append(get_general_news)
-        #     logger.debug(f"General news tool added for user {user_token}")
+        if get_user_tier_capability(user_token, 'news_tool_access', False): # NEW: Add news tool
+            available_tools.append(get_general_news)
+            logger.debug(f"General news tool added for user {user_token}")
 
 
         if not available_tools:
@@ -388,8 +392,9 @@ class LLMService:
                 "For current cryptocurrency prices, use `get_crypto_price`. "
                 "For historical cryptocurrency prices, use `get_historical_crypto_prices`. "
                 "To find a cryptocurrency ID from its symbol, use `get_crypto_id_by_symbol`. "
-                "For drug information, use `get_drug_info`. " # NEW: Added to prompt
-                "For symptom information, use `get_symptom_info`. " # NEW: Added to prompt
+                "For drug information, use `get_drug_info`. "
+                "For symptom information, use `get_symptom_info`. "
+                "For general news, use `get_general_news`. " # NEW: Added to prompt
                 "For **data analysis**, complex calculations, time series analysis, regression analysis, "
                 "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
@@ -486,6 +491,11 @@ class LLMService:
                     symptom_name = "Headache"
                     mock_tool_output = get_symptom_info(symptom_name, user_token=user_token_for_tools)
                     return {"output": f"I used get_symptom_info. Output:\n{mock_tool_output}"}
+
+                if ("general news" in prompt_text or "latest news" in prompt_text) and is_tool_available("get_general_news"):
+                    news_query = "technology"
+                    mock_tool_output = get_general_news(news_query, user_token=user_token_for_tools)
+                    return {"output": f"I used get_general_news. Output:\n{mock_tool_output}"}
 
                 if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
                     code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
