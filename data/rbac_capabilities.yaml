@@ -193,18 +193,43 @@ capabilities:
       premium: True
       admin: True
 
-  travel_tool_access: # NEW: Added travel tool access
+  travel_tool_access:
     default: False
     description: "Allows access to travel planning tools (flights, hotels)."
     roles:
       premium: True # Travel planning is often a premium feature
       admin: True
 
-  sports_tool_access:
+  sports_tool_access: # NEW: Added sports tool access
     default: False
-    description: "Allows access to sports information tools."
+    description: "Allows access to sports information tools (player/team stats, trophies, etc.)."
     roles:
-      user: True
+      pro: True # Sports data can be extensive, often for pro/premium tiers
+      premium: True
+      admin: True
+
+  # --- Analytics Capabilities ---
+  analytics_access: # NEW: Added analytics access
+    default: False
+    description: "Allows access to application usage analytics."
+    roles:
+      admin: True # Full access for admins
+      premium: True # Detailed access for premium users
+      pro: True # Basic access for pro users
+
+  analytics_charts_enabled: # NEW: Control over charts in analytics
+    default: False
+    description: "Allows the display of charts in analytics reports."
+    roles:
+      admin: True
+      premium: True
+      pro: False # Pro users might only get raw numbers, no charts
+
+  analytics_user_specific_access: # NEW: Control over user-specific analytics visibility
+    default: False
+    description: "Allows users to view their own personal usage analytics."
+    roles:
+      user: True # Basic users can see their own usage
       pro: True
       premium: True
       admin: True
