@@ -11,7 +11,7 @@ capabilities:
     description: "Allows basic conversational chat with the AI assistant."
     roles: {} # No specific role overrides, everyone gets it by default
 
-  llm_temperature_control_enabled: # NEW CAPABILITY
+  llm_temperature_control_enabled:
     default: False
     description: "Allows the user to set the LLM's temperature (creativity) via the UI."
     roles:
@@ -19,7 +19,7 @@ capabilities:
       premium: True
       admin: True
   
-  llm_default_temperature: # NEW CAPABILITY
+  llm_default_temperature:
     default: 0.7 # Global default temperature if not overridden by tier/role
     description: "The default LLM temperature for users who cannot control it, or the maximum allowed if control is enabled."
     roles:
@@ -29,13 +29,20 @@ capabilities:
       premium: 0.8
       admin: 0.9 # Admins can have highest creativity by default
 
-  llm_max_temperature: # NEW CAPABILITY (Optional, but good for safety)
+  llm_max_temperature:
     default: 1.0
     description: "The maximum LLM temperature a user can set, even if control is enabled."
     roles:
       pro: 0.8
       premium: 0.9
       admin: 1.0
+
+  llm_model_selection_enabled: # NEW CAPABILITY
+    default: False
+    description: "Allows the user to select the LLM provider and model (e.g., OpenAI GPT-4o, Google Gemini Pro, Ollama Llama2)."
+    roles:
+      premium: True # Only premium and admin can select models
+      admin: True
 
 
   # --- Shared Tools Capabilities ---
@@ -196,4 +203,3 @@ capabilities:
       admin: True
 
   # Add more capabilities as new features/tools are introduced
- 
