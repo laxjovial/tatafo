@@ -179,7 +179,7 @@ capabilities:
     default: False
     description: "Allows access to entertainment-related tools."
     roles:
-      user: True
+      user: True # Often basic users get access to general entertainment info
       pro: True
       premium: True
       admin: True
@@ -188,9 +188,16 @@ capabilities:
     default: False
     description: "Allows access to weather information tools."
     roles:
-      user: True
+      user: True # Often basic users get access to weather
       pro: True
       premium: True
+      admin: True
+
+  travel_tool_access: # NEW: Added travel tool access
+    default: False
+    description: "Allows access to travel planning tools (flights, hotels)."
+    roles:
+      premium: True # Travel planning is often a premium feature
       admin: True
 
   sports_tool_access:
@@ -202,4 +209,4 @@ capabilities:
       premium: True
       admin: True
 
-  # Add more capabilities as new features/tools are introduced
+  # Add more capabilities as new features/tools are introduced.
