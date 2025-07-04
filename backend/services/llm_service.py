@@ -34,7 +34,8 @@ from domain_tools.finance_tools.finance_tool import get_stock_price, get_company
 from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
 from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
 from domain_tools.news_tools.news_tool import get_general_news
-from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary # NEW: Import legal tools
+from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
+from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary # NEW: Import education tools
 
 logger = logging.getLogger(__name__)
 
@@ -192,15 +193,25 @@ class LLMService:
                         mock_tool_output = get_general_news(news_query, user_token=user_token_for_tools)
                         return {"output": f"I used get_general_news. Output:\n{mock_tool_output}"}
 
-                    if ("legal definition" in prompt or "define legal term" in prompt) and is_tool_available("get_legal_definition"): # NEW: Mock legal definition tool call
-                        term = "contract" # Hardcoded for mock
+                    if ("legal definition" in prompt or "define legal term" in prompt) and is_tool_available("get_legal_definition"):
+                        term = "contract"
                         mock_tool_output = get_legal_definition(term, user_token=user_token_for_tools)
                         return {"output": f"I used get_legal_definition. Output:\n{mock_tool_output}"}
 
-                    if ("case summary" in prompt or "summary of case" in prompt) and is_tool_available("get_case_summary"): # NEW: Mock case summary tool call
-                        case_name = "smith v. jones" # Hardcoded for mock
+                    if ("case summary" in prompt or "summary of case" in prompt) and is_tool_available("get_case_summary"):
+                        case_name = "smith v. jones"
                         mock_tool_output = get_case_summary(case_name, user_token=user_token_for_tools)
                         return {"output": f"I used get_case_summary. Output:\n{mock_tool_output}"}
+
+                    if ("academic definition" in prompt or "define academic term" in prompt or "what is" in prompt) and is_tool_available("get_academic_definition"): # NEW: Mock academic definition tool call
+                        term = "photosynthesis" # Hardcoded for mock
+                        mock_tool_output = get_academic_definition(term, user_token=user_token_for_tools)
+                        return {"output": f"I used get_academic_definition. Output:\n{mock_tool_output}"}
+
+                    if ("historical event" in prompt or "summary of history" in prompt) and is_tool_available("get_historical_event_summary"): # NEW: Mock historical event summary tool call
+                        event_name = "moon landing" # Hardcoded for mock
+                        mock_tool_output = get_historical_event_summary(event_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_historical_event_summary. Output:\n{mock_tool_output}"}
 
                     if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
                         code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
@@ -378,9 +389,13 @@ class LLMService:
             available_tools.append(get_general_news)
             logger.debug(f"General news tool added for user {user_token}")
         
-        if get_user_tier_capability(user_token, 'legal_tool_access', False): # NEW: Add legal tools
+        if get_user_tier_capability(user_token, 'legal_tool_access', False):
             available_tools.extend([get_legal_definition, get_case_summary])
             logger.debug(f"Legal tools (definition, case summary) added for user {user_token}")
+        
+        if get_user_tier_capability(user_token, 'education_tool_access', False): # NEW: Add education tools
+            available_tools.extend([get_academic_definition, get_historical_event_summary])
+            logger.debug(f"Education tools (academic definition, historical event summary) added for user {user_token}")
 
 
         if not available_tools:
@@ -410,8 +425,10 @@ class LLMService:
                 "For drug information, use `get_drug_info`. "
                 "For symptom information, use `get_symptom_info`. "
                 "For general news, use `get_general_news`. "
-                "For legal term definitions, use `get_legal_definition`. " # NEW: Added to prompt
-                "For legal case summaries, use `get_case_summary`. " # NEW: Added to prompt
+                "For legal term definitions, use `get_legal_definition`. "
+                "For legal case summaries, use `get_case_summary`. "
+                "For academic term definitions, use `get_academic_definition`. " # NEW: Added to prompt
+                "For historical event summaries, use `get_historical_event_summary`. " # NEW: Added to prompt
                 "For **data analysis**, complex calculations, time series analysis, regression analysis, "
                 "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
@@ -523,6 +540,16 @@ class LLMService:
                     case_name = "smith v. jones"
                     mock_tool_output = get_case_summary(case_name, user_token=user_token_for_tools)
                     return {"output": f"I used get_case_summary. Output:\n{mock_tool_output}"}
+
+                if ("academic definition" in prompt_text or "define academic term" in prompt_text or "what is" in prompt_text) and is_tool_available("get_academic_definition"):
+                    term = "photosynthesis"
+                    mock_tool_output = get_academic_definition(term, user_token=user_token_for_tools)
+                    return {"output": f"I used get_academic_definition. Output:\n{mock_tool_output}"}
+
+                if ("historical event" in prompt_text or "summary of history" in prompt_text) and is_tool_available("get_historical_event_summary"):
+                    event_name = "moon landing"
+                    mock_tool_output = get_historical_event_summary(event_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_historical_event_summary. Output:\n{mock_tool_output}"}
 
                 if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
                     code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
