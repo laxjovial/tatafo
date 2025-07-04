@@ -36,8 +36,9 @@ from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_i
 from domain_tools.news_tools.news_tool import get_general_news
 from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
 from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
-from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info # NEW: Import entertainment tools
-from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast # NEW: Import weather tools
+from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
+from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast
+from domain_tools.travel_tools.travel_tool import find_flights, find_hotels # NEW: Import travel tools
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class LLMService:
             cls._instance._initialize()
         return cls._instance
 
-    def _initialize(self(self):
+    def _initialize(self):
         """Initializes LLM and related components. LLM is now loaded dynamically per request."""
         logger.info("LLMService initialized. LLM will be loaded per request based on user preferences and RBAC.")
         self.llm = None # Initialize as None, will be set in chat_with_agent
@@ -215,26 +216,40 @@ class LLMService:
                         mock_tool_output = get_historical_event_summary(event_name, user_token=user_token_for_tools)
                         return {"output": f"I used get_historical_event_summary. Output:\n{mock_tool_output}"}
 
-                    if ("movie details" in prompt or "info about movie" in prompt) and is_tool_available("get_movie_details"): # NEW: Mock entertainment tool call
+                    if ("movie details" in prompt or "info about movie" in prompt) and is_tool_available("get_movie_details"):
                         movie_title = "Inception"
                         mock_tool_output = get_movie_details(movie_title, user_token=user_token_for_tools)
                         return {"output": f"I used get_movie_details. Output:\n{mock_tool_output}"}
 
-                    if ("music artist" in prompt or "info about artist" in prompt) and is_tool_available("get_music_artist_info"): # NEW: Mock entertainment tool call
+                    if ("music artist" in prompt or "info about artist" in prompt) and is_tool_available("get_music_artist_info"):
                         artist_name = "Taylor Swift"
                         mock_tool_output = get_music_artist_info(artist_name, user_token=user_token_for_tools)
                         return {"output": f"I used get_music_artist_info. Output:\n{mock_tool_output}"}
 
-                    if ("current weather" in prompt or "weather in" in prompt) and is_tool_available("get_current_weather"): # NEW: Mock weather tool call
+                    if ("current weather" in prompt or "weather in" in prompt) and is_tool_available("get_current_weather"):
                         location = "London"
                         mock_tool_output = get_current_weather(location, user_token=user_token_for_tools)
                         return {"output": f"I used get_current_weather. Output:\n{mock_tool_output}"}
 
-                    if ("weather forecast" in prompt or "forecast for" in prompt) and is_tool_available("get_weather_forecast"): # NEW: Mock weather tool call
+                    if ("weather forecast" in prompt or "forecast for" in prompt) and is_tool_available("get_weather_forecast"):
                         location = "New York"
                         days = 3
                         mock_tool_output = get_weather_forecast(location, days, user_token=user_token_for_tools)
                         return {"output": f"I used get_weather_forecast. Output:\n{mock_tool_output}"}
+
+                    if ("find flights" in prompt or "flight info" in prompt) and is_tool_available("find_flights"): # NEW: Mock travel tool call
+                        origin = "London"
+                        destination = "New York"
+                        date = "2025-07-15"
+                        mock_tool_output = find_flights(origin, destination, date, user_token=user_token_for_tools)
+                        return {"output": f"I used find_flights. Output:\n{mock_tool_output}"}
+
+                    if ("find hotels" in prompt or "hotel availability" in prompt) and is_tool_available("find_hotels"): # NEW: Mock travel tool call
+                        location = "Paris"
+                        check_in_date = "2025-09-01"
+                        check_out_date = "2025-09-05"
+                        mock_tool_output = find_hotels(location, check_in_date, check_out_date, user_token=user_token_for_tools)
+                        return {"output": f"I used find_hotels. Output:\n{mock_tool_output}"}
 
                     if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
                         code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
@@ -247,7 +262,7 @@ class LLMService:
 
                     if "sentiment" in prompt and is_tool_available("analyze_sentiment"):
                         text_for_sentiment = "This is a test sentence for sentiment analysis."
-                        mock_tool_output = analyze_sentiment(text_for_sentiment)
+                        mock_tool_output = analyze_tool_output = analyze_sentiment(text_for_sentiment)
                         return {"output": f"I used analyze_sentiment. Output:\n{mock_tool_output}"}
 
                     if "query document" in prompt and is_tool_available("query_uploaded_docs"):
@@ -420,13 +435,17 @@ class LLMService:
             available_tools.extend([get_academic_definition, get_historical_event_summary])
             logger.debug(f"Education tools (academic definition, historical event summary) added for user {user_token}")
         
-        if get_user_tier_capability(user_token, 'entertainment_tool_access', False): # NEW: Add entertainment tools
+        if get_user_tier_capability(user_token, 'entertainment_tool_access', False):
             available_tools.extend([get_movie_details, get_music_artist_info])
             logger.debug(f"Entertainment tools (movie details, music artist info) added for user {user_token}")
 
-        if get_user_tier_capability(user_token, 'weather_tool_access', False): # NEW: Add weather tools
+        if get_user_tier_capability(user_token, 'weather_tool_access', False):
             available_tools.extend([get_current_weather, get_weather_forecast])
             logger.debug(f"Weather tools (current weather, forecast) added for user {user_token}")
+        
+        if get_user_tier_capability(user_token, 'travel_tool_access', False): # NEW: Add travel tools
+            available_tools.extend([find_flights, find_hotels])
+            logger.debug(f"Travel tools (find flights, find hotels) added for user {user_token}")
 
 
         if not available_tools:
@@ -460,10 +479,12 @@ class LLMService:
                 "For legal case summaries, use `get_case_summary`. "
                 "For academic term definitions, use `get_academic_definition`. "
                 "For historical event summaries, use `get_historical_event_summary`. "
-                "For movie details, use `get_movie_details`. " # NEW: Added to prompt
-                "For music artist information, use `get_music_artist_info`. " # NEW: Added to prompt
-                "For current weather, use `get_current_weather`. " # NEW: Added to prompt
-                "For weather forecasts, use `get_weather_forecast`. " # NEW: Added to prompt
+                "For movie details, use `get_movie_details`. "
+                "For music artist information, use `get_music_artist_info`. "
+                "For current weather, use `get_current_weather`. "
+                "For weather forecasts, use `get_weather_forecast`. "
+                "For finding flights, use `find_flights`. " # NEW: Added to prompt
+                "For finding hotels, use `find_hotels`. " # NEW: Added to prompt
                 "For **data analysis**, complex calculations, time series analysis, regression analysis, "
                 "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
@@ -550,7 +571,7 @@ class LLMService:
                     symbol = "sol"
                     mock_tool_output = get_crypto_id_by_symbol(symbol, user_token=user_token_for_tools)
                     return {"output": f"I used get_crypto_id_by_symbol. Output:\n{mock_tool_output}"}
-                
+                    
                 if ("drug info" in prompt_text or "medication" in prompt_text) and is_tool_available("get_drug_info"):
                     drug_name = "Aspirin"
                     mock_tool_output = get_drug_info(drug_name, user_token=user_token_for_tools)
@@ -607,6 +628,20 @@ class LLMService:
                     mock_tool_output = get_weather_forecast(location, days, user_token=user_token_for_tools)
                     return {"output": f"I used get_weather_forecast. Output:\n{mock_tool_output}"}
 
+                if ("find flights" in prompt_text or "flight info" in prompt_text) and is_tool_available("find_flights"):
+                    origin = "London"
+                    destination = "New York"
+                    date = "2025-07-15"
+                    mock_tool_output = find_flights(origin, destination, date, user_token=user_token_for_tools)
+                    return {"output": f"I used find_flights. Output:\n{mock_tool_output}"}
+
+                if ("find hotels" in prompt_text or "hotel availability" in prompt_text) and is_tool_available("find_hotels"):
+                    location = "Paris"
+                    check_in_date = "2025-09-01"
+                    check_out_date = "2025-09-05"
+                    mock_tool_output = find_hotels(location, check_in_date, check_out_date, user_token=user_token_for_tools)
+                    return {"output": f"I used find_hotels. Output:\n{mock_tool_output}"}
+
                 if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
                     code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
                     mock_tool_output = python_interpreter_with_rbac(code_to_run, user_token=user_token_for_tools)
@@ -652,4 +687,3 @@ class LLMService:
 
 # Instantiate the LLMService as a singleton
 llm_service = LLMService()
-
