@@ -19,7 +19,7 @@ from utils.analytics_tracker import initialize_analytics, log_event
 from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import module
 import shared_tools.vector_utils as vector_utils_module # Import module
-from utils.date_parser import parse_date_string
+from utils.date_parser import parse_date_to_yyyymmdd # CORRECTED: Changed from parse_date_string
 from utils.user_manager import UserManager
 from domain_tools.finance_tools import FinanceTools
 from domain_tools.crypto_tools import CryptoTools
@@ -612,8 +612,8 @@ async def get_analytics_events_endpoint(
     logger.info(f"Admin user {current_user['uid']} requesting analytics events.")
     
     # Parse dates if provided
-    parsed_start_date = parse_date_string(start_date) if start_date else None
-    parsed_end_date = parse_date_string(end_date) if end_date else None
+    parsed_start_date = parse_date_to_yyyymmdd(start_date) if start_date else None # CORRECTED: Changed function call
+    parsed_end_date = parse_date_to_yyyymmdd(end_date) if end_date else None     # CORRECTED: Changed function call
 
     try:
         events = await firestore_manager.get_analytics_events(
@@ -626,6 +626,8 @@ async def get_analytics_events_endpoint(
     except Exception as e:
         logger.error(f"Error retrieving analytics events for admin {current_user['uid']}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve analytics events: {e}")
+
+
 
 
 
