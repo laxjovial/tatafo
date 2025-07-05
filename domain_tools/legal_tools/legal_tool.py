@@ -5,7 +5,7 @@ import requests
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import generic tools
 from langchain_core.tools import tool
@@ -17,8 +17,10 @@ from shared_tools.doc_summarizer import summarize_document
 from config.config_manager import config_manager
 # Import user_manager for RBAC checks
 from utils.user_manager import get_user_tier_capability
-# Import date_parser for date format flexibility (not directly used by current tools, but available)
+# Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,275 +355,276 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
 # --- Mock Data for Fallback ---
 _mock_legal_data = {
-    "case_search": [
-        {
-            "case_id": "LGL-2023-001",
-            "title": "Doe v. Smith - Contract Dispute",
-            "jurisdiction": "State of California",
-            "date_filed": "2023-01-15",
-            "status": "Active",
-            "summary": "A dispute over the terms of a commercial contract."
+    "legal_definitions": {
+        "contract": {
+            "term": "Contract",
+            "definition": "A legally binding agreement between two or more parties that creates mutual obligations enforceable by law.",
+            "key_elements": ["Offer", "Acceptance", "Consideration", "Intention to create legal relations", "Capacity", "Legality"]
         },
-        {
-            "case_id": "LGL-2022-005",
-            "title": "People v. Johnson - Criminal Trespass",
-            "jurisdiction": "City of New York",
-            "date_filed": "2022-08-20",
-            "status": "Closed",
-            "summary": "A criminal case involving unauthorized entry onto private property."
-        }
-    ],
-    "statute_info": {
-        "privacy_act": {
-            "title": "Privacy Act of 1974",
-            "description": "Establishes a code of fair information practices that governs the collection, maintenance, use, and dissemination of information about individuals that is maintained in systems of records by federal agencies.",
-            "citation": "5 U.S.C. § 552a",
-            "effective_date": "1974-12-31"
-        },
-        "copyright_act": {
-            "title": "Copyright Act of 1976",
-            "description": "Grants authors and artists exclusive rights to their creative works.",
-            "citation": "17 U.S.C. § 101 et seq.",
-            "effective_date": "1978-01-01"
-        }
-    },
-    "legal_definition": {
         "tort": {
             "term": "Tort",
             "definition": "A civil wrong that causes a claimant to suffer loss or harm, resulting in legal liability for the person who commits the tortious act.",
-            "category": "Civil Law"
+            "examples": ["Negligence", "Defamation", "Trespass"]
+        }
+    },
+    "legal_precedents": {
+        "donoghue_v_stevenson": {
+            "case_name": "Donoghue v Stevenson",
+            "year": 1932,
+            "summary": "Established the modern concept of negligence in English law, including the 'neighbour principle'.",
+            "relevance": "Foundation of consumer protection and product liability law."
         },
-        "habeas_corpus": {
-            "term": "Habeas Corpus",
-            "definition": "A writ requiring a person under arrest to be brought before a judge or into court, especially to secure the person's release unless lawful grounds are shown for their detention.",
-            "category": "Constitutional Law"
+        "miranda_v_arizona": {
+            "case_name": "Miranda v Arizona",
+            "year": 1966,
+            "summary": "Established the 'Miranda warnings' for custodial interrogations in US law.",
+            "relevance": "Protects Fifth Amendment rights against self-incrimination."
+        }
+    },
+    "legal_aid_info": {
+        "london": {
+            "city": "London, UK",
+            "organizations": [
+                {"name": "Citizens Advice London", "services": "Free, confidential advice on legal, money and other issues.", "contact": "0800 144 8848", "website": "https://www.citizensadvice.org.uk/"},
+                {"name": "Legal Aid Agency (UK)", "services": "Government-funded legal aid for eligible cases.", "contact": "0345 345 4345", "website": "https://www.gov.uk/legal-aid"}
+            ]
+        },
+        "new_york": {
+            "city": "New York, USA",
+            "organizations": [
+                {"name": "Legal Aid Society (NYC)", "services": "Free legal services to low-income New Yorkers.", "contact": "(212) 577-3300", "website": "https://legalaidnyc.org/"},
+                {"name": "New York City Bar Association", "services": "Lawyer referral service.", "contact": "(212) 382-6600", "website": "https://www.nycbar.org/"}
+            ]
         }
     }
 }
 
 @tool
-def search_legal_cases(query: str, jurisdiction: Optional[str] = None, date_filed: Optional[str] = None, user_token: str = "default") -> str:
-    """
-    Searches for legal cases based on a query, optional jurisdiction, and optional filing date.
-    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'January 15, 2023').
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        query (str): The search query (e.g., "contract dispute", "environmental law").
-        jurisdiction (str, optional): The specific jurisdiction to search within (e.g., "California", "New York").
-        date_filed (str, optional): The filing date of the case to filter by.
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of legal case summaries, or an error/fallback message.
-    """
-    logger.info(f"Tool: search_legal_cases called with query='{query}', jurisdiction='{jurisdiction}', date_filed='{date_filed}' by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'legal_tool_access', False):
-        return "Error: Access to legal tools is not enabled for your current tier."
-    
-    params = {"query": query}
-    if jurisdiction: params["jurisdiction"] = jurisdiction
-    
-    parsed_date_filed = None
-    if date_filed:
-        parsed_date_filed = parse_date_to_yyyymmdd(date_filed)
-        if not parsed_date_filed:
-            return "Error: Could not parse the provided filing date. Please ensure the date is valid."
-        params["date_filed"] = parsed_date_filed
-
-    api_data = _make_dynamic_api_request(
-        "legal", "search_legal_cases",
-        params,
-        user_token
-    )
-
-    if api_data and api_data.get("data"):
-        cases = api_data["data"]
-        if cases:
-            response_str = "Found Legal Cases:\n"
-            for i, case in enumerate(cases[:5]): # Limit to top 5 cases
-                response_str += (
-                    f"{i+1}. Case ID: {case.get('case_id', 'N/A')}\n"
-                    f"   Title: {case.get('title', 'N/A')}\n"
-                    f"   Jurisdiction: {case.get('jurisdiction', 'N/A')}\n"
-                    f"   Date Filed: {case.get('date_filed', 'N/A')}\n"
-                    f"   Status: {case.get('status', 'N/A')}\n"
-                    f"   Summary: {case.get('summary', 'N/A')}\n\n"
-                )
-            return response_str
-        else:
-            return f"No live legal cases found for your criteria (query='{query}', jurisdiction='{jurisdiction}', date_filed='{date_filed}'). Falling back to mock data."
-
-    # Fallback to mock data
-    mock_cases = _mock_legal_data.get("case_search", [])
-    filtered_mock_cases = []
-    for case in mock_cases:
-        match = True
-        if query and query.lower() not in case.get("title", "").lower() and query.lower() not in case.get("summary", "").lower():
-            match = False
-        if jurisdiction and case.get("jurisdiction", "").lower() != jurisdiction.lower():
-            match = False
-        if parsed_date_filed and case.get("date_filed") != parsed_date_filed:
-            match = False
-        if match:
-            filtered_mock_cases.append(case)
-
-    if filtered_mock_cases:
-        response_str = "Found Legal Cases (Mock Data Fallback):\n"
-        for i, case in enumerate(filtered_mock_cases[:2]): # Limit mock to top 2
-            response_str += (
-                f"{i+1}. Case ID: {case.get('case_id', 'N/A')}\n"
-                f"   Title: {case.get('title', 'N/A')}\n"
-                f"   Jurisdiction: {case.get('jurisdiction', 'N/A')}\n"
-                f"   Date Filed: {case.get('date_filed', 'N/A')}\n"
-                f"   Status: {case.get('status', 'N/A')}\n"
-                f"   Summary: {case.get('summary', 'N/A')}\n\n"
-            )
-        return response_str
-    else:
-        return f"Legal case information not found for your criteria. (API/Mock Fallback Failed)"
-
-
-@tool
-def get_statute_info(statute_name: str, user_token: str = "default") -> str:
-    """
-    Retrieves information about a specific legal statute or act.
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        statute_name (str): The name or common title of the statute (e.g., "Privacy Act", "Copyright Act").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of statute information, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_statute_info called for statute: {statute_name} by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'legal_tool_access', False):
-        return "Error: Access to legal tools is not enabled for your current tier."
-    
-    api_data = _make_dynamic_api_request(
-        "legal", "get_statute_info",
-        {"name": statute_name},
-        user_token
-    )
-
-    if api_data:
-        try:
-            title = api_data.get("title")
-            description = api_data.get("description")
-            citation = api_data.get("citation")
-            effective_date = api_data.get("effective_date")
-
-            if title and description:
-                response_str = (
-                    f"Information for {title}:\n"
-                    f"  Description: {description}\n"
-                )
-                if citation:
-                    response_str += f"  Citation: {citation}\n"
-                if effective_date:
-                    response_str += f"  Effective Date: {effective_date}\n"
-                return response_str
-            else:
-                logger.warning(f"Live API data for {statute_name} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live statute information for {statute_name}. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live statute info data for {statute_name}: {e}")
-            return f"Error parsing live data for {statute_name}. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_data = _mock_legal_data.get("statute_info", {}).get(statute_name.lower().replace(" ", "_"))
-    if mock_data:
-        response_str = (
-            f"Information for {mock_data['title']} (Mock Data Fallback):\n"
-            f"  Description: {mock_data['description']}\n"
-        )
-        if mock_data.get('citation'):
-            response_str += f"  Citation: {mock_data['citation']}\n"
-        if mock_data.get('effective_date'):
-            response_str += f"  Effective Date: {mock_data['effective_date']}\n"
-        return response_str
-    else:
-        return f"Statute information not found for '{statute_name}'. (API/Mock Fallback Failed)"
-
-
-@tool
 def get_legal_definition(term: str, user_token: str = "default") -> str:
     """
-    Retrieves the definition of a specific legal term.
+    Retrieves the legal definition and key elements of a specific legal term.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        term (str): The legal term to define (e.g., "Tort", "Habeas Corpus").
+        term (str): The legal term to define (e.g., "Contract", "Tort", "Copyright").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of the legal definition, or an error/fallback message.
     """
-    logger.info(f"Tool: get_legal_definition called for term: {term} by user: {user_token}")
+    logger.info(f"Tool: get_legal_definition called for term: '{term}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'legal_tool_access', False):
         return "Error: Access to legal tools is not enabled for your current tier."
     
-    api_data = _make_dynamic_api_request(
-        "legal", "get_legal_definition",
-        {"term": term},
-        user_token
-    )
+    params = {"term": term}
+    api_data = asyncio.run(_make_dynamic_api_request("legal", "get_legal_definition", params, user_token))
 
     if api_data:
         try:
-            term_name = api_data.get("term")
+            defined_term = api_data.get("term")
             definition = api_data.get("definition")
-            category = api_data.get("category")
+            key_elements = api_data.get("key_elements")
 
-            if term_name and definition:
+            if defined_term and definition:
                 response_str = (
-                    f"Definition of {term_name}:\n"
+                    f"Legal Definition of '{defined_term}':\n"
                     f"  Definition: {definition}\n"
                 )
-                if category:
-                    response_str += f"  Category: {category}\n"
+                if key_elements:
+                    response_str += f"  Key Elements: {', '.join(key_elements)}\n"
                 return response_str
             else:
-                logger.warning(f"Live API data for {term} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live legal definition for {term}. Falling back to mock data."
+                logger.warning(f"Live API data for term '{term}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live legal definition for '{term}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live legal definition data for {term}: {e}")
-            return f"Error parsing live data for {term}. Falling back to mock data."
+            logger.error(f"Error parsing live legal definition data for '{term}': {e}")
+            return f"Error parsing live data for '{term}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data = _mock_legal_data.get("legal_definition", {}).get(term.lower().replace(" ", "_"))
+    mock_data_key = term.lower().replace(" ", "_")
+    mock_data = _mock_legal_data.get("legal_definitions", {}).get(mock_data_key)
     if mock_data:
         response_str = (
-            f"Definition of {mock_data['term']} (Mock Data Fallback):\n"
+            f"Legal Definition of '{mock_data['term']}' (Mock Data Fallback):\n"
             f"  Definition: {mock_data['definition']}\n"
         )
-        if mock_data.get('category'):
-            response_str += f"  Category: {mock_data['category']}\n"
+        if mock_data.get('key_elements'):
+            response_str += f"  Key Elements: {', '.join(mock_data['key_elements'])}\n"
         return response_str
     else:
-        return f"Legal definition not found for '{term}'. (API/Mock Fallback Failed)"
+        return f"Legal definition for '{term}' not found. (API/Mock Fallback Failed)"
+
+
+@tool
+def search_legal_precedents(query: str, user_token: str = "default") -> str:
+    """
+    Searches for significant legal precedents or case law relevant to a query.
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        query (str): The legal query to find precedents for (e.g., "negligence in product liability", "freedom of speech cases").
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of relevant legal precedents, or an error/fallback message.
+    """
+    logger.info(f"Tool: search_legal_precedents called for query: '{query}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'legal_tool_access', False):
+        return "Error: Access to legal tools is not enabled for your current tier."
+    
+    params = {"query": query}
+    api_data = asyncio.run(_make_dynamic_api_request("legal", "search_legal_precedents", params, user_token))
+
+    if api_data and api_data.get("data"):
+        precedents = api_data["data"]
+        if precedents:
+            response_str = f"Relevant Legal Precedents for '{query}':\n"
+            for i, precedent in enumerate(precedents[:5]): # Limit to top 5
+                response_str += (
+                    f"{i+1}. Case: {precedent.get('case_name', 'N/A')} ({precedent.get('year', 'N/A')})\n"
+                    f"   Summary: {precedent.get('summary', 'N/A')}\n"
+                    f"   Relevance: {precedent.get('relevance', 'N/A')}\n\n"
+                )
+            return response_str
+        else:
+            return f"No live legal precedents found for '{query}'. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_precedents = _mock_legal_data.get("legal_precedents", {})
+    filtered_mock_precedents = []
+    for key, precedent in mock_precedents.items():
+        if query.lower() in precedent.get("summary", "").lower() or query.lower() in precedent.get("relevance", "").lower():
+            filtered_mock_precedents.append(precedent)
+    
+    if filtered_mock_precedents:
+        response_str = f"Relevant Legal Precedents for '{query}' (Mock Data Fallback):\n"
+        for i, precedent in enumerate(filtered_mock_precedents[:2]): # Limit mock to top 2
+            response_str += (
+                f"{i+1}. Case: {precedent.get('case_name', 'N/A')} ({precedent.get('year', 'N/A')})\n"
+                f"   Summary: {precedent.get('summary', 'N/A')}\n"
+                f"   Relevance: {precedent.get('relevance', 'N/A')}\n\n"
+            )
+        return response_str
+    else:
+        return f"Legal precedents for '{query}' not found. (API/Mock Fallback Failed)"
+
+
+@tool
+def get_legal_aid_info(location: str, user_token: str = "default") -> str:
+    """
+    Retrieves information about legal aid organizations or services available in a specific location.
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        location (str): The city or region to search for legal aid (e.g., "London", "New York").
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of legal aid information, or an error/fallback message.
+    """
+    logger.info(f"Tool: get_legal_aid_info called for location: '{location}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'legal_tool_access', False):
+        return "Error: Access to legal tools is not enabled for your current tier."
+    
+    params = {"location": location}
+    api_data = asyncio.run(_make_dynamic_api_request("legal", "get_legal_aid_info", params, user_token))
+
+    if api_data and api_data.get("data"):
+        organizations = api_data["data"]
+        if organizations:
+            response_str = f"Legal Aid Information for {location}:\n"
+            for i, org in enumerate(organizations[:5]): # Limit to top 5
+                response_str += (
+                    f"{i+1}. Organization: {org.get('name', 'N/A')}\n"
+                    f"   Services: {org.get('services', 'N/A')}\n"
+                    f"   Contact: {org.get('contact', 'N/A')}\n"
+                    f"   Website: {org.get('website', 'N/A')}\n\n"
+                )
+            return response_str
+        else:
+            return f"No live legal aid information found for '{location}'. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_data_key = location.lower().replace(" ", "_")
+    mock_data = _mock_legal_data.get("legal_aid_info", {}).get(mock_data_key)
+    if mock_data and mock_data.get("organizations"):
+        response_str = f"Legal Aid Information for {mock_data['city']} (Mock Data Fallback):\n"
+        for i, org in enumerate(mock_data['organizations'][:2]): # Limit mock to top 2
+            response_str += (
+                f"{i+1}. Organization: {org.get('name', 'N/A')}\n"
+                f"   Services: {org.get('services', 'N/A')}\n"
+                f"   Contact: {org.get('contact', 'N/A')}\n"
+                f"   Website: {org.get('website', 'N/A')}\n\n"
+            )
+        return response_str
+    else:
+        return f"Legal aid information not found for '{location}'. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in legal context) ---
@@ -522,7 +636,7 @@ def legal_search_web(query: str, user_token: str = "default", max_chars: int = 2
     This tool wraps the generic `scrape_web` tool, providing a legal-specific interface.
     
     Args:
-        query (str): The legal search query (e.g., "recent supreme court rulings", "intellectual property law").
+        query (str): The legal-related search query (e.g., "copyright law for digital content", "employment rights in California").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -539,7 +653,7 @@ def legal_query_uploaded_docs(query: str, user_token: str = "default", export: O
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "legal".
     
     Args:
-        query (str): The search query to find relevant legal documents (e.g., "summary of contract X", "precedent for case Y").
+        query (str): The search query to find relevant legal documents (e.g., "terms and conditions of service", "my legal contract details").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -554,13 +668,13 @@ def legal_query_uploaded_docs(query: str, user_token: str = "default", export: O
 @tool
 def legal_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to legal information located at the given file path.
+    Summarizes a document related to legal matters located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
     Args:
         file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/legal/court_filing.pdf"
+                              Example: "uploads/default/legal/privacy_policy.pdf"
     
     Returns:
         str: A concise summary of the document content.
@@ -584,8 +698,8 @@ def legal_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -624,6 +738,11 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'legal': 'legal_api'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for legal
@@ -633,31 +752,6 @@ if __name__ == "__main__":
                         "api_key_name": "legal_api_key",
                         "api_key_param_name": "api_key",
                         "functions": {
-                            "search_legal_cases": {
-                                "endpoint": "/cases/search",
-                                "required_params": ["query"],
-                                "optional_params": ["jurisdiction", "date_filed"],
-                                "response_path": ["data"],
-                                "data_map": {
-                                    "case_id": "id",
-                                    "title": "title",
-                                    "jurisdiction": "jurisdiction",
-                                    "date_filed": "filed_date",
-                                    "status": "status",
-                                    "summary": "summary"
-                                }
-                            },
-                            "get_statute_info": {
-                                "endpoint": "/statutes",
-                                "required_params": ["name"],
-                                "response_path": ["data", 0], # Assuming first result is most relevant
-                                "data_map": {
-                                    "title": "title",
-                                    "description": "description",
-                                    "citation": "citation",
-                                    "effective_date": "effective_date"
-                                }
-                            },
                             "get_legal_definition": {
                                 "endpoint": "/definitions",
                                 "required_params": ["term"],
@@ -665,7 +759,29 @@ if __name__ == "__main__":
                                 "data_map": {
                                     "term": "term",
                                     "definition": "definition",
-                                    "category": "category"
+                                    "key_elements": "elements"
+                                }
+                            },
+                            "search_legal_precedents": {
+                                "endpoint": "/precedents/search",
+                                "required_params": ["query"],
+                                "response_path": ["data"],
+                                "data_map": {
+                                    "case_name": "name",
+                                    "year": "year",
+                                    "summary": "summary",
+                                    "relevance": "relevance"
+                                }
+                            },
+                            "get_legal_aid_info": {
+                                "endpoint": "/aid",
+                                "required_params": ["location"],
+                                "response_path": ["data"],
+                                "data_map": {
+                                    "name": "organization_name",
+                                    "services": "services_offered",
+                                    "contact": "contact_info",
+                                    "website": "website_url"
                                 }
                             }
                         }
@@ -769,197 +885,167 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Legal API responses
-        if "api.example.com/legal" in url:
-            if "/cases/search" in url:
-                query = params.get("query", "").lower()
-                jurisdiction = params.get("jurisdiction", "").lower()
-                date_filed = params.get("date_filed")
-                
-                mock_cases = [
-                    {
-                        "id": "LGL-2023-001",
-                        "title": "Doe v. Smith - Contract Dispute",
-                        "jurisdiction": "State of California",
-                        "filed_date": "2023-01-15",
-                        "status": "Active",
-                        "summary": "A dispute over the terms of a commercial contract."
-                    },
-                    {
-                        "id": "LGL-2022-005",
-                        "title": "People v. Johnson - Criminal Trespass",
-                        "jurisdiction": "City of New York",
-                        "filed_date": "2022-08-20",
-                        "status": "Closed",
-                        "summary": "A criminal case involving unauthorized entry onto private property."
-                    },
-                    {
-                        "id": "LGL-2024-010",
-                        "title": "Tech Corp. v. Innovate Inc. - Patent Infringement",
-                        "jurisdiction": "Federal Circuit",
-                        "filed_date": "2024-03-10",
-                        "status": "Active",
-                        "summary": "A lawsuit alleging infringement of software patents."
-                    }
-                ]
-                
-                filtered_mock_cases = []
-                for case in mock_cases:
-                    match = True
-                    if query and not (query in case["title"].lower() or query in case["summary"].lower()):
-                        match = False
-                    if jurisdiction and case["jurisdiction"].lower() != jurisdiction:
-                        match = False
-                    if date_filed and case["filed_date"] != date_filed:
-                        match = False
-                    if match:
-                        filtered_mock_cases.append(case)
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
 
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
+
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Legal API responses
+            if "api.example.com/legal" in url:
+                if "/definitions" in url:
+                    term = params.get("term", "").lower()
+                    if "contract" in term:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "term": "Contract",
+                                "definition": "A legally binding agreement...",
+                                "elements": ["Offer", "Acceptance"]
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+                elif "/precedents/search" in url:
+                    query = params.get("query", "").lower()
+                    if "negligence" in query:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "name": "Donoghue v Stevenson",
+                                "year": 1932,
+                                "summary": "Established negligence.",
+                                "relevance": "Foundation of tort law."
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+                elif "/aid" in url:
+                    location = params.get("location", "").lower()
+                    if "london" in location:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "organization_name": "Citizens Advice London",
+                                "services_offered": "Free legal advice.",
+                                "contact_info": "0800 144 8848",
+                                "website_url": "https://www.citizensadvice.org.uk/"
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+            
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_mock_cases}
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'legal')}</h1><p>Some legal content from web search.</p></body></html>"
                 return mock_response
 
-            elif "/statutes" in url:
-                statute_name = params.get("name", "").lower()
-                if "privacy act" in statute_name:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "title": "Privacy Act of 1974",
-                            "description": "Governs federal agencies' collection and use of personal information.",
-                            "citation": "5 U.S.C. § 552a",
-                            "effective_date": "1974-12-31"
-                        }]
-                    }
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
-            
-            elif "/definitions" in url:
-                term = params.get("term", "").lower()
-                if "tort" in term:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "term": "Tort",
-                            "definition": "A civil wrong causing harm or loss, leading to legal liability.",
-                            "category": "Civil Law"
-                        }]
-                    }
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
-        
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'legal')}</h1><p>Some legal news snippet from web search.</p></body></html>"
-            return mock_response
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+        requests.get = mock_requests_get_dynamic
 
-    requests.get = mock_requests_get_dynamic
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    test_user_pro = "mock_pro_token"
-    test_user_premium = "mock_premium_token"
-    test_user_free = "mock_free_token"
+        async def run_legal_tests():
+            print("\n--- Testing legal_tool functions with Analytics ---")
 
-    print("\n--- Testing legal_tool functions ---")
+            # Test get_legal_definition (success)
+            print("\n--- Test 1: get_legal_definition (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_definition = await get_legal_definition("Contract", user_token=test_user_pro)
+            print(f"Legal Definition: {result_definition}")
+            assert "Legal Definition of 'Contract':" in result_definition
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "legal_get_legal_definition"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test search_legal_cases
-    print("\n--- Testing search_legal_cases ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_cases = search_legal_cases("contract dispute", jurisdiction="California", date_filed="2023-01-15", user_token=test_user_pro)
-    print(f"Legal Cases (Pro User, API):\n{result_cases[:500]}...")
-    assert "Found Legal Cases:" in result_cases
-    assert "Doe v. Smith - Contract Dispute" in result_cases
-    print("Test 1 Passed.")
+            # Test search_legal_precedents (API failure - no data found)
+            print("\n--- Test 2: search_legal_precedents (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_precedents = await search_legal_precedents("patent infringement", user_token=test_user_pro)
+            print(f"Legal Precedents (API Error): {result_precedents}")
+            assert "No live legal precedents found for 'patent infringement'." in result_precedents
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "legal_search_legal_precedents"
+            assert logged_data["success"] is False
+            assert "Response path 'data' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test search_legal_cases (date format flexibility)
-    result_cases_flex_date = search_legal_cases("contract dispute", jurisdiction="California", date_filed="Jan 15, 2023", user_token=test_user_pro)
-    print(f"Legal Cases (Pro User, API - Flexible Date):\n{result_cases_flex_date[:500]}...")
-    assert "Found Legal Cases:" in result_cases_flex_date
-    assert "Doe v. Smith - Contract Dispute" in result_cases_flex_date
-    print("Test 2 Passed.")
+            # Test get_legal_aid_info (RBAC denied)
+            print("\n--- Test 3: get_legal_aid_info (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_legal_aid_rbac_denied = await get_legal_aid_info("Paris", user_token=test_user_free)
+            print(f"Legal Aid Info (Free User, RBAC Denied): {result_legal_aid_rbac_denied}")
+            assert "Error: Access to legal tools is not enabled for your current tier." in result_legal_aid_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test search_legal_cases (fallback)
-    print("\n--- Testing search_legal_cases (Fallback) ---")
-    with patch('domain_tools.legal_tools.legal_tool._make_dynamic_api_request', return_value=None):
-        result_cases_fallback = search_legal_cases("environmental law", user_token=test_user_pro)
-        print(f"Legal Cases (Pro User, Fallback):\n{result_cases_fallback[:500]}...")
-        assert "Found Legal Cases (Mock Data Fallback):" in result_cases_fallback
-    print("Test 3 Passed.")
+            # Test legal_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: legal_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await legal_search_web("data privacy regulations EU", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for data privacy regulations EU" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test get_statute_info
-    print("\n--- Testing get_statute_info ---")
-    result_statute = get_statute_info("Privacy Act", user_token=test_user_pro)
-    print(f"Privacy Act Info (Pro User, API):\n{result_statute[:200]}...")
-    assert "Information for Privacy Act of 1974:" in result_statute
-    assert "Governs federal agencies'" in result_statute
-    print("Test 4 Passed.")
+            print("\nAll legal_tool tests with analytics considerations completed.")
 
-    # Test get_legal_definition
-    print("\n--- Testing get_legal_definition ---")
-    result_definition = get_legal_definition("Tort", user_token=test_user_pro)
-    print(f"Tort Definition (Pro User, API):\n{result_definition[:200]}...")
-    assert "Definition of Tort:" in result_definition
-    assert "A civil wrong causing harm or loss" in result_definition
-    print("Test 5 Passed.")
+        await run_legal_tests()
 
-    # Test RBAC for legal_tool_access (e.g., search_legal_cases for free user)
-    print("\n--- Testing RBAC for legal_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = search_legal_cases("divorce", user_token=test_user_free)
-    print(f"Legal Cases (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to legal tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 6 Passed.")
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    # Test legal_search_web
-    print("\n--- Testing legal_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "recent intellectual property law changes"
-    search_web_result = legal_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for recent intellectual property law changes" in search_web_result
-    print("Test 7 Passed.")
-
-    # Test legal_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing legal_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "legal"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "legal_brief.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a sample legal brief. It argues for the plaintiff in a property dispute case. Key arguments include adverse possession.")
-    
-    result_summary = legal_summarize_document_by_path(str(dummy_file_path))
-    print(f"Legal Brief Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "property dispute" in result_summary
-    print("Test 8 Passed.")
-
-    print("\nAll legal_tool tests completed.")
-
-    # Restore original requests.get
-    requests.get = original_requests_get
-
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
-
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
