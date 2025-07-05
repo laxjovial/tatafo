@@ -1,7 +1,3 @@
-import React, { useState, useEffect } from 'react';
-import { logEvent } from '../../utils/analytics_tracker'; // Adjust path as needed
-import { User, Mail, Phone, MapPin, Save, XCircle } from 'lucide-react';
-
 const UserProfile = ({ userId }) => {
     const [profile, setProfile] = useState({
         username: 'JohnDoe',
@@ -9,7 +5,7 @@ const UserProfile = ({ userId }) => {
         phone: '123-456-7890',
         address: '123 Main St, Anytown, USA',
         bio: 'A passionate user of the AI Assistant!',
-        tier: 'Pro' // Example tier
+        tier: 'Pro'
     });
     const [isEditing, setIsEditing] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
@@ -17,10 +13,12 @@ const UserProfile = ({ userId }) => {
     // Log page view when component mounts
     useEffect(() => {
         if (userId) {
-            logEvent('page_view', { page_name: 'UserProfile', user_id: userId });
-            console.log(`Analytics: Logged page_view for 'UserProfile' by user '${userId}'`);
+            (async () => {
+                await logEvent('page_view', { page_name: 'UserProfile', user_id: userId });
+                console.log(`Analytics: Logged page_view for 'UserProfile' by user '${userId}'`);
+            })();
         }
-    }, [userId]); // Depend on userId to ensure it's available
+    }, [userId]);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
@@ -30,28 +28,28 @@ const UserProfile = ({ userId }) => {
         }));
     };
 
-    const handleSave = () => {
-        // Simulate API call to save profile
+    const handleSave = async () => {
         console.log('Saving profile:', profile);
         setIsEditing(false);
         setStatusMessage('Profile saved successfully!');
-        logEvent('ui_interaction', {
+
+        await logEvent('ui_interaction', {
             component: 'UserProfile',
             action: 'Save Profile',
-            details: { userId, changes: profile }, // Log details of the interaction
+            details: { userId, changes: profile },
             user_id: userId,
             success: true
         });
         console.log(`Analytics: Logged ui_interaction 'Save Profile' by user '${userId}'`);
 
-        // Clear status message after a few seconds
         setTimeout(() => setStatusMessage(''), 3000);
     };
 
-    const handleCancel = () => {
+    const handleCancel = async () => {
         setIsEditing(false);
         setStatusMessage('Profile changes cancelled.');
-        logEvent('ui_interaction', {
+
+        await logEvent('ui_interaction', {
             component: 'UserProfile',
             action: 'Cancel Profile Edit',
             details: { userId },
@@ -59,13 +57,14 @@ const UserProfile = ({ userId }) => {
             success: true
         });
         console.log(`Analytics: Logged ui_interaction 'Cancel Profile Edit' by user '${userId}'`);
+
         setTimeout(() => setStatusMessage(''), 3000);
-        // Optionally, reset profile to original state if you fetched it from a backend
+        // Optionally reset profile if needed
     };
 
-    const handleEditClick = () => {
+    const handleEditClick = async () => {
         setIsEditing(true);
-        logEvent('ui_interaction', {
+        await logEvent('ui_interaction', {
             component: 'UserProfile',
             action: 'Edit Profile Click',
             details: { userId },
