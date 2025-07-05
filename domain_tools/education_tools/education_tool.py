@@ -5,7 +5,7 @@ import requests
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import generic tools
 from langchain_core.tools import tool
@@ -17,8 +17,10 @@ from shared_tools.doc_summarizer import summarize_document
 from config.config_manager import config_manager
 # Import user_manager for RBAC checks
 from utils.user_manager import get_user_tier_capability
-# Import date_parser for date format flexibility (not directly used by current tools, but available)
+# Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,95 +355,144 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
 # --- Mock Data for Fallback ---
 _mock_education_data = {
-    "course_search": [
-        {
-            "course_id": "CS101",
-            "title": "Introduction to Computer Science",
-            "description": "Fundamental concepts of computer science and programming.",
-            "provider": "University of Tech",
+    "course_info": {
+        "introduction_to_ai": {
+            "title": "Introduction to Artificial Intelligence",
+            "provider": "Online University X",
             "level": "Beginner",
+            "duration": "8 weeks",
+            "cost": "Free (Audit) / $199 (Certificate)",
+            "description": "Learn the fundamentals of AI, machine learning, and neural networks.",
+            "prerequisites": "Basic programming knowledge.",
+            "url": "http://example.com/courses/ai"
+        },
+        "advanced_calculus": {
+            "title": "Advanced Calculus for Engineers",
+            "provider": "Tech Institute Y",
+            "level": "Advanced",
             "duration": "12 weeks",
-            "cost": "Free",
-            "url": "http://example.edu/cs101"
-        },
-        {
-            "course_id": "MATH201",
-            "title": "Calculus I",
-            "description": "Introduction to differential and integral calculus.",
-            "provider": "Online Learning Platform",
-            "level": "Intermediate",
-            "duration": "10 weeks",
-            "cost": "$99",
-            "url": "http://example.edu/math201"
-        }
-    ],
-    "university_info": {
-        "university_of_tech": {
-            "name": "University of Tech",
-            "location": "Tech City, CA",
-            "ranking": "Top 50 Global",
-            "programs": ["Computer Science", "Engineering", "Data Science"],
-            "website": "http://example.edu/tech"
-        },
-        "state_university": {
-            "name": "State University",
-            "location": "Capital City, NY",
-            "ranking": "Top 100 National",
-            "programs": ["Arts", "Humanities", "Business"],
-            "website": "http://example.edu/state"
+            "cost": "$500",
+            "description": "Deep dive into multivariable calculus, differential equations, and vector analysis.",
+            "prerequisites": "Calculus I & II.",
+            "url": "http://example.com/courses/calc"
         }
     },
-    "educational_resource": {
-        "khan_academy_math": {
-            "title": "Khan Academy - Math",
-            "type": "Online Platform",
-            "description": "Free online courses and practice in math, science, and more.",
+    "school_info": {
+        "university_of_london": {
+            "name": "University of London",
+            "type": "University",
+            "location": "London, UK",
+            "founded_year": 1836,
+            "notable_alumni": ["Mahatma Gandhi", "Nelson Mandela"],
+            "website": "https://london.ac.uk/"
+        },
+        "harvard_university": {
+            "name": "Harvard University",
+            "type": "University",
+            "location": "Cambridge, Massachusetts, USA",
+            "founded_year": 1636,
+            "notable_alumni": ["Barack Obama", "Mark Zuckerberg"],
+            "website": "https://www.harvard.edu/"
+        }
+    },
+    "educational_resources": {
+        "math_tutorials": {
+            "topic": "Mathematics",
+            "type": "Tutorials",
+            "title": "Khan Academy Math",
+            "description": "Free online math tutorials and exercises for all levels.",
             "url": "https://www.khanacademy.org/math"
         },
-        "wikipedia_physics": {
-            "title": "Wikipedia - Physics",
-            "type": "Encyclopedia",
-            "description": "Comprehensive articles on various physics topics.",
-            "url": "https://en.wikipedia.org/wiki/Physics"
+        "history_documentaries": {
+            "topic": "History",
+            "type": "Documentaries",
+            "title": "BBC History Documentaries",
+            "description": "Collection of historical documentaries from BBC.",
+            "url": "https://www.bbc.co.uk/history/documentaries"
         }
     }
 }
 
 @tool
-def search_courses(query: str, level: Optional[str] = None, provider: Optional[str] = None, user_token: str = "default") -> str:
+def search_educational_courses(query: str, level: Optional[str] = None, provider: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Searches for educational courses based on a query, optional difficulty level (e.g., 'Beginner', 'Intermediate', 'Advanced'),
-    and optional course provider.
+    Searches for educational courses based on a query, optionally filtered by level (e.g., 'Beginner', 'Intermediate', 'Advanced')
+    and provider (e.g., 'Coursera', 'edX', 'Online University X').
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        query (str): The search query for courses (e.g., "python programming", "data science").
+        query (str): The course search query (e.g., "Python programming", "data science").
         level (str, optional): The difficulty level of the course.
-        provider (str, optional): The name of the course provider (e.g., "Coursera", "edX", "University of Tech").
+        provider (str, optional): The educational platform or institution offering the course.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of course information, or an error/fallback message.
     """
-    logger.info(f"Tool: search_courses called with query='{query}', level='{level}', provider='{provider}' by user: {user_token}")
+    logger.info(f"Tool: search_educational_courses called for query='{query}', level='{level}', provider='{provider}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'education_tool_access', False):
         return "Error: Access to education tools is not enabled for your current tier."
@@ -339,16 +501,12 @@ def search_courses(query: str, level: Optional[str] = None, provider: Optional[s
     if level: params["level"] = level
     if provider: params["provider"] = provider
 
-    api_data = _make_dynamic_api_request(
-        "education", "search_courses",
-        params,
-        user_token
-    )
+    api_data = asyncio.run(_make_dynamic_api_request("education", "search_educational_courses", params, user_token))
 
     if api_data and api_data.get("data"):
         courses = api_data["data"]
         if courses:
-            response_str = "Found Educational Courses:\n"
+            response_str = f"Found Educational Courses for '{query}':\n"
             for i, course in enumerate(courses[:5]): # Limit to top 5 courses
                 response_str += (
                     f"{i+1}. Title: {course.get('title', 'N/A')}\n"
@@ -356,18 +514,19 @@ def search_courses(query: str, level: Optional[str] = None, provider: Optional[s
                     f"   Level: {course.get('level', 'N/A')}\n"
                     f"   Duration: {course.get('duration', 'N/A')}\n"
                     f"   Cost: {course.get('cost', 'N/A')}\n"
+                    f"   Description: {course.get('description', 'N/A')}\n"
                     f"   URL: {course.get('url', 'N/A')}\n\n"
                 )
             return response_str
         else:
-            return f"No live educational courses found for your criteria (query='{query}', level='{level}', provider='{provider}'). Falling back to mock data."
+            return f"No live educational courses found for '{query}' for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_courses = _mock_education_data.get("course_search", [])
+    mock_courses = _mock_education_data.get("course_info", {})
     filtered_mock_courses = []
-    for course in mock_courses:
+    for key, course in mock_courses.items():
         match = True
-        if query and query.lower() not in course.get("title", "").lower() and query.lower() not in course.get("description", "").lower():
+        if query.lower() not in course.get("title", "").lower() and query.lower() not in course.get("description", "").lower():
             match = False
         if level and course.get("level", "").lower() != level.lower():
             match = False
@@ -377,7 +536,7 @@ def search_courses(query: str, level: Optional[str] = None, provider: Optional[s
             filtered_mock_courses.append(course)
 
     if filtered_mock_courses:
-        response_str = "Found Educational Courses (Mock Data Fallback):\n"
+        response_str = f"Found Educational Courses for '{query}' (Mock Data Fallback):\n"
         for i, course in enumerate(filtered_mock_courses[:2]): # Limit mock to top 2
             response_str += (
                 f"{i+1}. Title: {course.get('title', 'N/A')}\n"
@@ -385,146 +544,155 @@ def search_courses(query: str, level: Optional[str] = None, provider: Optional[s
                 f"   Level: {course.get('level', 'N/A')}\n"
                 f"   Duration: {course.get('duration', 'N/A')}\n"
                 f"   Cost: {course.get('cost', 'N/A')}\n"
+                f"   Description: {course.get('description', 'N/A')}\n"
                 f"   URL: {course.get('url', 'N/A')}\n\n"
             )
         return response_str
     else:
-        return f"Educational course information not found for your criteria. (API/Mock Fallback Failed)"
+        return f"Educational courses for '{query}' not found. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_university_info(university_name: str, user_token: str = "default") -> str:
+def get_school_info(school_name: str, location: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Retrieves information about a specific university or educational institution.
+    Retrieves information about a specific school, college, or university.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        university_name (str): The full or partial name of the university (e.g., "Stanford University", "MIT").
+        school_name (str): The full or partial name of the educational institution.
+        location (str, optional): The city or country where the institution is located.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of university information, or an error/fallback message.
+        str: A formatted string of school information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_university_info called for university: {university_name} by user: {user_token}")
+    logger.info(f"Tool: get_school_info called for school: '{school_name}', location: '{location}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'education_tool_access', False):
         return "Error: Access to education tools is not enabled for your current tier."
     
-    api_data = _make_dynamic_api_request(
-        "education", "get_university_info",
-        {"name": university_name},
-        user_token
-    )
+    params = {"name": school_name}
+    if location: params["location"] = location
+
+    api_data = asyncio.run(_make_dynamic_api_request("education", "get_school_info", params, user_token))
 
     if api_data:
         try:
             name = api_data.get("name")
-            location = api_data.get("location")
-            ranking = api_data.get("ranking")
-            programs = api_data.get("programs")
+            school_type = api_data.get("type")
+            loc = api_data.get("location")
+            founded_year = api_data.get("founded_year")
+            notable_alumni = api_data.get("notable_alumni")
             website = api_data.get("website")
 
-            if name and location:
+            if name and loc:
                 response_str = (
-                    f"Information for {name}:\n"
-                    f"  Location: {location}\n"
+                    f"Information for School: {name}\n"
+                    f"  Type: {school_type}\n"
+                    f"  Location: {loc}\n"
                 )
-                if ranking:
-                    response_str += f"  Ranking: {ranking}\n"
-                if programs:
-                    response_str += f"  Key Programs: {', '.join(programs)}\n"
+                if founded_year:
+                    response_str += f"  Founded: {founded_year}\n"
+                if notable_alumni:
+                    response_str += f"  Notable Alumni: {', '.join(notable_alumni)}\n"
                 if website:
                     response_str += f"  Website: {website}\n"
                 return response_str
             else:
-                logger.warning(f"Live API data for {university_name} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live university information for {university_name}. Falling back to mock data."
+                logger.warning(f"Live API data for school '{school_name}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live school information for '{school_name}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live university info data for {university_name}: {e}")
-            return f"Error parsing live data for {university_name}. Falling back to mock data."
+            logger.error(f"Error parsing live school info data for '{school_name}': {e}")
+            return f"Error parsing live data for '{school_name}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_key = university_name.lower().replace(" ", "_")
-    mock_data = _mock_education_data.get("university_info", {}).get(mock_data_key)
+    mock_data_key_prefix = school_name.lower().replace(" ", "_")
+    mock_data = None
+    for key, entry in _mock_education_data.get("school_info", {}).items():
+        if mock_data_key_prefix in key and (not location or location.lower() in entry.get("location", "").lower()):
+            mock_data = entry
+            break
+
     if mock_data:
         response_str = (
-            f"Information for {mock_data['name']} (Mock Data Fallback):\n"
+            f"Information for School: {mock_data['name']} (Mock Data Fallback)\n"
+            f"  Type: {mock_data['type']}\n"
             f"  Location: {mock_data['location']}\n"
         )
-        if mock_data.get('ranking'):
-            response_str += f"  Ranking: {mock_data['ranking']}\n"
-        if mock_data.get('programs'):
-            response_str += f"  Key Programs: {', '.join(mock_data['programs'])}\n"
+        if mock_data.get('founded_year'):
+            response_str += f"  Founded: {mock_data['founded_year']}\n"
+        if mock_data.get('notable_alumni'):
+            response_str += f"  Notable Alumni: {', '.join(mock_data['notable_alumni'])}\n"
         if mock_data.get('website'):
             response_str += f"  Website: {mock_data['website']}\n"
         return response_str
     else:
-        return f"University information not found for '{university_name}'. (API/Mock Fallback Failed)"
+        return f"School information not found for '{school_name}'. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_educational_resource(resource_name: str, user_token: str = "default") -> str:
+def find_educational_resources(topic: str, resource_type: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Retrieves information about a specific educational resource or platform.
+    Finds educational resources (e.g., tutorials, documentaries, articles) on a specific topic.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        resource_name (str): The name of the educational resource (e.g., "Khan Academy", "Coursera", "Wikipedia").
+        topic (str): The educational topic (e.g., "Physics", "World History", "Programming").
+        resource_type (str, optional): The type of resource (e.g., 'Tutorials', 'Documentaries', 'Articles').
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of educational resource information, or an error/fallback message.
+        str: A formatted string of educational resources, or an error/fallback message.
     """
-    logger.info(f"Tool: get_educational_resource called for resource: {resource_name} by user: {user_token}")
+    logger.info(f"Tool: find_educational_resources called for topic: '{topic}', type: '{resource_type}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'education_tool_access', False):
         return "Error: Access to education tools is not enabled for your current tier."
     
-    api_data = _make_dynamic_api_request(
-        "education", "get_educational_resource",
-        {"name": resource_name},
-        user_token
-    )
+    params = {"topic": topic}
+    if resource_type: params["type"] = resource_type
 
-    if api_data:
-        try:
-            title = api_data.get("title")
-            resource_type = api_data.get("type")
-            description = api_data.get("description")
-            url = api_data.get("url")
+    api_data = asyncio.run(_make_dynamic_api_request("education", "find_educational_resources", params, user_token))
 
-            if title and description:
-                response_str = (
-                    f"Information for {title}:\n"
+    if api_data and api_data.get("data"):
+        resources = api_data["data"]
+        if resources:
+            response_str = f"Educational Resources for '{topic}':\n"
+            for i, resource in enumerate(resources[:5]): # Limit to top 5
+                response_str += (
+                    f"{i+1}. Title: {resource.get('title', 'N/A')}\n"
+                    f"   Type: {resource.get('type', 'N/A')}\n"
+                    f"   Description: {resource.get('description', 'N/A')}\n"
+                    f"   URL: {resource.get('url', 'N/A')}\n\n"
                 )
-                if resource_type:
-                    response_str += f"  Type: {resource_type}\n"
-                response_str += f"  Description: {description}\n"
-                if url:
-                    response_str += f"  URL: {url}\n"
-                return response_str
-            else:
-                logger.warning(f"Live API data for {resource_name} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live educational resource information for {resource_name}. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live educational resource data for {resource_name}: {e}")
-            return f"Error parsing live data for {resource_name}. Falling back to mock data."
+            return response_str
+        else:
+            return f"No live educational resources found for '{topic}' for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_key = resource_name.lower().replace(" ", "_")
-    mock_data = _mock_education_data.get("educational_resource", {}).get(mock_data_key)
-    if mock_data:
-        response_str = (
-            f"Information for {mock_data['title']} (Mock Data Fallback):\n"
-        )
-        if mock_data.get('type'):
-            response_str += f"  Type: {mock_data['type']}\n"
-        response_str += f"  Description: {mock_data['description']}\n"
-        if mock_data.get('url'):
-            response_str += f"  URL: {mock_data['url']}\n"
+    mock_resources = _mock_education_data.get("educational_resources", {})
+    filtered_mock_resources = []
+    for key, resource in mock_resources.items():
+        match = True
+        if topic.lower() not in resource.get("topic", "").lower() and topic.lower() not in resource.get("description", "").lower():
+            match = False
+        if resource_type and resource.get("type", "").lower() != resource_type.lower():
+            match = False
+        if match:
+            filtered_mock_resources.append(resource)
+    
+    if filtered_mock_resources:
+        response_str = f"Educational Resources for '{topic}' (Mock Data Fallback):\n"
+        for i, resource in enumerate(filtered_mock_resources[:2]): # Limit mock to top 2
+            response_str += (
+                f"{i+1}. Title: {resource.get('title', 'N/A')}\n"
+                f"   Type: {resource.get('type', 'N/A')}\n"
+                f"   Description: {resource.get('description', 'N/A')}\n"
+                f"   URL: {resource.get('url', 'N/A')}\n\n"
+            )
         return response_str
     else:
-        return f"Educational resource information not found for '{resource_name}'. (API/Mock Fallback Failed)"
+        return f"Educational resources for '{topic}' not found. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in education context) ---
@@ -536,7 +704,7 @@ def education_search_web(query: str, user_token: str = "default", max_chars: int
     This tool wraps the generic `scrape_web` tool, providing an education-specific interface.
     
     Args:
-        query (str): The education-related search query (e.g., "best online courses for AI", "history of ancient Rome").
+        query (str): The education-related search query (e.g., "online degrees in computer science", "history of ancient Rome").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -553,7 +721,7 @@ def education_query_uploaded_docs(query: str, user_token: str = "default", expor
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "education".
     
     Args:
-        query (str): The search query to find relevant educational documents (e.g., "summary of textbook chapter 5", "notes on quantum physics lecture").
+        query (str): The search query to find relevant educational documents (e.g., "syllabus for Calculus I", "research papers on quantum physics").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -598,8 +766,8 @@ def education_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -638,6 +806,11 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'education': 'education_api'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for education
@@ -647,38 +820,40 @@ if __name__ == "__main__":
                         "api_key_name": "education_api_key",
                         "api_key_param_name": "api_key",
                         "functions": {
-                            "search_courses": {
-                                "endpoint": "/courses/search",
+                            "search_educational_courses": {
+                                "endpoint": "/courses",
                                 "required_params": ["query"],
                                 "optional_params": ["level", "provider"],
                                 "response_path": ["data"],
                                 "data_map": {
-                                    "course_id": "id",
                                     "title": "title",
-                                    "description": "description",
                                     "provider": "provider",
                                     "level": "level",
                                     "duration": "duration",
                                     "cost": "cost",
+                                    "description": "description",
                                     "url": "url"
                                 }
                             },
-                            "get_university_info": {
-                                "endpoint": "/universities",
+                            "get_school_info": {
+                                "endpoint": "/schools",
                                 "required_params": ["name"],
-                                "response_path": ["data", 0], # Assuming first result is most relevant
+                                "optional_params": ["location"],
+                                "response_path": ["data", 0],
                                 "data_map": {
                                     "name": "name",
+                                    "type": "type",
                                     "location": "location",
-                                    "ranking": "ranking",
-                                    "programs": "programs",
+                                    "founded_year": "founded_year",
+                                    "notable_alumni": "alumni",
                                     "website": "website"
                                 }
                             },
-                            "get_educational_resource": {
+                            "find_educational_resources": {
                                 "endpoint": "/resources",
-                                "required_params": ["name"],
-                                "response_path": ["data", 0],
+                                "required_params": ["topic"],
+                                "optional_params": ["type"],
+                                "response_path": ["data"],
                                 "data_map": {
                                     "title": "title",
                                     "type": "type",
@@ -787,196 +962,231 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Education API responses
-        if "api.example.com/education" in url:
-            if "/courses/search" in url:
-                query = params.get("query", "").lower()
-                level = params.get("level", "").lower()
-                provider = params.get("provider", "").lower()
-                
-                mock_courses = [
-                    {
-                        "id": "CS101",
-                        "title": "Introduction to Computer Science",
-                        "description": "Fundamental concepts of computer science and programming.",
-                        "provider": "University of Tech",
-                        "level": "Beginner",
-                        "duration": "12 weeks",
-                        "cost": "Free",
-                        "url": "http://example.edu/cs101"
-                    },
-                    {
-                        "id": "MATH201",
-                        "title": "Calculus I",
-                        "description": "Introduction to differential and integral calculus.",
-                        "provider": "Online Learning Platform",
-                        "level": "Intermediate",
-                        "duration": "10 weeks",
-                        "cost": "$99",
-                        "url": "http://example.edu/math201"
-                    },
-                    {
-                        "id": "PY300",
-                        "title": "Advanced Python Programming",
-                        "description": "Deep dive into Python for data analysis and web development.",
-                        "provider": "Code Academy",
-                        "level": "Advanced",
-                        "duration": "8 weeks",
-                        "cost": "$199",
-                        "url": "http://example.edu/py300"
-                    }
-                ]
-                
-                filtered_mock_courses = []
-                for course in mock_courses:
-                    match = True
-                    if query and not (query in course["title"].lower() or query in course["description"].lower()):
-                        match = False
-                    if level and course["level"].lower() != level:
-                        match = False
-                    if provider and course["provider"].lower() != provider:
-                        match = False
-                    if match:
-                        filtered_mock_courses.append(course)
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
 
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_mock_courses}
-                return mock_response
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
 
-            elif "/universities" in url:
-                name = params.get("name", "").lower()
-                if "university of tech" in name:
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Education API responses
+            if "api.example.com/education" in url:
+                if "/courses" in url:
+                    query = params.get("query", "").lower()
+                    level = params.get("level", "").lower()
+                    provider = params.get("provider", "").lower()
+                    
+                    mock_courses = [
+                        {
+                            "title": "Introduction to Artificial Intelligence",
+                            "provider": "Online University X",
+                            "level": "Beginner",
+                            "duration": "8 weeks",
+                            "cost": "Free",
+                            "description": "Learn the fundamentals of AI.",
+                            "prerequisites": "Basic programming.",
+                            "url": "http://example.com/courses/ai"
+                        },
+                        {
+                            "title": "Advanced Calculus for Engineers",
+                            "provider": "Tech Institute Y",
+                            "level": "Advanced",
+                            "duration": "12 weeks",
+                            "cost": "$500",
+                            "description": "Deep dive into multivariable calculus.",
+                            "prerequisites": "Calculus I & II.",
+                            "url": "http://example.com/courses/calc"
+                        }
+                    ]
+                    
+                    filtered_courses = []
+                    for course in mock_courses:
+                        match = True
+                        if query and not (query in course["title"].lower() or query in course["description"].lower()):
+                            match = False
+                        if level and course["level"].lower() != level:
+                            match = False
+                        if provider and course["provider"].lower() != provider:
+                            match = False
+                        if match:
+                            filtered_courses.append(course)
+
                     mock_response = MagicMock()
                     mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "University of Tech",
-                            "location": "Tech City, CA",
-                            "ranking": "Top 50 Global",
-                            "programs": ["Computer Science", "Engineering"],
-                            "website": "http://example.edu/tech"
-                        }]
-                    }
+                    mock_response.json.return_value = {"data": filtered_courses}
+                    return mock_response
+                elif "/schools" in url:
+                    name = params.get("name", "").lower()
+                    location = params.get("location", "").lower()
+                    
+                    mock_schools = [
+                        {
+                            "name": "University of London",
+                            "type": "University",
+                            "location": "London, UK",
+                            "founded_year": 1836,
+                            "alumni": ["Mahatma Gandhi"],
+                            "website": "https://london.ac.uk/"
+                        },
+                        {
+                            "name": "Harvard University",
+                            "type": "University",
+                            "location": "Cambridge, Massachusetts, USA",
+                            "founded_year": 1636,
+                            "alumni": ["Barack Obama"],
+                            "website": "https://www.harvard.edu/"
+                        }
+                    ]
+                    
+                    filtered_schools = []
+                    for school in mock_schools:
+                        match = True
+                        if name and name not in school["name"].lower():
+                            match = False
+                        if location and location not in school["location"].lower():
+                            match = False
+                        if match:
+                            filtered_schools.append(school)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_schools}
+                    return mock_response
+                elif "/resources" in url:
+                    topic = params.get("topic", "").lower()
+                    resource_type = params.get("type", "").lower()
+
+                    mock_resources = [
+                        {
+                            "title": "Khan Academy Math",
+                            "type": "Tutorials",
+                            "description": "Free online math tutorials.",
+                            "url": "https://www.khanacademy.org/math"
+                        },
+                        {
+                            "title": "BBC History Documentaries",
+                            "type": "Documentaries",
+                            "description": "Collection of historical documentaries.",
+                            "url": "https://www.bbc.co.uk/history/documentaries"
+                        }
+                    ]
+
+                    filtered_resources = []
+                    for resource in mock_resources:
+                        match = True
+                        if topic and not (topic in resource["title"].lower() or topic in resource["description"].lower()):
+                            match = False
+                        if resource_type and resource["type"].lower() != resource_type:
+                            match = False
+                        if match:
+                            filtered_resources.append(resource)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_resources}
                     return mock_response
                 else:
                     mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
+                    mock_response.status_code = 400
+                    mock_response.json.return_value = {"error": "Invalid endpoint"}
                     return mock_response
             
-            elif "/resources" in url:
-                name = params.get("name", "").lower()
-                if "khan academy" in name:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "title": "Khan Academy - All Subjects",
-                            "type": "Online Learning Platform",
-                            "description": "Free online courses and practice exercises in various subjects.",
-                            "url": "https://www.khanacademy.org"
-                        }]
-                    }
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
-        
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'education')}</h1><p>Some educational content from web search.</p></body></html>"
-            return mock_response
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'education')}</h1><p>Some education related content from web search.</p></body></html>"
+                return mock_response
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-    requests.get = mock_requests_get_dynamic
+        requests.get = mock_requests_get_dynamic
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    print("\n--- Testing education_tool functions ---")
+        async def run_education_tests():
+            print("\n--- Testing education_tool functions with Analytics ---")
 
-    # Test search_courses
-    print("\n--- Testing search_courses ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_courses = search_courses("computer science", level="Beginner", user_token=test_user_pro)
-    print(f"Courses (Pro User, API):\n{result_courses[:500]}...")
-    assert "Found Educational Courses:" in result_courses
-    assert "Introduction to Computer Science" in result_courses
-    print("Test 1 Passed.")
+            # Test search_educational_courses (success)
+            print("\n--- Test 1: search_educational_courses (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_courses = await search_educational_courses("Artificial Intelligence", user_token=test_user_pro)
+            print(f"Educational Courses: {result_courses}")
+            assert "Found Educational Courses for 'Artificial Intelligence':" in result_courses
+            assert "Introduction to Artificial Intelligence" in result_courses
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "education_search_educational_courses"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test search_courses (fallback)
-    print("\n--- Testing search_courses (Fallback) ---")
-    with patch('domain_tools.education_tools.education_tool._make_dynamic_api_request', return_value=None):
-        result_courses_fallback = search_courses("history", user_token=test_user_pro)
-        print(f"Courses (Pro User, Fallback):\n{result_courses_fallback[:500]}...")
-        assert "Found Educational Courses (Mock Data Fallback):" in result_courses_fallback
-    print("Test 2 Passed.")
+            # Test get_school_info (API failure - no data found)
+            print("\n--- Test 2: get_school_info (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_school_info = await get_school_info("NonExistent University", user_token=test_user_pro)
+            print(f"School Info (API Error): {result_school_info}")
+            assert "Could not retrieve complete live school information for 'NonExistent University'." in result_school_info
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "education_get_school_info"
+            assert logged_data["success"] is False
+            assert "Response path 'data.0' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test get_university_info
-    print("\n--- Testing get_university_info ---")
-    result_university = get_university_info("University of Tech", user_token=test_user_pro)
-    print(f"University Info (Pro User, API):\n{result_university[:200]}...")
-    assert "Information for University of Tech:" in result_university
-    assert "Top 50 Global" in result_university
-    print("Test 3 Passed.")
+            # Test find_educational_resources (RBAC denied)
+            print("\n--- Test 3: find_educational_resources (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_resources_rbac_denied = await find_educational_resources("Quantum Physics", user_token=test_user_free)
+            print(f"Educational Resources (Free User, RBAC Denied): {result_resources_rbac_denied}")
+            assert "Error: Access to education tools is not enabled for your current tier." in result_resources_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test get_educational_resource
-    print("\n--- Testing get_educational_resource ---")
-    result_resource = get_educational_resource("Khan Academy", user_token=test_user_pro)
-    print(f"Educational Resource (Pro User, API):\n{result_resource[:200]}...")
-    assert "Information for Khan Academy - All Subjects:" in result_resource
-    assert "Free online courses" in result_resource
-    print("Test 4 Passed.")
+            # Test education_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: education_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await education_search_web("best online learning platforms", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for best online learning platforms" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test RBAC for education_tool_access (e.g., search_courses for free user)
-    print("\n--- Testing RBAC for education_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = search_courses("art history", user_token=test_user_free)
-    print(f"Courses (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to education tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 5 Passed.")
+            print("\nAll education_tool tests with analytics considerations completed.")
 
-    # Test education_search_web
-    print("\n--- Testing education_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "online degree programs in psychology"
-    search_web_result = education_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for online degree programs in psychology" in search_web_result
-    print("Test 6 Passed.")
+        await run_education_tests()
 
-    # Test education_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing education_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "education"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "lecture_notes.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("These are notes from a lecture on quantum mechanics. It covered wave-particle duality and the Schrödinger equation.")
-    
-    result_summary = education_summarize_document_by_path(str(dummy_file_path))
-    print(f"Lecture Notes Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "quantum mechanics" in result_summary
-    print("Test 7 Passed.")
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    print("\nAll education_tool tests completed.")
-
-    # Restore original requests.get
-    requests.get = original_requests_get
-
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
