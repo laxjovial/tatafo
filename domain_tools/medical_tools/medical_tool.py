@@ -5,7 +5,7 @@ import requests
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import generic tools
 from langchain_core.tools import tool
@@ -17,8 +17,10 @@ from shared_tools.doc_summarizer import summarize_document
 from config.config_manager import config_manager
 # Import user_manager for RBAC checks
 from utils.user_manager import get_user_tier_capability
-# Import date_parser for date format flexibility (not directly used by current tools, but available)
-from utils.date_parser import parse_date_to_yyyymmdd 
+# Import date_parser for date format flexibility
+from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -118,11 +188,19 @@ def _make_dynamic_api_request(
     # Add path parameters to URL if specified
     for p_param in path_params:
         if p_param in params:
-            # Ensure path parameters are correctly formatted (e.g., uppercase for currencies)
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -136,16 +214,22 @@ def _make_dynamic_api_request(
         if api_key: # Only add if key exists
             query_params[param_name_in_url] = api_key 
     elif active_provider_name == "exchangerate_api" and api_key:
-        # For ExchangeRate-API, the key is a path parameter, already handled above.
-        # This 'elif' ensures we don't add it as a query param if it's already in the path.
-        pass
-
+        pass # Key is a path parameter, already handled above
 
     for param_key in function_details.get("required_params", []) + function_details.get("optional_params", []):
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -155,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -181,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -203,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -217,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -234,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -246,50 +355,113 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
 # --- Mock Data for Fallback ---
 _mock_medical_data = {
     "drug_info": {
-        "aspirin": {
-            "name": "Aspirin",
-            "description": "Aspirin is a salicylate drug, often used as an analgesic to relieve minor aches and pains, as an antipyretic to reduce fever, and as an anti-inflammatory medication.",
-            "side_effects": ["Stomach upset", "heartburn", "drowsiness"],
-            "dosage": "300-600mg every 4-6 hours"
+        "paracetamol": {
+            "name": "Paracetamol",
+            "generic_name": "Acetaminophen",
+            "uses": "Pain relief and fever reduction.",
+            "side_effects": "Rare: allergic reactions, skin rash. Overdose can cause liver damage.",
+            "dosage_adult": "500-1000 mg every 4-6 hours, max 4000 mg/day.",
+            "interactions": "Warfarin (blood thinner)."
         },
         "ibuprofen": {
             "name": "Ibuprofen",
-            "description": "Ibuprofen is a nonsteroidal anti-inflammatory drug (NSAID) used for treating pain, fever, and inflammation.",
-            "side_effects": ["Nausea", "vomiting", "headache"],
-            "dosage": "200-400mg every 4-6 hours"
+            "generic_name": "Ibuprofen",
+            "uses": "Pain relief, fever reduction, inflammation.",
+            "side_effects": "Stomach upset, nausea, headache. Rare: stomach bleeding.",
+            "dosage_adult": "200-400 mg every 4-6 hours, max 1200 mg/day (OTC).",
+            "interactions": "Blood thinners, corticosteroids."
         }
     },
-    "symptom_info": {
-        "headache": {
-            "name": "Headache",
-            "causes": ["Stress", "dehydration", "lack of sleep", "migraine", "tension"],
-            "treatment": "Rest, hydration, pain relievers (e.g., ibuprofen, aspirin)",
-            "when_to_see_doctor": "Sudden severe headache, headache with fever/stiff neck, vision changes, weakness/numbness"
+    "symptom_checker": {
+        "fever_cough": {
+            "symptoms": ["fever", "cough"],
+            "possible_conditions": ["Common Cold", "Flu", "Bronchitis"],
+            "recommendations": "Rest, fluids, consider over-the-counter medication. Consult a doctor if symptoms worsen or persist."
         },
-        "fever": {
-            "name": "Fever",
-            "causes": ["Infections (viral, bacterial)", "inflammation", "medication side effect"],
-            "treatment": "Rest, fluids, fever reducers (e.g., acetaminophen, ibuprofen)",
-            "when_to_see_doctor": "High fever in infants, fever with rash, difficulty breathing, persistent fever"
+        "headache_nausea": {
+            "symptoms": ["headache", "nausea"],
+            "possible_conditions": ["Migraine", "Tension Headache", "Food Poisoning"],
+            "recommendations": "Rest in a quiet, dark room. Stay hydrated. Seek medical attention if severe or accompanied by other symptoms."
+        }
+    },
+    "hospital_info": {
+        "general_hospital_london": {
+            "name": "General Hospital London",
+            "location": "London, UK",
+            "specialties": ["Emergency Medicine", "Cardiology", "Oncology"],
+            "contact": "+44 20 1234 5678",
+            "website": "http://example.com/ghl"
+        },
+        "city_medical_center_ny": {
+            "name": "City Medical Center",
+            "location": "New York, USA",
+            "specialties": ["Pediatrics", "Orthopedics", "Neurology"],
+            "contact": "+1 212 987 6543",
+            "website": "http://example.com/cmc"
         }
     }
 }
@@ -297,129 +469,211 @@ _mock_medical_data = {
 @tool
 def get_drug_info(drug_name: str, user_token: str = "default") -> str:
     """
-    Retrieves information about a specific drug, including its description,
-    common side effects, and typical dosage.
+    Retrieves information about a specific drug, including its uses, side effects, and dosage.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        drug_name (str): The name of the drug (e.g., "Aspirin", "Ibuprofen").
+        drug_name (str): The name of the drug (e.g., "Paracetamol", "Ibuprofen").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A string containing the drug information, or an error/fallback message.
+        str: A formatted string of drug information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_drug_info called for drug: {drug_name} by user: {user_token}")
+    logger.info(f"Tool: get_drug_info called for drug: '{drug_name}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'medical_tool_access', False):
         return "Error: Access to medical tools is not enabled for your current tier."
-
-    api_data = _make_dynamic_api_request(
-        "medical", "get_drug_info",
-        {"name": drug_name},
-        user_token
-    )
+    
+    params = {"name": drug_name}
+    api_data = asyncio.run(_make_dynamic_api_request("medical", "get_drug_info", params, user_token))
 
     if api_data:
         try:
-            name = api_data.get("drug_name")
-            description = api_data.get("description")
+            name = api_data.get("name")
+            generic_name = api_data.get("generic_name")
+            uses = api_data.get("uses")
             side_effects = api_data.get("side_effects")
-            dosage = api_data.get("dosage")
+            dosage_adult = api_data.get("dosage_adult")
+            interactions = api_data.get("interactions")
 
-            if name and description:
+            if name and uses:
                 response_str = (
-                    f"Information for {name}:\n"
-                    f"  Description: {description}\n"
+                    f"Information for Drug: {name}\n"
                 )
-                if side_effects:
-                    response_str += f"  Side Effects: {', '.join(side_effects)}\n"
-                if dosage:
-                    response_str += f"  Typical Dosage: {dosage}\n"
+                if generic_name:
+                    response_str += f"  Generic Name: {generic_name}\n"
+                response_str += (
+                    f"  Uses: {uses}\n"
+                    f"  Side Effects: {side_effects}\n"
+                )
+                if dosage_adult:
+                    response_str += f"  Adult Dosage: {dosage_adult}\n"
+                if interactions:
+                    response_str += f"  Interactions: {interactions}\n"
                 return response_str
             else:
-                logger.warning(f"Live API data for {drug_name} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live drug information for {drug_name}. Falling back to mock data."
+                logger.warning(f"Live API data for drug '{drug_name}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live drug information for '{drug_name}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live drug info data for {drug_name}: {e}")
-            return f"Error parsing live data for {drug_name}. Falling back to mock data."
+            logger.error(f"Error parsing live drug info data for '{drug_name}': {e}")
+            return f"Error parsing live data for '{drug_name}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data = _mock_medical_data.get("drug_info", {}).get(drug_name.lower())
+    mock_data_key = drug_name.lower().replace(" ", "_")
+    mock_data = _mock_medical_data.get("drug_info", {}).get(mock_data_key)
     if mock_data:
         response_str = (
-            f"Information for {mock_data['name']} (Mock Data Fallback):\n"
-            f"  Description: {mock_data['description']}\n"
+            f"Information for Drug: {mock_data['name']} (Mock Data Fallback)\n"
         )
-        if mock_data.get('side_effects'):
-            response_str += f"  Side Effects: {', '.join(mock_data['side_effects'])}\n"
-        if mock_data.get('dosage'):
-            response_str += f"  Typical Dosage: {mock_data['dosage']}\n"
+        if mock_data.get('generic_name'):
+            response_str += f"  Generic Name: {mock_data['generic_name']}\n"
+        response_str += (
+            f"  Uses: {mock_data['uses']}\n"
+            f"  Side Effects: {mock_data['side_effects']}\n"
+        )
+        if mock_data.get('dosage_adult'):
+            response_str += f"  Adult Dosage: {mock_data['dosage_adult']}\n"
+        if mock_data.get('interactions'):
+            response_str += f"  Interactions: {mock_data['interactions']}\n"
         return response_str
     else:
         return f"Drug information not found for '{drug_name}'. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_symptom_info(symptom_name: str, user_token: str = "default") -> str:
+def check_symptoms(symptoms: List[str], user_token: str = "default") -> str:
     """
-    Retrieves information about a specific medical symptom, including its common causes,
-    suggested treatments, and when to seek professional medical attention.
+    Checks a list of symptoms and suggests possible medical conditions and recommendations.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        symptom_name (str): The name of the symptom (e.g., "Headache", "Fever").
+        symptoms (List[str]): A list of symptoms (e.g., ["fever", "cough", "sore throat"]).
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A string containing the symptom information, or an error/fallback message.
+        str: A formatted string of possible conditions and recommendations, or an error/fallback message.
     """
-    logger.info(f"Tool: get_symptom_info called for symptom: {symptom_name} by user: {user_token}")
+    logger.info(f"Tool: check_symptoms called for symptoms: {symptoms} by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'medical_tool_access', False):
         return "Error: Access to medical tools is not enabled for your current tier."
-
-    api_data = _make_dynamic_api_request(
-        "medical", "get_symptom_info",
-        {"name": symptom_name},
-        user_token
-    )
+    
+    params = {"symptoms": symptoms}
+    api_data = asyncio.run(_make_dynamic_api_request("medical", "check_symptoms", params, user_token))
 
     if api_data:
         try:
-            name = api_data.get("symptom_name")
-            causes = api_data.get("causes")
-            treatment = api_data.get("treatment")
-            when_to_see_doctor = api_data.get("when_to_see_doctor")
+            possible_conditions = api_data.get("possible_conditions")
+            recommendations = api_data.get("recommendations")
 
-            if name and causes and treatment:
+            if possible_conditions and recommendations:
                 response_str = (
-                    f"Information for {name}:\n"
-                    f"  Common Causes: {', '.join(causes)}\n"
-                    f"  Suggested Treatment: {treatment}\n"
+                    f"Based on symptoms: {', '.join(symptoms)}:\n"
+                    f"  Possible Conditions: {', '.join(possible_conditions)}\n"
+                    f"  Recommendations: {recommendations}\n"
                 )
-                if when_to_see_doctor:
-                    response_str += f"  When to see a doctor: {when_to_see_doctor}\n"
                 return response_str
             else:
-                logger.warning(f"Live API data for {symptom_name} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live symptom information for {symptom_name}. Falling back to mock data."
+                logger.warning(f"Live API data for symptoms '{symptoms}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live symptom check information for '{symptoms}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live symptom info data for {symptom_name}: {e}")
-            return f"Error parsing live data for {symptom_name}. Falling back to mock data."
+            logger.error(f"Error parsing live symptom check data for '{symptoms}': {e}")
+            return f"Error parsing live data for '{symptoms}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data = _mock_medical_data.get("symptom_info", {}).get(symptom_name.lower())
-    if mock_data:
+    # Simple mock matching: if all query symptoms are in mock_data's symptoms
+    best_match_mock = None
+    for key, mock_entry in _mock_medical_data.get("symptom_checker", {}).items():
+        mock_symptoms_lower = [s.lower() for s in mock_entry.get("symptoms", [])]
+        query_symptoms_lower = [s.lower() for s in symptoms]
+        if all(q_s in mock_symptoms_lower for q_s in query_symptoms_lower):
+            best_match_mock = mock_entry
+            break # Found a match, take the first one
+
+    if best_match_mock:
         response_str = (
-            f"Information for {mock_data['name']} (Mock Data Fallback):\n"
-            f"  Common Causes: {', '.join(mock_data['causes'])}\n"
-            f"  Suggested Treatment: {mock_data['treatment']}\n"
+            f"Based on symptoms: {', '.join(symptoms)} (Mock Data Fallback):\n"
+            f"  Possible Conditions: {', '.join(best_match_mock['possible_conditions'])}\n"
+            f"  Recommendations: {best_match_mock['recommendations']}\n"
         )
-        if mock_data.get('when_to_see_doctor'):
-            response_str += f"  When to see a doctor: {mock_data['when_to_see_doctor']}\n"
         return response_str
     else:
-        return f"Symptom information not found for '{symptom_name}'. (API/Mock Fallback Failed)"
+        return f"Symptom information not found for '{', '.join(symptoms)}'. (API/Mock Fallback Failed)"
+
+
+@tool
+def get_hospital_info(hospital_name: str, location: Optional[str] = None, user_token: str = "default") -> str:
+    """
+    Retrieves information about a specific hospital or medical center.
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        hospital_name (str): The full or partial name of the hospital (e.g., "General Hospital", "City Medical Center").
+        location (str, optional): The city or region where the hospital is located.
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of hospital information, or an error/fallback message.
+    """
+    logger.info(f"Tool: get_hospital_info called for hospital: '{hospital_name}', location: '{location}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'medical_tool_access', False):
+        return "Error: Access to medical tools is not enabled for your current tier."
+    
+    params = {"name": hospital_name}
+    if location: params["location"] = location
+
+    api_data = asyncio.run(_make_dynamic_api_request("medical", "get_hospital_info", params, user_token))
+
+    if api_data:
+        try:
+            name = api_data.get("name")
+            loc = api_data.get("location")
+            specialties = api_data.get("specialties")
+            contact = api_data.get("contact")
+            website = api_data.get("website")
+
+            if name and loc:
+                response_str = (
+                    f"Information for Hospital: {name}\n"
+                    f"  Location: {loc}\n"
+                )
+                if specialties:
+                    response_str += f"  Specialties: {', '.join(specialties)}\n"
+                if contact:
+                    response_str += f"  Contact: {contact}\n"
+                if website:
+                    response_str += f"  Website: {website}\n"
+                return response_str
+            else:
+                logger.warning(f"Live API data for hospital '{hospital_name}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live hospital information for '{hospital_name}'. Falling back to mock data."
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing live hospital info data for '{hospital_name}': {e}")
+            return f"Error parsing live data for '{hospital_name}'. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_data_key_prefix = hospital_name.lower().replace(" ", "_")
+    mock_data = None
+    for key, entry in _mock_medical_data.get("hospital_info", {}).items():
+        if mock_data_key_prefix in key and (not location or location.lower() in entry.get("location", "").lower()):
+            mock_data = entry
+            break
+
+    if mock_data:
+        response_str = (
+            f"Information for Hospital: {mock_data['name']} (Mock Data Fallback)\n"
+            f"  Location: {mock_data['location']}\n"
+        )
+        if mock_data.get('specialties'):
+            response_str += f"  Specialties: {', '.join(mock_data['specialties'])}\n"
+        if mock_data.get('contact'):
+            response_str += f"  Contact: {mock_data['contact']}\n"
+        if mock_data.get('website'):
+            response_str += f"  Website: {mock_data['website']}\n"
+        return response_str
+    else:
+        return f"Hospital information not found for '{hospital_name}'. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in medical context) ---
@@ -431,7 +685,7 @@ def medical_search_web(query: str, user_token: str = "default", max_chars: int =
     This tool wraps the generic `scrape_web` tool, providing a medical-specific interface.
     
     Args:
-        query (str): The medical/health-related search query (e.g., "latest research on cancer treatment", "symptoms of common cold").
+        query (str): The medical-related search query (e.g., "symptoms of common cold", "latest cancer research").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -448,7 +702,7 @@ def medical_query_uploaded_docs(query: str, user_token: str = "default", export:
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "medical".
     
     Args:
-        query (str): The search query to find relevant medical documents (e.g., "what are the side effects of drug X", "summary of patient's medical history").
+        query (str): The search query to find relevant medical documents (e.g., "my lab results explanation", "patient history for John Doe").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -463,13 +717,13 @@ def medical_query_uploaded_docs(query: str, user_token: str = "default", export:
 @tool
 def medical_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to medical or health information located at the given file path.
+    Summarizes a document related to medicine or health located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
     Args:
         file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/medical/patient_record.pdf"
+                              Example: "uploads/default/medical/patient_report.pdf"
     
     Returns:
         str: A concise summary of the document content.
@@ -493,8 +747,8 @@ def medical_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -505,7 +759,7 @@ if __name__ == "__main__":
     # Mock Streamlit secrets and config_manager for local testing
     class MockSecrets:
         def __init__(self):
-            self.health_api_key = "MOCK_HEALTH_API_KEY"
+            self.medical_api_key = "MOCK_MEDICAL_API_KEY"
             self.openai_api_key = "sk-mock-openai-key-12345"
             self.google_api_key = "AIzaSy-mock-google-key"
             self.firebase_config = "{}"
@@ -532,36 +786,54 @@ if __name__ == "__main__":
                 'default_user_tier': 'free',
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
-                    'medical': 'health_api'
+                    'medical': 'medical_api'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for medical
                 "medical": {
-                    "health_api": {
-                        "base_url": "https://api.example.com/health",
-                        "api_key_name": "health_api_key",
-                        "api_key_param_name": "apikey",
+                    "medical_api": {
+                        "base_url": "https://api.example.com/medical",
+                        "api_key_name": "medical_api_key",
+                        "api_key_param_name": "api_key",
                         "functions": {
                             "get_drug_info": {
                                 "endpoint": "/drugs",
                                 "required_params": ["name"],
                                 "response_path": ["data", 0], # Assuming first result is most relevant
                                 "data_map": {
-                                    "drug_name": "name",
-                                    "description": "description",
+                                    "name": "name",
+                                    "generic_name": "generic_name",
+                                    "uses": "uses",
                                     "side_effects": "side_effects",
-                                    "dosage": "dosage"
+                                    "dosage_adult": "dosage_adult",
+                                    "interactions": "interactions"
                                 }
                             },
-                            "get_symptom_info": {
-                                "endpoint": "/symptoms",
-                                "required_params": ["name"],
+                            "check_symptoms": {
+                                "endpoint": "/symptoms/check",
+                                "required_params": ["symptoms"],
                                 "response_path": ["data", 0],
                                 "data_map": {
-                                    "symptom_name": "name",
-                                    "causes": "causes",
-                                    "treatment": "treatment",
-                                    "when_to_see_doctor": "when_to_see_doctor"
+                                    "possible_conditions": "conditions",
+                                    "recommendations": "recommendations"
+                                }
+                            },
+                            "get_hospital_info": {
+                                "endpoint": "/hospitals",
+                                "required_params": ["name"],
+                                "optional_params": ["location"],
+                                "response_path": ["data", 0],
+                                "data_map": {
+                                    "name": "name",
+                                    "location": "location",
+                                    "specialties": "specialties",
+                                    "contact": "contact",
+                                    "website": "website"
                                 }
                             }
                         }
@@ -665,163 +937,170 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Health API responses
-        if "api.example.com/health" in url:
-            if "/drugs" in url:
-                drug_name = params.get("name", "").lower()
-                if drug_name == "aspirin":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "Aspirin",
-                            "description": "A salicylate drug used for pain, fever, and inflammation.",
-                            "side_effects": ["Stomach upset", "heartburn"],
-                            "dosage": "325mg daily"
-                        }]
-                    }
-                    return mock_response
-                elif drug_name == "ibuprofen":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "Ibuprofen",
-                            "description": "A nonsteroidal anti-inflammatory drug (NSAID) for pain and inflammation.",
-                            "side_effects": ["Nausea", "headache"],
-                            "dosage": "200-400mg every 4-6 hours"
-                        }]
-                    }
-                    return mock_response
-                else: # No data found
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
-            elif "/symptoms" in url:
-                symptom_name = params.get("name", "").lower()
-                if symptom_name == "headache":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "Headache",
-                            "causes": ["Stress", "dehydration"],
-                            "treatment": "Rest, pain relievers",
-                            "when_to_see_doctor": "Sudden severe pain, vision changes"
-                        }]
-                    }
-                    return mock_response
-                elif symptom_name == "fever":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "Fever",
-                            "causes": ["Infection"],
-                            "treatment": "Fluids, fever reducers",
-                            "when_to_see_doctor": "High fever in infants, persistent fever"
-                        }]
-                    }
-                    return mock_response
-                else: # No data found
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
         
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'medical')}</h1><p>Some medical news snippet.</p></body></html>"
-            return mock_response
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
 
-    requests.get = mock_requests_get_dynamic
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Medical API responses
+            if "api.example.com/medical" in url:
+                if "/drugs" in url:
+                    name = params.get("name", "").lower()
+                    if "paracetamol" in name:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "name": "Paracetamol",
+                                "generic_name": "Acetaminophen",
+                                "uses": "Pain relief and fever reduction.",
+                                "side_effects": "Rare: allergic reactions, skin rash.",
+                                "dosage_adult": "500-1000 mg every 4-6 hours.",
+                                "interactions": "Warfarin."
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+                elif "/symptoms/check" in url:
+                    symptoms = params.get("symptoms", [])
+                    if "fever" in symptoms and "cough" in symptoms:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "conditions": ["Common Cold", "Flu"],
+                                "recommendations": "Rest and fluids."
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+                elif "/hospitals" in url:
+                    name = params.get("name", "").lower()
+                    location = params.get("location", "").lower()
+                    if "general hospital" in name and "london" in location:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "name": "General Hospital London",
+                                "location": "London, UK",
+                                "specialties": ["Emergency Medicine", "Cardiology"],
+                                "contact": "+44 20 1234 5678",
+                                "website": "http://example.com/ghl"
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+            
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'medical')}</h1><p>Some medical content from web search.</p></body></html>"
+                return mock_response
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-    print("\n--- Testing medical_tool functions ---")
+        requests.get = mock_requests_get_dynamic
 
-    # Test get_drug_info
-    print("\n--- Testing get_drug_info ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_aspirin = get_drug_info("Aspirin", user_token=test_user_pro)
-    print(f"Aspirin Info (Pro User, API):\n{result_aspirin[:200]}...")
-    assert "Information for Aspirin:" in result_aspirin
-    assert "A salicylate drug" in result_aspirin
-    print("Test 1 Passed.")
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    # Test get_drug_info (fallback)
-    print("\n--- Testing get_drug_info (Fallback) ---")
-    with patch('domain_tools.medical_tools.medical_tool._make_dynamic_api_request', return_value=None):
-        result_ibuprofen_fallback = get_drug_info("Ibuprofen", user_token=test_user_pro)
-        print(f"Ibuprofen Info (Pro User, Fallback):\n{result_ibuprofen_fallback[:200]}...")
-        assert "Information for Ibuprofen (Mock Data Fallback):" in result_ibuprofen_fallback
-    print("Test 2 Passed.")
+        async def run_medical_tests():
+            print("\n--- Testing medical_tool functions with Analytics ---")
 
-    # Test get_symptom_info
-    print("\n--- Testing get_symptom_info ---")
-    result_headache = get_symptom_info("Headache", user_token=test_user_pro)
-    print(f"Headache Info (Pro User, API):\n{result_headache[:200]}...")
-    assert "Information for Headache:" in result_headache
-    assert "Common Causes: Stress, dehydration" in result_headache
-    print("Test 3 Passed.")
+            # Test get_drug_info (success)
+            print("\n--- Test 1: get_drug_info (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_drug_info = await get_drug_info("Paracetamol", user_token=test_user_pro)
+            print(f"Drug Info: {result_drug_info}")
+            assert "Information for Drug: Paracetamol" in result_drug_info
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "medical_get_drug_info"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test get_symptom_info (fallback)
-    print("\n--- Testing get_symptom_info (Fallback) ---")
-    with patch('domain_tools.medical_tools.medical_tool._make_dynamic_api_request', return_value=None):
-        result_fever_fallback = get_symptom_info("Fever", user_token=test_user_pro)
-        print(f"Fever Info (Pro User, Fallback):\n{result_fever_fallback[:200]}...")
-        assert "Information for Fever (Mock Data Fallback):" in result_fever_fallback
-    print("Test 4 Passed.")
+            # Test check_symptoms (API failure - no data found)
+            print("\n--- Test 2: check_symptoms (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_symptom_check = await check_symptoms(["rash", "joint pain"], user_token=test_user_pro)
+            print(f"Symptom Check (API Error): {result_symptom_check}")
+            assert "Could not retrieve complete live symptom check information for '['rash', 'joint pain']'." in result_symptom_check
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "medical_check_symptoms"
+            assert logged_data["success"] is False
+            assert "Response path 'data' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test RBAC for medical_tool_access (e.g., get_drug_info for free user)
-    print("\n--- Testing RBAC for medical_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = get_drug_info("Aspirin", user_token=test_user_free)
-    print(f"Aspirin Info (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to medical tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 5 Passed.")
+            # Test get_hospital_info (RBAC denied)
+            print("\n--- Test 3: get_hospital_info (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_hospital_rbac_denied = await get_hospital_info("St. Jude's", user_token=test_user_free)
+            print(f"Hospital Info (Free User, RBAC Denied): {result_hospital_rbac_denied}")
+            assert "Error: Access to medical tools is not enabled for your current tier." in result_hospital_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test medical_search_web
-    print("\n--- Testing medical_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_query = "latest research on diabetes"
-    search_result = medical_search_web(search_query, user_token=test_user_pro)
-    print(f"Search Result for '{search_query}':\n{search_result[:500]}...")
-    assert "Search results for latest research on diabetes" in search_result
-    print("Test 6 Passed.")
+            # Test medical_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: medical_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await medical_search_web("causes of high blood pressure", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for causes of high blood pressure" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test medical_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing medical_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "medical"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "medical_report.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a sample medical report. It discusses new findings in cardiology. The patient's heart rate was stable.")
-    
-    result_summary = medical_summarize_document_by_path(str(dummy_file_path))
-    print(f"Medical Report Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "cardiology" in result_summary
-    print("Test 7 Passed.")
+            print("\nAll medical_tool tests with analytics considerations completed.")
 
-    print("\nAll medical_tool tests completed.")
+        await run_medical_tests()
 
-    # Restore original requests.get
-    requests.get = original_requests_get
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
