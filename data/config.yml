@@ -1,40 +1,103 @@
-# data/config.yml
+# config/config.yml
 
-# Global application configuration settings.
-# This file defines general parameters, default behaviors, and API defaults.
+# Application Settings
+app:
+  name: "Multi-Domain AI Agent"
+  version: "1.0.0"
+  description: "An AI agent capable of interacting with various domains using specialized tools."
 
+# LLM Settings
 llm:
-  provider: "openai" # Default LLM provider (e.g., "openai", "google", "ollama")
-  model_name: "gpt-3.5-turbo" # Default LLM model
-  temperature: 0.7 # Default LLM temperature
-  max_summary_input_chars: 10000 # Max characters for summarization input
+  provider: "openai" # or "google", "ollama"
+  model: "gpt-4o" # or "gemini-pro", "llama3"
+  temperature: 0.7
+  max_summary_input_chars: 10000
 
+# RAG Settings (for uploaded documents)
 rag:
-  chunk_size: 1000 # Default chunk size for document processing
-  chunk_overlap: 100 # Default overlap between chunks
-  max_query_results_k: 5 # Default number of top results to retrieve from vector store
+  embedding_model: "text-embedding-ada-002" # or "text-embedding-3-small", "nomic-embed-text"
+  chunk_size: 500
+  chunk_overlap: 50
+  max_query_results_k: 10 # Max documents to retrieve for RAG
 
+# Web Scraping Settings
 web_scraping:
-  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-  timeout_seconds: 30 # Default timeout for web requests
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  timeout_seconds: 30
+  max_search_results: 5 # Max results to fetch from web search
 
-# Default user tier and roles for new registrations or unauthenticated access
+# User Tier and RBAC Settings
+tiers:
+  free:
+    max_uploaded_docs_mb: 5
+    max_rag_queries_per_day: 10
+    tool_access:
+      finance_tool_access: False
+      crypto_tool_access: False
+      medical_tool_access: False
+      news_tool_access: False
+      legal_tool_access: False
+      education_tool_access: False
+      entertainment_tool_access: False
+      weather_tool_access: False
+      travel_tool_access: False
+      sports_tool_access: False
+    data_analysis_enabled: False
+    web_search_limit_chars: 500
+    web_search_max_results: 2
+  pro:
+    max_uploaded_docs_mb: 50
+    max_rag_queries_per_day: 100
+    tool_access:
+      finance_tool_access: True
+      crypto_tool_access: True
+      medical_tool_access: True
+      news_tool_access: True
+      legal_tool_access: True
+      education_tool_access: True
+      entertainment_tool_access: True
+      weather_tool_access: True
+      travel_tool_access: True
+      sports_tool_access: True
+    data_analysis_enabled: True
+    web_search_limit_chars: 3000
+    web_search_max_results: 7
+  premium:
+    max_uploaded_docs_mb: 500
+    max_rag_queries_per_day: 1000
+    tool_access:
+      finance_tool_access: True
+      crypto_tool_access: True
+      medical_tool_access: True
+      news_tool_access: True
+      legal_tool_access: True
+      education_tool_access: True
+      entertainment_tool_access: True
+      weather_tool_access: True
+      travel_tool_access: True
+      sports_tool_access: True
+    data_analysis_enabled: True
+    web_search_limit_chars: 10000
+    web_search_max_results: 15
+
 default_user_tier: "free"
 default_user_roles: ["user"]
 
-# --- API Default Providers ---
-# Specifies the default API provider to use for each domain.
-# These names must match a provider defined in data/api_providers.yml
+# Default API Providers for each domain
 api_defaults:
   finance: "alphavantage"
   crypto: "coingecko"
+  medical: "medical_api" # Hypothetical medical API
   news: "newsapi"
-  medical: "health_api" # Example hypothetical
-  legal: "legal_data_api" # Example hypothetical
-  education: "academic_api" # Example hypothetical
-  entertainment: "themoviedb" # Or "omdbapi"
-  weather: "openweathermap"
-  travel: "amadeus" # Or "bookingcom"
-  sports: "thesportsdb"
+  legal: "legal_api" # Hypothetical legal API
+  education: "education_api" # Hypothetical education API
+  entertainment: "entertainment_api" # Hypothetical entertainment API
+  weather: "weather_api" # Hypothetical weather API
+  travel: "travel_api" # Hypothetical travel API (can be Amadeus for flights)
+  sports: "sports_api" # Hypothetical sports API
 
-# Add other global configurations as needed
+# Analytics Settings
+analytics:
+  enabled: True # Set to True to enable logging of analytics events to Firestore
+  log_tool_usage: True # Log every tool call
+  log_query_failures: True # Log when the agent fails to answer a query
