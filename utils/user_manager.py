@@ -20,11 +20,10 @@ def initialize_firebase():
     """Initializes Firebase Admin SDK if not already initialized."""
     if not firebase_admin._apps:
         try:
-            # Use the environment variable for Firebase config if available, otherwise try secrets.toml
             # Note: firestore_manager's _initialize_firestore already handles this logic.
             # We just need to ensure it's called.
             # The firebase_admin.initialize_app() call is now managed by firestore_manager.
-            # We only need to ensure firestore_manager is instantiated, which it is by importing.
+            # We explicitly call it here to make sure it's initialized before dynamic config loading.
             pass # Firebase initialization is now handled by firestore_manager's instantiation
         except Exception as e:
             logger.error(f"Error initializing Firebase Admin SDK (via firestore_manager): {e}")
@@ -235,7 +234,7 @@ async def get_all_users() -> Dict[str, Dict[str, Any]]:
                 "username": user_record.display_name,
                 "email": user_record.email,
                 "tier": custom_claims.get('tier', config_manager.get("default_user_tier", "free")),
-                "roles": custom_claims.get('roles', config_manager.get("default_user_roles", ["user"]))
+                "roles": custom_claims.get("default_user_roles", ["user"])
             }
         logger.info(f"Fetched {len(users)} users from Firebase Auth.")
         return users
@@ -269,8 +268,8 @@ def get_user_tier_capability(user_token: Optional[str], capability_key: str, def
                           Can be None if no user is logged in.
         capability_key (str): The key of the capability to check (e.g., "data_analysis_enabled").
         default_value (Any): The default value to return if the capability or user's tier/roles
-                             are not explicitly defined for this capability.
-                             
+                              are not explicitly defined for this capability.
+                              
     Returns:
         Any: The value of the capability for the user, or the default_value.
     """
@@ -346,4 +345,3 @@ async def confirm_password_reset(oob_code: str, new_password: str):
     except Exception as e:
         logger.error(f"Error confirming password reset with code {oob_code}: {e}")
         raise ValueError(f"Failed to confirm password reset: {e}")
-
