@@ -40,6 +40,7 @@ sentence-transformers # For HuggingFaceEmbeddings
 # Other utilities
 pyyaml # For config_manager
 python-dotenv # For loading environment variables (if used for secrets)
+toml # NEW: For directly parsing secrets.toml in non-Streamlit contexts
 
 # Development/Testing
 pytest
