@@ -16,11 +16,12 @@ from datetime import datetime, timezone
 # Project imports
 from config.config_manager import config_manager
 from utils.analytics_tracker import initialize_analytics, log_event
-from database.firestore_manager import FirestoreManager # Now accepts db, auth in constructor
-from shared_tools.cloud_storage_utils import CloudStorageUtils
+from database.firestore_manager import FirestoreManager
+# Corrected import for cloud_storage_utils: import the module itself
+import shared_tools.cloud_storage_utils as cloud_storage_utils_module 
 from shared_tools.vector_utils import VectorUtils
 from utils.date_parser import parse_date_string
-from utils.user_manager import UserManager # Import UserManager for backend logic
+from utils.user_manager import UserManager
 from domain_tools.finance_tools import FinanceTools
 from domain_tools.crypto_tools import CryptoTools
 from domain_tools.medical_tools import MedicalTools
@@ -102,7 +103,64 @@ logger.info("Analytics tracker initialized for FastAPI backend.")
 # Initialize managers and tools - NOW PASS db and auth_sdk instances
 # Note: FirestoreManager and UserManager now receive the already initialized db and auth_sdk
 firestore_manager = FirestoreManager(db_instance=db, auth_instance=auth_sdk)
-cloud_storage_utils = CloudStorageUtils(config_manager)
+# Corrected instantiation: cloud_storage_utils is now the module itself
+# If any functions in cloud_storage_utils_module need config_manager, they will get it internally.
+# The CloudStorageUtils class is not defined in that module.
+# If you intended to have a class, we would need to add that class definition to shared_tools/cloud_storage_utils.py
+# For now, assuming it's meant to be a module with functions.
+# If you had a CloudStorageUtils class in shared_tools/cloud_storage_utils.py, you would use:
+# cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtils(config_manager)
+# But since it's not defined, we'll just use the module directly for its functions.
+# For consistency, if other parts of the code expect an object, we might need a simple wrapper.
+# For now, let's assume direct function calls.
+# If you need to pass config_manager to the module's internal initialization,
+# you'd modify _initialize_gcs_client to accept it or ensure config_manager is a global singleton.
+# Since config_manager is already a singleton, the functions in cloud_storage_utils_module can access it directly.
+# So, we don't need to pass config_manager to a non-existent CloudStorageUtils class.
+# We will use 'cloud_storage_utils_module' directly when calling its functions.
+# Example: await cloud_storage_utils_module.upload_file_to_gcs(...)
+
+# The CloudStorageUtils instance is no longer needed as a separate object here.
+# Instead, functions will be called directly from the imported module: cloud_storage_utils_module
+# If you have existing code that uses 'cloud_storage_utils.some_function()', you'll change it to
+# 'cloud_storage_utils_module.some_function()'.
+# For now, I'll comment out the instantiation line if it existed.
+# cloud_storage_utils = CloudStorageUtils(config_manager) # REMOVE THIS LINE IF IT WAS PRESENT AND CAUSING ERROR
+
+# The vector_utils needs the cloud_storage_utils. If vector_utils expects an object,
+# we might need to create a simple wrapper class in main.py or adjust vector_utils.
+# For now, let's assume vector_utils can take the module directly or its functions.
+# Let's create a simple wrapper class if vector_utils expects an object.
+class CloudStorageUtilsWrapper:
+    def __init__(self, config_manager_instance):
+        self.config_manager = config_manager_instance
+        # The internal functions of cloud_storage_utils_module will access config_manager directly
+        # since it's a singleton. No need to pass it here.
+        # This wrapper just provides a consistent object interface if other modules expect it.
+
+    # Expose the functions from the module through this wrapper
+    async def upload_file_to_gcs(self, *args, **kwargs):
+        return await cloud_storage_utils_module.upload_file_to_gcs(*args, **kwargs)
+    
+    async def download_file_from_gcs(self, *args, **kwargs):
+        return await cloud_storage_utils_module.download_file_from_gcs(*args, **kwargs)
+    
+    async def delete_file_from_gcs(self, *args, **kwargs):
+        return await cloud_storage_utils_module.delete_file_from_gcs(*args, **kwargs)
+    
+    async def read_file_from_gcs_to_bytes(self, *args, **kwargs):
+        return await cloud_storage_utils_module.read_file_from_gcs_to_bytes(*args, **kwargs)
+    
+    def get_gcs_bucket(self):
+        return cloud_storage_utils_module.get_gcs_bucket()
+
+    def get_gcs_client(self):
+        return cloud_storage_utils_module.get_gcs_client()
+
+
+# Instantiate the wrapper
+cloud_storage_utils = CloudStorageUtilsWrapper(config_manager)
+
 vector_utils = VectorUtils(firestore_manager, cloud_storage_utils, config_manager)
 user_manager = UserManager(db=db, auth_sdk=auth_sdk, firestore_manager=firestore_manager, config_manager=config_manager, log_event=log_event)
 finance_tools = FinanceTools(config_manager, log_event)
@@ -112,7 +170,7 @@ news_tools = NewsTools(config_manager, log_event)
 legal_tools = LegalTools(config_manager, log_event)
 education_tools = EducationTools(config_manager, log_event)
 entertainment_tools = EntertainmentTools(config_manager, log_event)
-weather_tools = WeatherTools(config_manager, log_event)
+weather_tools = Weather_Tools(config_manager, log_event)
 travel_tools = TravelTools(config_manager, log_event)
 sports_tools = SportsTools(config_manager, log_event)
 
@@ -355,6 +413,7 @@ async def upload_document_endpoint(doc_request: DocumentUploadRequest, current_u
 
     logger.info(f"User {user_id} attempting to upload document: {doc_request.file_name}")
     try:
+        # Call the function directly from the module
         result = await vector_utils.process_uploaded_document(
             doc_request.file_name,
             doc_request.file_content_base64,
