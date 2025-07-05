@@ -38,7 +38,8 @@ from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_s
 from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
 from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
 from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast
-from domain_tools.travel_tools.travel_tool import find_flights, find_hotels # NEW: Import travel tools
+from domain_tools.travel_tools.travel_tool import find_flights, find_hotels
+from domain_tools.sports_tools.sports_tool import get_player_stats, get_team_stats, get_league_info # NEW: Import sports tools
 
 logger = logging.getLogger(__name__)
 
@@ -237,19 +238,37 @@ class LLMService:
                         mock_tool_output = get_weather_forecast(location, days, user_token=user_token_for_tools)
                         return {"output": f"I used get_weather_forecast. Output:\n{mock_tool_output}"}
 
-                    if ("find flights" in prompt or "flight info" in prompt) and is_tool_available("find_flights"): # NEW: Mock travel tool call
+                    if ("find flights" in prompt or "flight info" in prompt) and is_tool_available("find_flights"):
                         origin = "London"
                         destination = "New York"
                         date = "2025-07-15"
                         mock_tool_output = find_flights(origin, destination, date, user_token=user_token_for_tools)
                         return {"output": f"I used find_flights. Output:\n{mock_tool_output}"}
 
-                    if ("find hotels" in prompt or "hotel availability" in prompt) and is_tool_available("find_hotels"): # NEW: Mock travel tool call
+                    if ("find hotels" in prompt or "hotel availability" in prompt) and is_tool_available("find_hotels"):
                         location = "Paris"
                         check_in_date = "2025-09-01"
                         check_out_date = "2025-09-05"
                         mock_tool_output = find_hotels(location, check_in_date, check_out_date, user_token=user_token_for_tools)
                         return {"output": f"I used find_hotels. Output:\n{mock_tool_output}"}
+
+                    if ("player stats" in prompt or "player information" in prompt or "rings won" in prompt or "trophies won" in prompt or "championship stats" in prompt) and is_tool_available("get_player_stats"): # NEW: Mock sports tool call
+                        player_name = "lionel messi"
+                        sport_name = "football"
+                        mock_tool_output = get_player_stats(player_name, sport=sport_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_player_stats. Output:\n{mock_tool_output}"}
+
+                    if ("team stats" in prompt or "club stats" in prompt or "team trophies" in prompt) and is_tool_available("get_team_stats"): # NEW: Mock sports tool call
+                        team_name = "real madrid"
+                        sport_name = "football"
+                        mock_tool_output = get_team_stats(team_name, sport=sport_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_team_stats. Output:\n{mock_tool_output}"}
+
+                    if ("league info" in prompt or "league stats" in prompt or "current champion" in prompt) and is_tool_available("get_league_info"): # NEW: Mock sports tool call
+                        league_name = "premier league"
+                        sport_name = "football"
+                        mock_tool_output = get_league_info(league_name, sport=sport_name, user_token=user_token_for_tools)
+                        return {"output": f"I used get_league_info. Output:\n{mock_tool_output}"}
 
                     if ("analyze data" in prompt or "run python" in prompt or "time series analysis" in prompt or "regression analysis" in prompt or "machine learning" in prompt or "ml model" in prompt) and is_tool_available("python_interpreter_with_rbac"):
                         code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
@@ -262,7 +281,7 @@ class LLMService:
 
                     if "sentiment" in prompt and is_tool_available("analyze_sentiment"):
                         text_for_sentiment = "This is a test sentence for sentiment analysis."
-                        mock_tool_output = analyze_tool_output = analyze_sentiment(text_for_sentiment)
+                        mock_tool_output = analyze_sentiment(text_for_sentiment)
                         return {"output": f"I used analyze_sentiment. Output:\n{mock_tool_output}"}
 
                     if "query document" in prompt and is_tool_available("query_uploaded_docs"):
@@ -443,9 +462,13 @@ class LLMService:
             available_tools.extend([get_current_weather, get_weather_forecast])
             logger.debug(f"Weather tools (current weather, forecast) added for user {user_token}")
         
-        if get_user_tier_capability(user_token, 'travel_tool_access', False): # NEW: Add travel tools
+        if get_user_tier_capability(user_token, 'travel_tool_access', False):
             available_tools.extend([find_flights, find_hotels])
             logger.debug(f"Travel tools (find flights, find hotels) added for user {user_token}")
+        
+        if get_user_tier_capability(user_token, 'sports_tool_access', False): # NEW: Add sports tools
+            available_tools.extend([get_player_stats, get_team_stats, get_league_info])
+            logger.debug(f"Sports tools (player stats, team stats, league info) added for user {user_token}")
 
 
         if not available_tools:
@@ -483,8 +506,11 @@ class LLMService:
                 "For music artist information, use `get_music_artist_info`. "
                 "For current weather, use `get_current_weather`. "
                 "For weather forecasts, use `get_weather_forecast`. "
-                "For finding flights, use `find_flights`. " # NEW: Added to prompt
-                "For finding hotels, use `find_hotels`. " # NEW: Added to prompt
+                "For finding flights, use `find_flights`. "
+                "For finding hotels, use `find_hotels`. "
+                "For player statistics (e.g., career stats, trophies, rings), use `get_player_stats`. " # NEW: Added to prompt
+                "For team or club statistics (e.g., season stats, major trophies, standings), use `get_team_stats`. " # NEW: Added to prompt
+                "For sports league information (e.g., champions, top scorers), use `get_league_info`. " # NEW: Added to prompt
                 "For **data analysis**, complex calculations, time series analysis, regression analysis, "
                 "or any other machine learning tasks (supervised or unsupervised), use the `python_interpreter_with_rbac` tool. "
                 "For generating charts from data, use `generate_and_save_chart`. "
@@ -641,6 +667,24 @@ class LLMService:
                     check_out_date = "2025-09-05"
                     mock_tool_output = find_hotels(location, check_in_date, check_out_date, user_token=user_token_for_tools)
                     return {"output": f"I used find_hotels. Output:\n{mock_tool_output}"}
+
+                if ("player stats" in prompt_text or "player information" in prompt_text or "rings won" in prompt_text or "trophies won" in prompt_text or "championship stats" in prompt_text) and is_tool_available("get_player_stats"):
+                    player_name = "lionel messi"
+                    sport_name = "football"
+                    mock_tool_output = get_player_stats(player_name, sport=sport_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_player_stats. Output:\n{mock_tool_output}"}
+
+                if ("team stats" in prompt_text or "club stats" in prompt_text or "team trophies" in prompt_text) and is_tool_available("get_team_stats"):
+                    team_name = "real madrid"
+                    sport_name = "football"
+                    mock_tool_output = get_team_stats(team_name, sport=sport_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_team_stats. Output:\n{mock_tool_output}"}
+
+                if ("league info" in prompt_text or "league stats" in prompt_text or "current champion" in prompt_text) and is_tool_available("get_league_info"):
+                    league_name = "premier league"
+                    sport_name = "football"
+                    mock_tool_output = get_league_info(league_name, sport=sport_name, user_token=user_token_for_tools)
+                    return {"output": f"I used get_league_info. Output:\n{mock_tool_output}"}
 
                 if ("analyze data" in prompt_text or "run python" in prompt_text or "time series analysis" in prompt_text or "regression analysis" in prompt_text or "machine learning" in prompt_text or "ml model" in prompt_text) and is_tool_available("python_interpreter_with_rbac"):
                     code_to_run = "print('Mock Python analysis result for your data, potentially including ML/regression.')"
