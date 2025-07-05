@@ -18,7 +18,8 @@ from firebase_admin.exceptions import FirebaseError
 # Project-specific imports
 from config.config_manager import config_manager
 from utils.analytics_tracker import log_event, initialize_analytics
-from utils.user_manager import get_user_capabilities, get_user_info_from_db, update_user_info_in_db # Assuming these will be updated/used
+# from utils.user_manager import get_user_capabilities, get_user_info_from_db, update_user_info_in_db # Assuming these will be updated/used
+# Note: get_user_capabilities is now called directly from here after fetching user profile
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,10 @@ class UserProfileUpdate(BaseModel):
     # tier: Optional[str] = None
     # roles: Optional[List[str]] = None
 
+class AdminUserUpdate(BaseModel):
+    tier: str
+    roles: List[str]
+
 class AuthResponse(BaseModel):
     success: bool
     message: str
@@ -155,6 +160,15 @@ class UserResponse(BaseModel):
     subscription_end_date: Optional[str] = None
     days_left: Optional[Any] = None # Can be int or "N/A"
     next_subscription_date: Optional[str] = None
+
+class AdminUserListItem(BaseModel):
+    user_id: str
+    email: EmailStr
+    username: str
+    tier: str
+    roles: List[str]
+    created_at: Optional[str] = None
+    last_login_at: Optional[str] = None
 
 class RBACCapabilitiesResponse(BaseModel):
     llm_temperature_control_enabled: bool
@@ -235,6 +249,47 @@ async def get_current_user_uid(request: Request) -> str:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during authentication",
+        )
+
+# --- Dependency for Admin Access ---
+async def get_current_admin_uid(current_user_uid: str = Depends(get_current_user_uid)) -> str:
+    """
+    Dependency that verifies if the authenticated user has 'admin' role.
+    """
+    try:
+        user_profile_doc = await asyncio.to_thread(db.collection(f"artifacts/{app_id_for_analytics}/users").document(current_user_uid).get)
+        
+        if not user_profile_doc.exists:
+            logger.warning(f"Admin check failed: User profile not found for UID {current_user_uid}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. User profile not found."
+            )
+        
+        profile_data = user_profile_doc.to_dict()
+        user_roles = profile_data.get('roles', [])
+
+        if "admin" not in user_roles:
+            logger.warning(f"Admin check failed: User {current_user_uid} does not have 'admin' role.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You must be an administrator to perform this action."
+            )
+        
+        return current_user_uid
+    except FirebaseError as e:
+        logger.error(f"Firebase error during admin access check for {current_user_uid}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Firebase error during admin access check: {e}"
+        )
+    except HTTPException: # Re-raise HTTPExceptions from get_current_user_uid or above
+        raise
+    except Exception as e:
+        logger.critical(f"Unexpected error during admin access check for {current_user_uid}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred during admin access check: {e}"
         )
 
 
@@ -339,33 +394,6 @@ async def login_user(request: LoginRequest):
     and then sending the ID token to backend for verification.
     """
     try:
-        # This is a simplified example. In a real app, you'd likely use
-        # Firebase Client SDK (JS) on the frontend to get the ID token.
-        # If you must authenticate with email/password on the backend, it's complex
-        # as Firebase Admin SDK doesn't expose password verification directly.
-        # A common pattern is:
-        # 1. Frontend signs in with JS SDK -> gets ID token.
-        # 2. Frontend sends ID token to backend.
-        # 3. Backend verifies ID token using f_auth.verify_id_token().
-        
-        # For this setup, we'll simulate a custom token generation for a "backend-driven" login
-        # or assume the frontend sends a valid ID token obtained through client-side SDK.
-        # For direct email/password auth on backend, you'd need a different Firebase API or a custom solution.
-
-        # Let's assume for now the frontend (Streamlit) sends the email/password,
-        # and we use Firebase Admin SDK to verify/get user, then create a custom token.
-        # This is not how client-side email/password auth typically works.
-        # This is more for generating tokens for anonymous users or linking accounts.
-
-        # To make this endpoint functional for a simple email/password login flow
-        # where the frontend doesn't directly use Firebase JS SDK for signInWithEmailAndPassword,
-        # we would need to use a Firebase REST API call (e.g., identitytoolkit) or
-        # a more complex custom token generation logic.
-
-        # For demonstration purposes, we will use a mock verification or
-        # a simple custom token generation for a known user.
-        # In a real scenario, you'd verify the password securely.
-
         # Step 1: Get user by email
         user_record = await asyncio.to_thread(f_auth.get_user_by_email, request.email)
         
@@ -829,7 +857,9 @@ async def get_user_rbac_capabilities(user_id: str, current_user_uid: str = Depen
 
         # Use the get_user_capabilities function from user_manager
         # This function should load capabilities from config and apply tier/role logic
-        capabilities = get_user_capabilities(user_tier, user_roles)
+        # NOTE: This call will be updated in user_manager to fetch from backend config
+        from utils.user_manager import get_user_capabilities as get_capabilities_from_config_logic
+        capabilities = get_capabilities_from_config_logic(user_tier, user_roles)
         
         await log_event('rbac_backend', {
             'action': 'fetch_capabilities',
@@ -894,6 +924,150 @@ async def get_user_rbac_capabilities(user_id: str, current_user_uid: str = Depen
             'status': 'failure',
             'reason': f"Unexpected error: {e}"
         }, user_id=user_id, success=False, error_message=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {e}"
+        )
+
+# --- Admin Endpoints ---
+
+@app.get("/admin/users", response_model=List[AdminUserListItem])
+async def get_all_users_admin(admin_user_uid: str = Depends(get_current_admin_uid)):
+    """
+    Retrieve a list of all users. Accessible only by administrators.
+    """
+    try:
+        users_list = []
+        # List all users from Firebase Auth
+        all_firebase_users = await asyncio.to_thread(f_auth.list_users().iterate_all)
+        
+        # Fetch their profiles from Firestore to get tier and roles
+        user_profiles_collection_ref = db.collection(f"artifacts/{app_id_for_analytics}/users")
+        
+        # Batch read user profiles for efficiency (Firestore limits 10 users per get_all)
+        # For very large number of users, consider pagination or dedicated admin tools
+        user_profile_docs = await asyncio.to_thread(user_profiles_collection_ref.get)
+        user_profiles_map = {doc.id: doc.to_dict() for doc in user_profile_docs}
+
+        for user_record in all_firebase_users:
+            profile_data = user_profiles_map.get(user_record.uid, {})
+            
+            users_list.append(AdminUserListItem(
+                user_id=user_record.uid,
+                email=user_record.email,
+                username=user_record.display_name or profile_data.get('username', 'N/A'),
+                tier=profile_data.get('tier', 'free'),
+                roles=profile_data.get('roles', ['user']),
+                created_at=user_record.creation_timestamp.isoformat() if user_record.creation_timestamp else None,
+                last_login_at=user_record.last_sign_in_timestamp.isoformat() if user_record.last_sign_in_timestamp else None,
+            ))
+        
+        await log_event('admin_action_backend', {
+            'action_type': 'get_all_users',
+            'admin_uid': admin_user_uid,
+            'num_users_fetched': len(users_list),
+            'status': 'success'
+        }, user_id=admin_user_uid, success=True)
+
+        logger.info(f"Admin {admin_user_uid} fetched {len(users_list)} users.")
+        return users_list
+
+    except FirebaseError as e:
+        logger.error(f"Firebase error fetching all users for admin {admin_user_uid}: {e}", exc_info=True)
+        await log_event('admin_action_backend', {
+            'action_type': 'get_all_users',
+            'admin_uid': admin_user_uid,
+            'status': 'failure',
+            'reason': f"Firebase error: {e}"
+        }, user_id=admin_user_uid, success=False, error_message=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Firebase error fetching all users: {e}"
+        )
+    except Exception as e:
+        logger.critical(f"Unexpected error fetching all users for admin {admin_user_uid}: {e}", exc_info=True)
+        await log_event('admin_action_backend', {
+            'action_type': 'get_all_users',
+            'admin_uid': admin_user_uid,
+            'status': 'failure',
+            'reason': f"Unexpected error: {e}"
+        }, user_id=admin_user_uid, success=False, error_message=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {e}"
+        )
+
+
+@app.put("/admin/users/{target_user_id}/roles_and_tier", response_model=AuthResponse)
+async def update_user_roles_and_tier_admin(
+    target_user_id: str,
+    request_body: AdminUserUpdate,
+    admin_user_uid: str = Depends(get_current_admin_uid)
+):
+    """
+    Update a specific user's tier and roles. Accessible only by administrators.
+    """
+    try:
+        # 1. Update custom claims in Firebase Auth (for immediate token verification)
+        await asyncio.to_thread(f_auth.set_custom_user_claims, target_user_id, {'tier': request_body.tier, 'roles': request_body.roles})
+        
+        # 2. Update user profile in Firestore (for persistent storage and profile display)
+        user_profile_ref = db.collection(f"artifacts/{app_id_for_analytics}/users").document(target_user_id)
+        update_data = {
+            "tier": request_body.tier,
+            "roles": request_body.roles
+        }
+        await asyncio.to_thread(user_profile_ref.update, update_data)
+
+        # 3. Revoke refresh tokens for the target user to force them to re-authenticate
+        # This ensures the new claims are picked up quickly by their client
+        await asyncio.to_thread(f_auth.revoke_refresh_tokens, target_user_id)
+
+        await log_event('admin_action_backend', {
+            'action_type': 'update_user_roles_and_tier',
+            'admin_uid': admin_user_uid,
+            'target_user_uid': target_user_id,
+            'new_tier': request_body.tier,
+            'new_roles': request_body.roles,
+            'status': 'success'
+        }, user_id=admin_user_uid, success=True)
+
+        logger.info(f"Admin {admin_user_uid} updated user {target_user_id} to Tier: {request_body.tier}, Roles: {request_body.roles}")
+        return AuthResponse(success=True, message=f"User {target_user_id} tier and roles updated successfully.")
+
+    except auth.UserNotFoundError:
+        await log_event('admin_action_backend', {
+            'action_type': 'update_user_roles_and_tier',
+            'admin_uid': admin_user_uid,
+            'target_user_uid': target_user_id,
+            'status': 'failure',
+            'reason': 'user_not_found'
+        }, user_id=admin_user_uid, success=False, error_message="Target user not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target user not found."
+        )
+    except FirebaseError as e:
+        logger.error(f"Firebase error updating user {target_user_id} roles/tier for admin {admin_user_uid}: {e}", exc_info=True)
+        await log_event('admin_action_backend', {
+            'action_type': 'update_user_roles_and_tier',
+            'admin_uid': admin_user_uid,
+            'target_user_uid': target_user_id,
+            'status': 'failure',
+            'reason': f"Firebase error: {e}"
+        }, user_id=admin_user_uid, success=False, error_message=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Firebase error updating user: {e}"
+        )
+    except Exception as e:
+        logger.critical(f"Unexpected error updating user {target_user_id} roles/tier for admin {admin_user_uid}: {e}", exc_info=True)
+        await log_event('admin_action_backend', {
+            'action_type': 'update_user_roles_and_tier',
+            'admin_uid': admin_user_uid,
+            'status': 'failure',
+            'reason': f"Unexpected error: {e}"
+        }, user_id=admin_user_uid, success=False, error_message=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {e}"
