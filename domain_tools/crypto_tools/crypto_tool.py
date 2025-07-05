@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from config.config_manager import config_manager
 # Import user_manager for RBAC checks
 from utils.user_manager import get_user_tier_capability
+# Import date_parser for date format flexibility
+from utils.date_parser import parse_date_to_yyyymmdd
 
 logger = logging.getLogger(__name__)
 
