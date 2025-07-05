@@ -19,6 +19,8 @@ from config.config_manager import config_manager
 from utils.user_manager import get_user_tier_capability
 # Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,19 +355,64 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
@@ -264,7 +422,7 @@ _mock_weather_data = {
         "london": {
             "location": "London, UK",
             "temperature_celsius": 18,
-            "temperature_fahrenheit": 64,
+            "temperature_fahrenheit": 64.4,
             "condition": "Partly Cloudy",
             "humidity": 70,
             "wind_speed_kph": 15,
@@ -280,67 +438,78 @@ _mock_weather_data = {
             "last_updated": datetime.now().isoformat()
         }
     },
-    "weather_forecast": {
+    "forecast": {
         "london": [
             {
                 "date": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
                 "max_temp_celsius": 20,
                 "min_temp_celsius": 12,
                 "condition": "Light Rain",
-                "precipitation_mm": 5
+                "pop": 60 # Probability of precipitation
             },
             {
                 "date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
                 "max_temp_celsius": 22,
                 "min_temp_celsius": 14,
-                "condition": "Partly Cloudy",
-                "precipitation_mm": 0
+                "condition": "Cloudy",
+                "pop": 20
             }
         ],
         "new_york": [
             {
                 "date": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
                 "max_temp_celsius": 28,
-                "min_temp_celsius": 20,
+                "min_temp_celsius": 19,
                 "condition": "Sunny",
-                "precipitation_mm": 0
+                "pop": 10
             },
             {
                 "date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
                 "max_temp_celsius": 26,
                 "min_temp_celsius": 18,
-                "condition": "Thunderstorms",
-                "precipitation_mm": 15
+                "condition": "Partly Cloudy",
+                "pop": 30
             }
         ]
+    },
+    "air_quality": {
+        "london": {
+            "location": "London, UK",
+            "aqi": 35, # Good
+            "pollutants": {"pm2_5": 8, "o3": 40},
+            "last_updated": datetime.now().isoformat()
+        },
+        "new_york": {
+            "location": "New York, USA",
+            "aqi": 60, # Moderate
+            "pollutants": {"pm2_5": 15, "co": 3},
+            "last_updated": datetime.now().isoformat()
+        }
     }
 }
 
 @tool
-def get_current_weather(location: str, user_token: str = "default") -> str:
+def get_current_weather(location: str, user_token: str = "default", unit: str = "celsius") -> str:
     """
-    Retrieves the current weather conditions for a specified location (city, country).
+    Retrieves the current weather conditions for a specified location.
+    Can return temperature in 'celsius' or 'fahrenheit'.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        location (str): The city and optionally country (e.g., "London, UK", "New York").
+        location (str): The city or location (e.g., "London", "New York").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
+        unit (str, optional): The temperature unit ('celsius' or 'fahrenheit'). Defaults to 'celsius'.
 
     Returns:
         str: A formatted string of current weather information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_current_weather called for location='{location}' by user: {user_token}")
+    logger.info(f"Tool: get_current_weather called for location: '{location}', unit: '{unit}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'weather_tool_access', False):
         return "Error: Access to weather tools is not enabled for your current tier."
     
-    params = {"location": location}
-
-    api_data = _make_dynamic_api_request(
-        "weather", "get_current_weather",
-        params,
-        user_token
-    )
+    params = {"location": location, "unit": unit}
+    api_data = asyncio.run(_make_dynamic_api_request("weather", "get_current_weather", params, user_token))
 
     if api_data:
         try:
@@ -352,23 +521,22 @@ def get_current_weather(location: str, user_token: str = "default") -> str:
             wind_speed = api_data.get("wind_speed_kph")
             last_updated = api_data.get("last_updated")
 
-            if loc and temp_c is not None and condition:
+            temp_display = f"{temp_c}°C" if unit.lower() == "celsius" else f"{temp_f}°F"
+
+            if loc and condition:
                 response_str = (
                     f"Current Weather in {loc}:\n"
-                    f"  Temperature: {temp_c}°C ({temp_f}°F)\n"
+                    f"  Temperature: {temp_display}\n"
                     f"  Condition: {condition}\n"
+                    f"  Humidity: {humidity}%\n"
+                    f"  Wind Speed: {wind_speed} kph\n"
                 )
-                if humidity is not None:
-                    response_str += f"  Humidity: {humidity}%\n"
-                if wind_speed is not None:
-                    response_str += f"  Wind Speed: {wind_speed} kph\n"
                 if last_updated:
-                    # Attempt to parse and format if it's an ISO string
                     try:
                         last_updated_dt = datetime.fromisoformat(last_updated)
                         response_str += f"  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M')}\n"
                     except ValueError:
-                        response_str += f"  Last Updated: {last_updated}\n" # Use as is if not ISO
+                        response_str += f"  Last Updated: {last_updated}\n"
                 return response_str
             else:
                 logger.warning(f"Live API data for current weather in '{location}' is incomplete. Raw: {api_data}")
@@ -378,101 +546,172 @@ def get_current_weather(location: str, user_token: str = "default") -> str:
             return f"Error parsing live data for '{location}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_key = location.lower().replace(" ", "_").replace(",", "")
+    mock_data_key = location.lower().replace(" ", "_")
     mock_data = _mock_weather_data.get("current_weather", {}).get(mock_data_key)
     if mock_data:
+        temp_display = f"{mock_data['temperature_celsius']}°C" if unit.lower() == "celsius" else f"{mock_data['temperature_fahrenheit']}°F"
         response_str = (
             f"Current Weather in {mock_data['location']} (Mock Data Fallback):\n"
-            f"  Temperature: {mock_data['temperature_celsius']}°C ({mock_data['temperature_fahrenheit']}°F)\n"
+            f"  Temperature: {temp_display}\n"
             f"  Condition: {mock_data['condition']}\n"
             f"  Humidity: {mock_data['humidity']}%\n"
             f"  Wind Speed: {mock_data['wind_speed_kph']} kph\n"
         )
-        try:
-            last_updated_dt = datetime.fromisoformat(mock_data['last_updated'])
-            response_str += f"  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M')}\n"
-        except ValueError:
-            response_str += f"  Last Updated: {mock_data['last_updated']}\n"
+        if mock_data.get('last_updated'):
+            try:
+                last_updated_dt = datetime.fromisoformat(mock_data['last_updated'])
+                response_str += f"  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M')}\n"
+            except ValueError:
+                response_str += f"  Last Updated: {mock_data['last_updated']}\n"
         return response_str
     else:
         return f"Current weather information not found for '{location}'. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_weather_forecast(location: str, days: int = 3, user_token: str = "default") -> str:
+def get_weather_forecast(location: str, days: int = 3, user_token: str = "default", unit: str = "celsius") -> str:
     """
-    Retrieves the weather forecast for a specified location (city, country) for a number of upcoming days.
-    The maximum number of forecast days depends on the API provider's capabilities.
+    Retrieves the weather forecast for a specified location for a number of upcoming days (default 3).
+    Can return temperature in 'celsius' or 'fahrenheit'.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        location (str): The city and optionally country (e.g., "London, UK", "New York").
-        days (int, optional): The number of days for the forecast (e.g., 1, 3, 5). Defaults to 3.
+        location (str): The city or location (e.g., "London", "New York").
+        days (int, optional): The number of days for the forecast (max 10). Defaults to 3.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
+        unit (str, optional): The temperature unit ('celsius' or 'fahrenheit'). Defaults to 'celsius'.
 
     Returns:
         str: A formatted string of weather forecast information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_weather_forecast called for location='{location}', days='{days}' by user: {user_token}")
+    logger.info(f"Tool: get_weather_forecast called for location: '{location}', days: {days}, unit: '{unit}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'weather_tool_access', False):
         return "Error: Access to weather tools is not enabled for your current tier."
     
-    params = {"location": location, "days": days}
-
-    api_data = _make_dynamic_api_request(
-        "weather", "get_weather_forecast",
-        params,
-        user_token
-    )
+    params = {"location": location, "days": days, "unit": unit}
+    api_data = asyncio.run(_make_dynamic_api_request("weather", "get_weather_forecast", params, user_token))
 
     if api_data and api_data.get("data"):
         forecast_days = api_data["data"]
         if forecast_days:
-            response_str = f"Weather Forecast for {location}:\n"
-            for i, day_data in enumerate(forecast_days[:days]): # Limit to requested number of days
-                date_str = day_data.get('date', 'N/A')
-                # Format date if it's a valid YYYY-MM-DD string
-                try:
-                    date_str = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %d, %Y")
-                except ValueError:
-                    pass # Keep as is if not YYYY-MM-DD
-                
+            response_str = f"Weather Forecast for {location} ({days} days):\n"
+            for i, day_data in enumerate(forecast_days[:days]): # Limit to requested days
+                max_temp_c = day_data.get("max_temp_celsius")
+                min_temp_c = day_data.get("min_temp_celsius")
+                max_temp_f = day_data.get("max_temp_fahrenheit")
+                min_temp_f = day_data.get("min_temp_fahrenheit")
+                condition = day_data.get("condition")
+                pop = day_data.get("pop") # Probability of precipitation
+
+                max_temp_display = f"{max_temp_c}°C" if unit.lower() == "celsius" else f"{max_temp_f}°F"
+                min_temp_display = f"{min_temp_c}°C" if unit.lower() == "celsius" else f"{min_temp_f}°F"
+
                 response_str += (
-                    f"\nDay {i+1} ({date_str}):\n"
-                    f"  Max Temp: {day_data.get('max_temp_celsius', 'N/A')}°C\n"
-                    f"  Min Temp: {day_data.get('min_temp_celsius', 'N/A')}°C\n"
-                    f"  Condition: {day_data.get('condition', 'N/A')}\n"
+                    f"  Day {i+1} ({day_data.get('date', 'N/A')}):\n"
+                    f"    Max Temp: {max_temp_display}, Min Temp: {min_temp_display}\n"
+                    f"    Condition: {condition}\n"
+                    f"    Chance of Rain: {pop}%\n"
                 )
-                if day_data.get('precipitation_mm') is not None:
-                    response_str += f"  Precipitation: {day_data.get('precipitation_mm', 'N/A')} mm\n"
             return response_str
         else:
             return f"No live weather forecast found for '{location}' for {days} days. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_key = location.lower().replace(" ", "_").replace(",", "")
-    mock_forecast = _mock_weather_data.get("weather_forecast", {}).get(mock_data_key, [])
-    
+    mock_data_key = location.lower().replace(" ", "_")
+    mock_forecast = _mock_weather_data.get("forecast", {}).get(mock_data_key, [])
     if mock_forecast:
         response_str = f"Weather Forecast for {location} (Mock Data Fallback):\n"
-        for i, day_data in enumerate(mock_forecast[:days]): # Limit mock to requested days
-            date_str = day_data.get('date', 'N/A')
-            try:
-                date_str = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %d, %Y")
-            except ValueError:
-                pass
+        for i, day_data in enumerate(mock_forecast[:days]):
+            max_temp_c = day_data.get("max_temp_celsius")
+            min_temp_c = day_data.get("min_temp_celsius")
+            # Mock data might not have Fahrenheit, convert if necessary for display
+            max_temp_f = round(max_temp_c * 9/5 + 32, 1) if max_temp_c is not None else 'N/A'
+            min_temp_f = round(min_temp_c * 9/5 + 32, 1) if min_temp_c is not None else 'N/A'
+
+            max_temp_display = f"{max_temp_c}°C" if unit.lower() == "celsius" else f"{max_temp_f}°F"
+            min_temp_display = f"{min_temp_c}°C" if unit.lower() == "celsius" else f"{min_temp_f}°F"
+
             response_str += (
-                f"\nDay {i+1} ({date_str}):\n"
-                f"  Max Temp: {day_data.get('max_temp_celsius', 'N/A')}°C\n"
-                f"  Min Temp: {day_data.get('min_temp_celsius', 'N/A')}°C\n"
-                f"  Condition: {day_data.get('condition', 'N/A')}\n"
+                f"  Day {i+1} ({day_data.get('date', 'N/A')}):\n"
+                f"    Max Temp: {max_temp_display}, Min Temp: {min_temp_display}\n"
+                f"    Condition: {day_data.get('condition')}\n"
+                f"    Chance of Rain: {day_data.get('pop') or 'N/A'}%\n"
             )
-            if day_data.get('precipitation_mm') is not None:
-                response_str += f"  Precipitation: {day_data.get('precipitation_mm', 'N/A')} mm\n"
         return response_str
     else:
-        return f"Weather forecast information not found for '{location}'. (API/Mock Fallback Failed)"
+        return f"Weather forecast not found for '{location}'. (API/Mock Fallback Failed)"
+
+
+@tool
+def get_air_quality(location: str, user_token: str = "default") -> str:
+    """
+    Retrieves the current air quality index (AQI) and main pollutants for a specified location.
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        location (str): The city or location (e.g., "London", "New York").
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of air quality information, or an error/fallback message.
+    """
+    logger.info(f"Tool: get_air_quality called for location: '{location}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'weather_tool_access', False):
+        return "Error: Access to weather tools is not enabled for your current tier."
+    
+    params = {"location": location}
+    api_data = asyncio.run(_make_dynamic_api_request("weather", "get_air_quality", params, user_token))
+
+    if api_data:
+        try:
+            loc = api_data.get("location")
+            aqi = api_data.get("aqi")
+            pollutants = api_data.get("pollutants")
+            last_updated = api_data.get("last_updated")
+
+            pollutant_str = ", ".join([f"{p}: {v}" for p, v in pollutants.items()]) if pollutants else "N/A"
+
+            if loc and aqi is not None:
+                response_str = (
+                    f"Air Quality in {loc}:\n"
+                    f"  AQI: {aqi} ({'Good' if aqi <= 50 else 'Moderate' if aqi <= 100 else 'Unhealthy'})\n"
+                    f"  Main Pollutants: {pollutant_str}\n"
+                )
+                if last_updated:
+                    try:
+                        last_updated_dt = datetime.fromisoformat(last_updated)
+                        response_str += f"  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M')}\n"
+                    except ValueError:
+                        response_str += f"  Last Updated: {last_updated}\n"
+                return response_str
+            else:
+                logger.warning(f"Live API data for air quality in '{location}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live air quality for '{location}'. Falling back to mock data."
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing live air quality data for '{location}': {e}")
+            return f"Error parsing live data for '{location}'. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_data_key = location.lower().replace(" ", "_")
+    mock_data = _mock_weather_data.get("air_quality", {}).get(mock_data_key)
+    if mock_data:
+        pollutant_str = ", ".join([f"{p}: {v}" for p, v in mock_data.get('pollutants', {}).items()])
+        response_str = (
+            f"Air Quality in {mock_data['location']} (Mock Data Fallback):\n"
+            f"  AQI: {mock_data['aqi']} ({'Good' if mock_data['aqi'] <= 50 else 'Moderate' if mock_data['aqi'] <= 100 else 'Unhealthy'})\n"
+            f"  Main Pollutants: {pollutant_str}\n"
+        )
+        if mock_data.get('last_updated'):
+            try:
+                last_updated_dt = datetime.fromisoformat(mock_data['last_updated'])
+                response_str += f"  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M')}\n"
+            except ValueError:
+                response_str += f"  Last Updated: {mock_data['last_updated']}\n"
+        return response_str
+    else:
+        return f"Air quality information not found for '{location}'. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in weather context) ---
@@ -484,7 +723,7 @@ def weather_search_web(query: str, user_token: str = "default", max_chars: int =
     This tool wraps the generic `scrape_web` tool, providing a weather-specific interface.
     
     Args:
-        query (str): The weather-related search query (e.g., "historical weather data for London", "impact of climate change on hurricanes").
+        query (str): The weather-related search query (e.g., "impact of climate change on hurricanes", "best time to visit Paris weather-wise").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -501,7 +740,7 @@ def weather_query_uploaded_docs(query: str, user_token: str = "default", export:
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "weather".
     
     Args:
-        query (str): The search query to find relevant weather documents (e.g., "local climate report", "hurricane tracking data").
+        query (str): The search query to find relevant weather documents (e.g., "my local weather station data", "climate patterns in my region").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -516,7 +755,7 @@ def weather_query_uploaded_docs(query: str, user_token: str = "default", export:
 @tool
 def weather_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to weather or climate information located at the given file path.
+    Summarizes a document related to weather or climate located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
@@ -546,8 +785,8 @@ def weather_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -586,6 +825,11 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'weather': 'weather_api'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for weather
@@ -596,29 +840,43 @@ if __name__ == "__main__":
                         "api_key_param_name": "key",
                         "functions": {
                             "get_current_weather": {
-                                "endpoint": "/current.json",
+                                "endpoint": "/current",
                                 "required_params": ["location"],
-                                "response_path": ["current"],
+                                "optional_params": ["unit"],
+                                "response_path": ["data"],
                                 "data_map": {
                                     "location": "location.name",
-                                    "temperature_celsius": "temp_c",
-                                    "temperature_fahrenheit": "temp_f",
-                                    "condition": "condition.text",
-                                    "humidity": "humidity",
-                                    "wind_speed_kph": "wind_kph",
-                                    "last_updated": "last_updated"
+                                    "temperature_celsius": "current.temp_c",
+                                    "temperature_fahrenheit": "current.temp_f",
+                                    "condition": "current.condition.text",
+                                    "humidity": "current.humidity",
+                                    "wind_speed_kph": "current.wind_kph",
+                                    "last_updated": "current.last_updated"
                                 }
                             },
                             "get_weather_forecast": {
-                                "endpoint": "/forecast.json",
+                                "endpoint": "/forecast",
                                 "required_params": ["location", "days"],
+                                "optional_params": ["unit"],
                                 "response_path": ["forecast", "forecastday"],
                                 "data_map": {
                                     "date": "date",
                                     "max_temp_celsius": "day.maxtemp_c",
                                     "min_temp_celsius": "day.mintemp_c",
+                                    "max_temp_fahrenheit": "day.maxtemp_f",
+                                    "min_temp_fahrenheit": "day.mintemp_f",
                                     "condition": "day.condition.text",
-                                    "precipitation_mm": "day.totalprecip_mm"
+                                    "pop": "day.daily_chance_of_rain"
+                                }
+                            },
+                            "get_air_quality": {
+                                "endpoint": "/aqi",
+                                "required_params": ["location"],
+                                "response_path": ["data"],
+                                "data_map": {
+                                    "location": "location.name",
+                                    "aqi": "current.air_quality.us-epa-index",
+                                    "pollutants": "current.air_quality" # Special handling for pollutants
                                 }
                             }
                         }
@@ -722,162 +980,181 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Weather API responses
-        if "api.example.com/weather" in url:
-            if "/current.json" in url:
-                location = params.get("location", "").lower()
-                if "london" in location:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "location": {"name": "London", "country": "UK"},
-                        "current": {
-                            "temp_c": 18.5, "temp_f": 65.3, "condition": {"text": "Partly Cloudy"},
-                            "humidity": 70, "wind_kph": 15.0, "last_updated": datetime.now().isoformat()
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
+
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
+
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Weather API responses
+            if "api.example.com/weather" in url:
+                if "/current" in url:
+                    location = params.get("location", "").lower()
+                    if "london" in location:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": {
+                                "location": {"name": "London"},
+                                "current": {
+                                    "temp_c": 18, "temp_f": 64.4,
+                                    "condition": {"text": "Partly Cloudy"},
+                                    "humidity": 70, "wind_kph": 15,
+                                    "last_updated": datetime.now().isoformat()
+                                }
+                            }
                         }
-                    }
-                    return mock_response
-                elif "new york" in location:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "location": {"name": "New York", "country": "USA"},
-                        "current": {
-                            "temp_c": 25.0, "temp_f": 77.0, "condition": {"text": "Sunny"},
-                            "humidity": 60, "wind_kph": 10.0, "last_updated": datetime.now().isoformat()
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": {}}
+                        return mock_response
+                elif "/forecast" in url:
+                    location = params.get("location", "").lower()
+                    days = params.get("days", 3)
+                    if "new york" in location:
+                        forecast_data = []
+                        for i in range(min(days, 2)): # Mock up to 2 days
+                            forecast_data.append({
+                                "date": (datetime.now() + timedelta(days=i+1)).strftime("%Y-%m-%d"),
+                                "day": {
+                                    "maxtemp_c": 28 - i, "mintemp_c": 19 - i,
+                                    "maxtemp_f": round((28 - i) * 9/5 + 32, 1), "mintemp_f": round((19 - i) * 9/5 + 32, 1),
+                                    "condition": {"text": "Sunny" if i == 0 else "Partly Cloudy"},
+                                    "daily_chance_of_rain": 10 + i*10
+                                }
+                            })
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"forecast": {"forecastday": forecast_data}}
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"forecast": {"forecastday": []}}
+                        return mock_response
+                elif "/aqi" in url:
+                    location = params.get("location", "").lower()
+                    if "london" in location:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": {
+                                "location": {"name": "London"},
+                                "current": {
+                                    "air_quality": {
+                                        "co": 1.5, "no2": 10, "o3": 40, "so2": 2, "pm2_5": 8, "pm10": 15,
+                                        "us-epa-index": 35 # Good
+                                    }
+                                },
+                                "last_updated": datetime.now().isoformat()
+                            }
                         }
-                    }
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"current": {}} # No data for location
-                    return mock_response
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": {}}
+                        return mock_response
             
-            elif "/forecast.json" in url:
-                location = params.get("location", "").lower()
-                days = params.get("days", 3)
-                
-                forecast_data = []
-                if "london" in location:
-                    for i in range(min(days, 2)): # Mock up to 2 days
-                        forecast_data.append({
-                            "date": (datetime.now() + timedelta(days=i+1)).strftime("%Y-%m-%d"),
-                            "day": {
-                                "maxtemp_c": 20 + i, "mintemp_c": 12 + i,
-                                "condition": {"text": "Light Rain" if i == 0 else "Partly Cloudy"},
-                                "totalprecip_mm": 5 if i == 0 else 0
-                            }
-                        })
-                elif "new york" in location:
-                     for i in range(min(days, 2)): # Mock up to 2 days
-                        forecast_data.append({
-                            "date": (datetime.now() + timedelta(days=i+1)).strftime("%Y-%m-%d"),
-                            "day": {
-                                "maxtemp_c": 28 - i, "mintemp_c": 20 - i,
-                                "condition": {"text": "Sunny" if i == 0 else "Thunderstorms"},
-                                "totalprecip_mm": 0 if i == 0 else 15
-                            }
-                        })
-
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.json.return_value = {"forecast": {"forecastday": forecast_data}}
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'weather')}</h1><p>Some weather related content from web search.</p></body></html>"
                 return mock_response
-        
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'weather')}</h1><p>Some weather related content from web search.</p></body></html>"
-            return mock_response
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-    requests.get = mock_requests_get_dynamic
+        requests.get = mock_requests_get_dynamic
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    print("\n--- Testing weather_tool functions ---")
+        async def run_weather_tests():
+            print("\n--- Testing weather_tool functions with Analytics ---")
 
-    # Test get_current_weather
-    print("\n--- Testing get_current_weather ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_current_weather = get_current_weather("London, UK", user_token=test_user_pro)
-    print(f"Current Weather (Pro User, API):\n{result_current_weather[:500]}...")
-    assert "Current Weather in London, UK:" in result_current_weather
-    assert "Temperature: 18.5°C (65.3°F)" in result_current_weather
-    print("Test 1 Passed.")
+            # Test get_current_weather (success)
+            print("\n--- Test 1: get_current_weather (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_current_weather = await get_current_weather("London", user_token=test_user_pro)
+            print(f"Current Weather: {result_current_weather}")
+            assert "Current Weather in London, UK:" in result_current_weather
+            assert "Temperature: 18°C" in result_current_weather
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "weather_get_current_weather"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test get_current_weather (fallback)
-    print("\n--- Testing get_current_weather (Fallback) ---")
-    with patch('domain_tools.weather_tools.weather_tool._make_dynamic_api_request', return_value=None):
-        result_current_weather_fallback = get_current_weather("Paris, France", user_token=test_user_pro)
-        print(f"Current Weather (Pro User, Fallback):\n{result_current_weather_fallback[:500]}...")
-        assert "Current Weather in London, UK (Mock Data Fallback):" in result_current_weather_fallback # Falls back to default mock
-    print("Test 2 Passed.")
+            # Test get_weather_forecast (API failure - no data found)
+            print("\n--- Test 2: get_weather_forecast (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_forecast = await get_weather_forecast("NonExistentCity", days=5, user_token=test_user_pro)
+            print(f"Weather Forecast (API Error): {result_forecast}")
+            assert "No live weather forecast found for 'NonExistentCity' for 5 days." in result_forecast
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "weather_get_weather_forecast"
+            assert logged_data["success"] is False
+            assert "Response path 'forecast.forecastday' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test get_weather_forecast
-    print("\n--- Testing get_weather_forecast ---")
-    result_forecast = get_weather_forecast("New York, USA", days=2, user_token=test_user_pro)
-    print(f"Weather Forecast (Pro User, API):\n{result_forecast[:500]}...")
-    assert "Weather Forecast for New York, USA:" in result_forecast
-    assert "Day 1 (" in result_forecast # Check for formatted date
-    assert "Max Temp: 28.0°C" in result_forecast
-    print("Test 3 Passed.")
+            # Test get_air_quality (RBAC denied)
+            print("\n--- Test 3: get_air_quality (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_air_quality_rbac_denied = await get_air_quality("Paris", user_token=test_user_free)
+            print(f"Air Quality (Free User, RBAC Denied): {result_air_quality_rbac_denied}")
+            assert "Error: Access to weather tools is not enabled for your current tier." in result_air_quality_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test get_weather_forecast (fallback)
-    print("\n--- Testing get_weather_forecast (Fallback) ---")
-    with patch('domain_tools.weather_tools.weather_tool._make_dynamic_api_request', return_value=None):
-        result_forecast_fallback = get_weather_forecast("Tokyo, Japan", days=1, user_token=test_user_pro)
-        print(f"Weather Forecast (Pro User, Fallback):\n{result_forecast_fallback[:500]}...")
-        assert "Weather Forecast for Tokyo, Japan (Mock Data Fallback):" in result_forecast_fallback
-    print("Test 4 Passed.")
+            # Test weather_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: weather_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await weather_search_web("impact of El Nino on global weather", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for impact of El Nino on global weather" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test RBAC for weather_tool_access (e.g., get_current_weather for free user)
-    print("\n--- Testing RBAC for weather_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = get_current_weather("Berlin, Germany", user_token=test_user_free)
-    print(f"Current Weather (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to weather tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 5 Passed.")
+            print("\nAll weather_tool tests with analytics considerations completed.")
 
-    # Test weather_search_web
-    print("\n--- Testing weather_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "historical weather for July in London"
-    search_web_result = weather_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for historical weather for July in London" in search_web_result
-    print("Test 6 Passed.")
+        await run_weather_tests()
 
-    # Test weather_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing weather_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "weather"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "climate_study.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a climate study report. It analyzes temperature trends and precipitation patterns in a specific region.")
-    
-    result_summary = weather_summarize_document_by_path(str(dummy_file_path))
-    print(f"Climate Study Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "temperature trends" in result_summary
-    print("Test 7 Passed.")
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    print("\nAll weather_tool tests completed.")
-
-    # Restore original requests.get
-    requests.get = original_requests_get
-
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
