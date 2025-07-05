@@ -17,9 +17,8 @@ from datetime import datetime, timezone
 from config.config_manager import config_manager
 from utils.analytics_tracker import initialize_analytics, log_event
 from database.firestore_manager import FirestoreManager
-# Corrected import for cloud_storage_utils: import the module itself
-import shared_tools.cloud_storage_utils as cloud_storage_utils_module 
-from shared_tools.vector_utils import VectorUtils
+import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import module
+import shared_tools.vector_utils as vector_utils_module # Import module
 from utils.date_parser import parse_date_string
 from utils.user_manager import UserManager
 from domain_tools.finance_tools import FinanceTools
@@ -100,45 +99,11 @@ app_id_for_analytics = firebase_admin.get_app().project_id
 initialize_analytics(db, auth_sdk, app_id_for_analytics, "backend_system")
 logger.info("Analytics tracker initialized for FastAPI backend.")
 
-# Initialize managers and tools - NOW PASS db and auth_sdk instances
-# Note: FirestoreManager and UserManager now receive the already initialized db and auth_sdk
-firestore_manager = FirestoreManager(db_instance=db, auth_instance=auth_sdk)
-# Corrected instantiation: cloud_storage_utils is now the module itself
-# If any functions in cloud_storage_utils_module need config_manager, they will get it internally.
-# The CloudStorageUtils class is not defined in that module.
-# If you intended to have a class, we would need to add that class definition to shared_tools/cloud_storage_utils.py
-# For now, assuming it's meant to be a module with functions.
-# If you had a CloudStorageUtils class in shared_tools/cloud_storage_utils.py, you would use:
-# cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtils(config_manager)
-# But since it's not defined, we'll just use the module directly for its functions.
-# For consistency, if other parts of the code expect an object, we might need a simple wrapper.
-# For now, let's assume direct function calls.
-# If you need to pass config_manager to the module's internal initialization,
-# you'd modify _initialize_gcs_client to accept it or ensure config_manager is a global singleton.
-# Since config_manager is already a singleton, the functions in cloud_storage_utils_module can access it directly.
-# So, we don't need to pass config_manager to a non-existent CloudStorageUtils class.
-# We will use 'cloud_storage_utils_module' directly when calling its functions.
-# Example: await cloud_storage_utils_module.upload_file_to_gcs(...)
-
-# The CloudStorageUtils instance is no longer needed as a separate object here.
-# Instead, functions will be called directly from the imported module: cloud_storage_utils_module
-# If you have existing code that uses 'cloud_storage_utils.some_function()', you'll change it to
-# 'cloud_storage_utils_module.some_function()'.
-# For now, I'll comment out the instantiation line if it existed.
-# cloud_storage_utils = CloudStorageUtils(config_manager) # REMOVE THIS LINE IF IT WAS PRESENT AND CAUSING ERROR
-
-# The vector_utils needs the cloud_storage_utils. If vector_utils expects an object,
-# we might need to create a simple wrapper class in main.py or adjust vector_utils.
-# For now, let's assume vector_utils can take the module directly or its functions.
-# Let's create a simple wrapper class if vector_utils expects an object.
+# --- Wrapper for cloud_storage_utils module functions ---
 class CloudStorageUtilsWrapper:
     def __init__(self, config_manager_instance):
         self.config_manager = config_manager_instance
-        # The internal functions of cloud_storage_utils_module will access config_manager directly
-        # since it's a singleton. No need to pass it here.
-        # This wrapper just provides a consistent object interface if other modules expect it.
 
-    # Expose the functions from the module through this wrapper
     async def upload_file_to_gcs(self, *args, **kwargs):
         return await cloud_storage_utils_module.upload_file_to_gcs(*args, **kwargs)
     
@@ -157,11 +122,37 @@ class CloudStorageUtilsWrapper:
     def get_gcs_client(self):
         return cloud_storage_utils_module.get_gcs_client()
 
+# --- Wrapper for vector_utils module functions ---
+class VectorUtilsWrapper:
+    def __init__(self, firestore_manager_instance, cloud_storage_utils_instance, config_manager_instance):
+        self.firestore_manager = firestore_manager_instance
+        self.cloud_storage_utils = cloud_storage_utils_instance
+        self.config_manager = config_manager_instance
 
-# Instantiate the wrapper
+    # Expose the functions from the module through this wrapper
+    async def process_uploaded_document(self, *args, **kwargs):
+        return await vector_utils_module.process_uploaded_document(*args, **kwargs)
+    
+    async def query_documents(self, *args, **kwargs):
+        return await vector_utils_module.query_documents(*args, **kwargs)
+    
+    async def delete_vector_store_collection(self, *args, **kwargs):
+        return await vector_utils_module.delete_vector_store_collection(*args, **kwargs)
+    
+    # You might want to expose other functions if they are called directly, e.g.:
+    # def get_embedding_model(self, *args, **kwargs):
+    #     return vector_utils_module.get_embedding_model(*args, **kwargs)
+    # async def get_vector_store(self, *args, **kwargs):
+    #     return await vector_utils_module.get_vector_store(*args, **kwargs)
+
+
+# Initialize managers and tools - NOW PASS db and auth_sdk instances
+firestore_manager = FirestoreManager(db_instance=db, auth_instance=auth_sdk)
+
+# Instantiate the wrappers
 cloud_storage_utils = CloudStorageUtilsWrapper(config_manager)
+vector_utils = VectorUtilsWrapper(firestore_manager, cloud_storage_utils, config_manager) # Pass the wrapper instance
 
-vector_utils = VectorUtils(firestore_manager, cloud_storage_utils, config_manager)
 user_manager = UserManager(db=db, auth_sdk=auth_sdk, firestore_manager=firestore_manager, config_manager=config_manager, log_event=log_event)
 finance_tools = FinanceTools(config_manager, log_event)
 crypto_tools = CryptoTools(config_manager, log_event)
@@ -170,7 +161,7 @@ news_tools = NewsTools(config_manager, log_event)
 legal_tools = LegalTools(config_manager, log_event)
 education_tools = EducationTools(config_manager, log_event)
 entertainment_tools = EntertainmentTools(config_manager, log_event)
-weather_tools = Weather_Tools(config_manager, log_event)
+weather_tools = WeatherTools(config_manager, log_event)
 travel_tools = TravelTools(config_manager, log_event)
 sports_tools = SportsTools(config_manager, log_event)
 
@@ -237,6 +228,7 @@ class DocumentUploadRequest(BaseModel):
 class DocumentQueryRequest(BaseModel):
     query_text: str
     user_id: str
+    collection_name: Optional[str] = None # Added for explicit collection querying
     k: int = 5 # Number of top results to return
 
 class LLMGenerateRequest(BaseModel):
@@ -413,8 +405,8 @@ async def upload_document_endpoint(doc_request: DocumentUploadRequest, current_u
 
     logger.info(f"User {user_id} attempting to upload document: {doc_request.file_name}")
     try:
-        # Call the function directly from the module
-        result = await vector_utils.process_uploaded_document(
+        # Call the process_uploaded_document function from the vector_utils_module
+        result = await vector_utils.process_uploaded_document( # Call from the wrapper instance
             doc_request.file_name,
             doc_request.file_content_base64,
             doc_request.content_type,
@@ -445,7 +437,13 @@ async def query_documents_endpoint(query_request: DocumentQueryRequest, current_
 
     logger.info(f"User {user_id} querying documents with query: '{query_request.query_text}' (k={k_to_use})")
     try:
-        results = await vector_utils.query_documents(query_request.query_text, user_id, k=k_to_use)
+        # Call the query_documents function from the vector_utils_module
+        results = await vector_utils.query_documents( # Call from the wrapper instance
+            query_request.query_text,
+            user_id,
+            collection_name=query_request.collection_name, # Pass collection_name
+            k=k_to_use
+        )
         return {"success": True, "results": results}
     except Exception as e:
         logger.error(f"Error querying documents for user {user_id}: {e}", exc_info=True)
@@ -628,4 +626,6 @@ async def get_analytics_events_endpoint(
     except Exception as e:
         logger.error(f"Error retrieving analytics events for admin {current_user['uid']}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve analytics events: {e}")
+
+
 
