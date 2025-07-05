@@ -1,54 +1,40 @@
 # data/config.yml
 
-# --- LLM Configuration ---
+# Global application configuration settings.
+# This file defines general parameters, default behaviors, and API defaults.
+
 llm:
-  provider: openai # Options: openai, google, ollama (for local models)
-  model_name: gpt-4o # For OpenAI: gpt-3.5-turbo, gpt-4, gpt-4o; For Google: gemini-pro, gemini-1.5-flash; For Ollama: llama2, mistral, etc.
-  temperature: 0.7 # Controls randomness: 0.0 (deterministic) to 1.0 (creative) - Global Default
-  max_tokens: 4096 # Maximum tokens in the LLM response
-  max_summary_input_chars: 10000 # Max characters for summarization input to LLM
-  
-  # --- Embedding Model Configuration ---
-  embedding_provider: openai # Options: openai, google, huggingface (for local models)
-  embedding_model_name: text-embedding-ada-002 # For OpenAI: text-embedding-ada-002; For HuggingFace: sentence-transformers/all-MiniLM-L6-v2
+  provider: "openai" # Default LLM provider (e.g., "openai", "google", "ollama")
+  model_name: "gpt-3.5-turbo" # Default LLM model
+  temperature: 0.7 # Default LLM temperature
+  max_summary_input_chars: 10000 # Max characters for summarization input
 
-# --- RAG (Retrieval Augmented Generation) Configuration ---
 rag:
-  chunk_size: 1000 # Size of text chunks for vector database
-  chunk_overlap: 100 # Overlap between chunks to maintain context
-  max_query_results_k: 5 # Number of top relevant document chunks to retrieve for RAG
+  chunk_size: 1000 # Default chunk size for document processing
+  chunk_overlap: 100 # Default overlap between chunks
+  max_query_results_k: 5 # Default number of top results to retrieve from vector store
 
-# --- Web Scraping Configuration ---
 web_scraping:
-  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 # User-Agent header for requests
-  timeout_seconds: 15 # Timeout for web requests in seconds
-  max_search_results: 5 # Max number of search results to process from web search APIs (e.g., SerpAPI)
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+  timeout_seconds: 30 # Default timeout for web requests
 
-# --- General Application Settings ---
-app_name: Unified AI Assistant
-default_user_tier: free # Default tier for new registrations
-default_user_roles: ["user"] # Default roles for new registrations
+# Default user tier and roles for new registrations or unauthenticated access
+default_user_tier: "free"
+default_user_roles: ["user"]
 
-# --- API Configuration Paths (used by config_manager to load specific API YAMLs) ---
-api_configs:
-  - finance_apis.yaml
-  - medical_apis.yaml
-  - legal_apis.yaml
-  - news_apis.yaml
-  - sports_apis.yaml
-  - weather_apis.yaml
-  - entertainment_apis.yaml
+# --- API Default Providers ---
+# Specifies the default API provider to use for each domain.
+# These names must match a provider defined in data/api_providers.yml
+api_defaults:
+  finance: "alphavantage"
+  crypto: "coingecko"
+  news: "newsapi"
+  medical: "health_api" # Example hypothetical
+  legal: "legal_data_api" # Example hypothetical
+  education: "academic_api" # Example hypothetical
+  entertainment: "themoviedb" # Or "omdbapi"
+  weather: "openweathermap"
+  travel: "amadeus" # Or "bookingcom"
+  sports: "thesportsdb"
 
-# --- Payment Gateway Configuration (Future) ---
-payment_gateways:
-  default_currency: USD
-  flutterwave:
-    enabled: false
-    public_key_secret_path: "flutterwave_public_key" # Path in secrets.toml
-    secret_key_secret_path: "flutterwave_secret_key" # Path in secrets.toml
-    webhook_secret_hash_secret_path: "flutterwave_webhook_secret_hash" # Path in secrets.toml
-  paypal:
-    enabled: false
-    client_id_secret_path: "paypal_client_id"
-    client_secret_secret_path: "paypal_client_secret"
-  # Add other payment methods here
+# Add other global configurations as needed
