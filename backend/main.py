@@ -1,86 +1,5 @@
 # backend/main.py
 
-import os
-import json
-import logging # Ensure logging is imported early for debug messages
-# Set up basic logging for early debug messages
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# --- TEMPORARY DEBUGGING CODE ---
-# Print environment variable directly
-env_var_content = os.environ.get("FIREBASE_ADMIN_CERT")
-if env_var_content:
-    logger.info(f"DEBUG: FIREBASE_ADMIN_CERT env var found. Length: {len(env_var_content)} chars. Starts with: {env_var_content[:50]}...")
-else:
-    logger.warning("DEBUG: FIREBASE_ADMIN_CERT env var NOT found.")
-
-# Attempt to load from secrets.toml directly for debug
-try:
-    from pathlib import Path
-    import toml
-    secrets_toml_path = Path(".streamlit/secrets.toml")
-    if secrets_toml_path.exists():
-        parsed_secrets = toml.load(secrets_toml_path)
-        firebase_admin_cert_json_str_from_toml = parsed_secrets.get('firebase_admin_cert_json')
-        if firebase_admin_cert_json_str_from_toml:
-            logger.info(f"DEBUG: 'firebase_admin_cert_json' found in secrets.toml. Length: {len(firebase_admin_cert_json_str_from_toml)} chars. Starts with: {firebase_admin_cert_json_str_from_toml[:50]}...")
-            # Try to parse it to catch JSON errors early
-            try:
-                json.loads(firebase_admin_cert_json_str_from_toml)
-                logger.info("DEBUG: 'firebase_admin_cert_json' from secrets.toml is valid JSON.")
-            except json.JSONDecodeError as e:
-                logger.error(f"DEBUG: 'firebase_admin_cert_json' from secrets.toml is INVALID JSON: {e}")
-        else:
-            logger.warning("DEBUG: 'firebase_admin_cert_json' key NOT found in secrets.toml.")
-    else:
-        logger.warning("DEBUG: .streamlit/secrets.toml file NOT found.")
-except Exception as e:
-    logger.error(f"DEBUG: Error during direct secrets.toml debug load: {e}")
-# --- END TEMPORARY DEBUGGING CODE ---
-
-
-# The rest of your backend/main.py code follows below...
-# ... (your existing imports) ...
-from fastapi import FastAPI, Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any, Optional
-# import logging # Already imported above for debug
-# import json # Already imported above for debug
-# import os # Already imported above for debug
-import asyncio
-import firebase_admin
-from firebase_admin import credentials, auth, firestore
-from pydantic import BaseModel, EmailStr, Field # Import Field for validation
-from datetime import datetime, timezone
-
-# Project imports
-from config.config_manager import config_manager
-from utils.analytics_tracker import initialize_analytics, log_event
-from database.firestore_manager import FirestoreManager
-from shared_tools.cloud_storage_utils import CloudStorageUtils
-from shared_tools.vector_utils import VectorUtils
-from utils.date_parser import parse_date_string
-from utils.user_manager import UserManager # Import UserManager for backend logic
-from domain_tools.finance_tools import FinanceTools
-from domain_tools.crypto_tools import CryptoTools
-from domain_tools.medical_tools import MedicalTools
-from domain_tools.news_tools import NewsTools
-from domain_tools.legal_tools import LegalTools
-from domain_tools.education_tools import EducationTools
-from domain_tools.entertainment_tools import EntertainmentTools
-from domain_tools.weather_tools import WeatherTools
-from domain_tools.travel_tools import TravelTools
-from domain_tools.sports_tools import SportsTools
-
-# ... (rest of your backend/main.py content) ...
-
-
-
-
-# backend/main.py
-
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,7 +16,7 @@ from datetime import datetime, timezone
 # Project imports
 from config.config_manager import config_manager
 from utils.analytics_tracker import initialize_analytics, log_event
-from database.firestore_manager import FirestoreManager
+from database.firestore_manager import FirestoreManager # Now accepts db, auth in constructor
 from shared_tools.cloud_storage_utils import CloudStorageUtils
 from shared_tools.vector_utils import VectorUtils
 from utils.date_parser import parse_date_string
@@ -115,32 +34,35 @@ from domain_tools.sports_tools import SportsTools
 
 logger = logging.getLogger(__name__)
 
-# --- Firebase Admin SDK Initialization ---
-# This block initializes the Firebase Admin SDK.
-# It prioritizes loading credentials from a production-ready environment variable (Codespaces Secret).
-# For local development without env var, it falls back to secrets.toml.
-if not firebase_admin._apps:
-    try:
+# --- Firebase Admin SDK Initialization (Centralized here) ---
+# This block is the SOLE place where Firebase Admin SDK is initialized.
+# It prioritizes loading credentials from environment variable (FIREBASE_ADMIN_CERT).
+# For local development without env var, it falls back to secrets.toml (firebase_admin_cert_json).
+db = None
+auth_sdk = None
+try:
+    if not firebase_admin._apps: # Only initialize if not already initialized
         # Attempt to load Firebase Admin SDK credentials from environment variable first
         firebase_admin_cert_env_var = os.environ.get("FIREBASE_ADMIN_CERT")
         
+        cred = None
         if firebase_admin_cert_env_var:
             try:
                 # The environment variable should contain the JSON string of the service account key
                 cred = credentials.Certificate(json.loads(firebase_admin_cert_env_var))
                 logger.info("Firebase Admin SDK credentials loaded from FIREBASE_ADMIN_CERT environment variable.")
-            except json.JSONDecodeError:
-                logger.error("FIREBASE_ADMIN_CERT environment variable is not a valid JSON string. Attempting fallback to secrets.toml.")
-                cred = None # Indicate failure to load from env var
+            except json.JSONDecodeError as e:
+                logger.error(f"FIREBASE_ADMIN_CERT environment variable is not a valid JSON string: {e}. Falling back to secrets.toml.")
             except Exception as e:
-                logger.error(f"Error loading Firebase Admin SDK credentials from environment variable: {e}. Attempting fallback to secrets.toml.")
-                cred = None # Indicate failure to load from env var
+                logger.error(f"Error loading Firebase Admin SDK credentials from environment variable: {e}. Falling back to secrets.toml.")
         else:
             logger.warning("FIREBASE_ADMIN_CERT environment variable not found. Attempting to load from secrets.toml.")
-            cred = None # No env var, so try secrets.toml
 
         # If not loaded from environment variable, try loading from secrets.toml
         if cred is None:
+            # Note: config_manager.get_secret will now read directly from .streamlit/secrets.toml
+            # due to the changes in config_manager.py
+            # The key 'firebase_admin_cert_json' should contain the service account JSON string
             firebase_admin_cert_json_str = config_manager.get_secret('firebase_admin_cert_json')
             if firebase_admin_cert_json_str:
                 try:
@@ -160,14 +82,16 @@ if not firebase_admin._apps:
         # Initialize the Firebase app
         firebase_admin.initialize_app(cred)
         logger.info("Firebase Admin SDK initialized successfully.")
+    else:
+        logger.info("Firebase Admin SDK already initialized.")
 
-    except Exception as e:
-        logger.critical(f"FATAL: Failed to initialize Firebase Admin SDK. Application cannot start: {e}", exc_info=True)
-        raise # Re-raise to prevent app from starting without Firebase
+    db = firestore.client()
+    auth_sdk = auth
+    logger.info("Firestore client and Auth SDK instances obtained.")
 
-# Initialize Firestore and Auth instances after Firebase app is initialized
-db = firestore.client()
-auth_sdk = auth
+except Exception as e:
+    logger.critical(f"FATAL: Failed to initialize Firebase Admin SDK. Application cannot start: {e}", exc_info=True)
+    raise # Re-raise to prevent app from starting without Firebase
 
 # Initialize analytics tracker with live Firebase instances
 # This uses the projectId from the initialized Firebase app, which comes from the service account key
@@ -175,11 +99,12 @@ app_id_for_analytics = firebase_admin.get_app().project_id
 initialize_analytics(db, auth_sdk, app_id_for_analytics, "backend_system")
 logger.info("Analytics tracker initialized for FastAPI backend.")
 
-# Initialize managers and tools
-firestore_manager = FirestoreManager(db) # Pass db instance directly
+# Initialize managers and tools - NOW PASS db and auth_sdk instances
+# Note: FirestoreManager and UserManager now receive the already initialized db and auth_sdk
+firestore_manager = FirestoreManager(db_instance=db, auth_instance=auth_sdk)
 cloud_storage_utils = CloudStorageUtils(config_manager)
 vector_utils = VectorUtils(firestore_manager, cloud_storage_utils, config_manager)
-user_manager = UserManager(db, auth_sdk, firestore_manager, config_manager, log_event) # Pass log_event to UserManager
+user_manager = UserManager(db=db, auth_sdk=auth_sdk, firestore_manager=firestore_manager, config_manager=config_manager, log_event=log_event)
 finance_tools = FinanceTools(config_manager, log_event)
 crypto_tools = CryptoTools(config_manager, log_event)
 medical_tools = MedicalTools(config_manager, log_event)
