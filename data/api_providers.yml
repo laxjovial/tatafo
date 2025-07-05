@@ -1,0 +1,343 @@
+# data/api_providers.yml
+
+# This file defines the configurations for various external API providers
+# used by different domain tools.
+# It allows for dynamic selection and mapping of API responses.
+
+# Structure:
+# {domain_name}:
+#   {provider_name}:
+#     base_url: "..."
+#     api_key_name: "name_of_key_in_secrets_toml" # Key to retrieve from st.secrets
+#     api_secret_name: "name_of_secret_in_secrets_toml" # Optional, for OAuth-like APIs (e.g., Amadeus)
+#     token_endpoint: "..." # Optional, for OAuth-like APIs
+#     functions:
+#       {tool_function_name}: # e.g., "get_stock_price"
+#         endpoint: "/path/to/endpoint" # Relative path to base_url
+#         function_param: "FUNCTION_NAME" # For APIs that use a 'function' query param (e.g., Alpha Vantage)
+#         path_params: ["param1", "param2"] # For APIs with path parameters (e.g., /coins/{id}/markets)
+#         required_params: ["param_name"] # List of parameters required by the API endpoint
+#         optional_params: ["param_name"] # List of optional parameters
+#         response_path: ["path", "to", "data"] # List of keys to navigate to the actual data in the JSON response
+#         data_map: # Maps API response keys to standardized internal keys
+#           internal_key: "api_response_key"
+#           another_internal_key: ["nested", "api", "key"] # Can be nested path
+
+api_providers:
+  finance:
+    alphavantage:
+      base_url: "https://www.alphavantage.co/query"
+      api_key_name: "alphavantage_api_key"
+      functions:
+        get_stock_price:
+          function_param: "GLOBAL_QUOTE"
+          required_params: ["symbol"]
+          optional_params: ["outputsize", "datatype"]
+          response_path: ["Global Quote"]
+          data_map:
+            price: "05. price"
+            open: "02. open"
+            high: "03. high"
+            low: "04. low"
+            volume: "06. volume"
+            last_trading_day: "07. latest trading day"
+            change: "09. change"
+            change_percent: "10. change percent"
+        get_company_news:
+          function_param: "NEWS_SENTIMENT"
+          required_params: ["tickers", "time_from", "time_to"]
+          optional_params: ["sort", "limit"]
+          response_path: ["feed"]
+          data_map:
+            title: "title"
+            source: "source"
+            url: "url"
+            time_published: "time_published"
+        get_historical_stock_prices:
+          function_param: "TIME_SERIES_DAILY"
+          required_params: ["symbol"]
+          optional_params: ["outputsize", "datatype"]
+          response_path: ["Time Series (Daily)"]
+          data_map: # Keys are dates, values are objects. Need special handling in _make_dynamic_api_request
+            open: "1. open"
+            high: "2. high"
+            low: "3. low"
+            close: "4. close"
+            volume: "5. volume"
+        lookup_stock_symbol:
+          function_param: "SYMBOL_SEARCH"
+          required_params: ["keywords"]
+          optional_params: ["datatype"]
+          response_path: ["bestMatches"]
+          data_map:
+            symbol: "1. symbol"
+            name: "2. name"
+
+  crypto:
+    coingecko:
+      base_url: "https://api.coingecko.com/api/v3"
+      # api_key_name: "coingecko_api_key" # CoinGecko has a free tier without API key for basic functions
+      functions:
+        get_crypto_price:
+          endpoint: "/simple/price"
+          required_params: ["ids", "vs_currencies"]
+          optional_params: ["include_market_cap", "include_24hr_vol", "include_24hr_change", "include_last_updated_at"]
+          response_path: [] # Root level response, no specific path
+          data_map: # Special mapping needed as response is { "bitcoin": { "usd": 20000 } }
+            price: "{id}.{currency}" # Placeholder, needs custom parsing in tool
+            market_cap: "{id}.{currency}_market_cap"
+            vol_24hr: "{id}.{currency}_24hr_vol"
+            change_24hr: "{id}.{currency}_24hr_change"
+            last_updated: "{id}.last_updated_at"
+        get_historical_crypto_prices:
+          endpoint: "/coins/{id}/market_chart" # {id} is a path param
+          path_params: ["id"]
+          required_params: ["vs_currency", "days"]
+          optional_params: ["interval"]
+          response_path: [] # Root level response
+          data_map: # Special mapping for arrays of [timestamp, value]
+            prices: "prices"
+            market_caps: "market_caps"
+            total_volumes: "total_volumes"
+        get_crypto_id_by_symbol:
+          endpoint: "/coins/list"
+          required_params: []
+          optional_params: ["include_platform"]
+          response_path: [] # Root level response is a list of objects
+          data_map:
+            id: "id"
+            symbol: "symbol"
+            name: "name"
+
+  news:
+    newsapi:
+      base_url: "https://newsapi.org/v2"
+      api_key_name: "newsapi_api_key"
+      functions:
+        get_general_news:
+          endpoint: "/everything"
+          required_params: ["q"]
+          optional_params: ["sortBy", "language", "from", "to", "pageSize"]
+          response_path: ["articles"]
+          data_map:
+            title: "title"
+            description: "description"
+            url: "url"
+            source_name: ["source", "name"]
+            published_at: "publishedAt"
+
+  medical:
+    # Example for a hypothetical medical API
+    health_api:
+      base_url: "https://api.example.com/health"
+      api_key_name: "health_api_key"
+      functions:
+        get_drug_info:
+          endpoint: "/drugs"
+          required_params: ["name"]
+          response_path: ["data", 0] # Assuming first result is most relevant
+          data_map:
+            drug_name: "name"
+            description: "description"
+            side_effects: "side_effects"
+        get_symptom_info:
+          endpoint: "/symptoms"
+          required_params: ["name"]
+          response_path: ["data", 0]
+          data_map:
+            symptom_name: "name"
+            causes: "causes"
+            treatment: "treatment"
+
+  legal:
+    # Example for a hypothetical legal API
+    legal_data_api:
+      base_url: "https://api.example.com/legal"
+      api_key_name: "legal_api_key"
+      functions:
+        get_legal_definition:
+          endpoint: "/definitions"
+          required_params: ["term"]
+          response_path: ["results", 0]
+          data_map:
+            term: "term"
+            definition: "definition"
+            source: "source"
+        get_case_summary:
+          endpoint: "/cases"
+          required_params: ["case_name"]
+          response_path: ["cases", 0]
+          data_map:
+            case_title: "title"
+            summary: "summary"
+            court: "court"
+            date: "date"
+
+  education:
+    # Example for a hypothetical education API
+    academic_api:
+      base_url: "https://api.example.com/academic"
+      api_key_name: "academic_api_key"
+      functions:
+        get_academic_definition:
+          endpoint: "/definitions"
+          required_params: ["term"]
+          response_path: ["data", 0]
+          data_map:
+            term: "term"
+            definition: "definition"
+            field: "field"
+        get_historical_event_summary:
+          endpoint: "/history"
+          required_params: ["event_name"]
+          response_path: ["events", 0]
+          data_map:
+            event_name: "name"
+            date: "date"
+            summary: "summary"
+            key_figures: "figures"
+
+  entertainment:
+    themoviedb: # Example: TMDb for movies
+      base_url: "https://api.themoviedb.org/3"
+      api_key_name: "themoviedb_api_key"
+      functions:
+        get_movie_details:
+          endpoint: "/search/movie"
+          required_params: ["query"]
+          optional_params: ["language"]
+          response_path: ["results", 0] # Get first result
+          data_map:
+            title: "title"
+            overview: "overview"
+            release_date: "release_date"
+            vote_average: "vote_average"
+            poster_path: "poster_path"
+    omdbapi: # Example: OMDBAPI for movies (simpler)
+      base_url: "http://www.omdbapi.com"
+      api_key_name: "omdbapi_api_key"
+      functions:
+        get_movie_details:
+          endpoint: "" # Base URL is the endpoint
+          required_params: ["t"] # 't' for title search
+          optional_params: ["y", "plot", "r"]
+          response_path: [] # Root level response
+          data_map:
+            title: "Title"
+            year: "Year"
+            plot: "Plot"
+            director: "Director"
+            genre: "Genre"
+            imdb_rating: "imdbRating"
+
+  weather:
+    openweathermap:
+      base_url: "https://api.openweathermap.org/data/2.5"
+      api_key_name: "openweathermap_api_key"
+      functions:
+        get_current_weather:
+          endpoint: "/weather"
+          required_params: ["q"] # 'q' for city name
+          optional_params: ["units"]
+          response_path: []
+          data_map:
+            city: "name"
+            temperature: ["main", "temp"]
+            feels_like: ["main", "feels_like"]
+            description: ["weather", 0, "description"]
+            humidity: ["main", "humidity"]
+            wind_speed: ["wind", "speed"]
+        get_weather_forecast:
+          endpoint: "/forecast/daily" # For 16-day daily forecast (free tier limited to 5 days)
+          required_params: ["q", "cnt"] # 'cnt' for number of days
+          optional_params: ["units"]
+          response_path: ["list"]
+          data_map:
+            date: "dt" # Unix timestamp
+            temp_day: ["temp", "day"]
+            temp_min: ["temp", "min"]
+            temp_max: ["temp", "max"]
+            description: ["weather", 0, "description"]
+
+  travel:
+    # Example for a hypothetical travel API (Amadeus for flights, Booking.com for hotels)
+    amadeus:
+      base_url: "https://test.api.amadeus.com/v2" # Test environment
+      api_key_name: "amadeus_client_id" # Amadeus uses client_id as "API Key"
+      api_secret_name: "amadeus_client_secret"
+      token_endpoint: "https://test.api.amadeus.com/v1/security/oauth2/token"
+      functions:
+        find_flights:
+          endpoint: "/shopping/flight-offers"
+          required_params: ["originLocationCode", "destinationLocationCode", "departureDate"]
+          optional_params: ["returnDate", "adults", "currencyCode"]
+          response_path: ["data"]
+          data_map:
+            id: "id"
+            origin: ["itineraries", 0, "segments", 0, "departure", "iataCode"]
+            destination: ["itineraries", 0, "segments", -1, "arrival", "iataCode"]
+            departure_time: ["itineraries", 0, "segments", 0, "departure", "at"]
+            arrival_time: ["itineraries", 0, "segments", -1, "arrival", "at"]
+            price: ["price", "total"]
+            currency: ["price", "currency"]
+    bookingcom: # Hypothetical Booking.com API
+      base_url: "https://api.example.com/booking"
+      api_key_name: "bookingcom_api_key"
+      functions:
+        find_hotels:
+          endpoint: "/hotels/search"
+          required_params: ["location", "check_in", "check_out"]
+          optional_params: ["adults", "rooms"]
+          response_path: ["results"]
+          data_map:
+            name: "name"
+            address: "address"
+            price_per_night: "price_per_night"
+            rating: "rating"
+            url: "url"
+
+  sports:
+    thesportsdb:
+      base_url: "https://www.thesportsdb.com/api/v1/json"
+      api_key_name: "thesportsdb_api_key" # Free API key is '1' for testing, but use a real one if available
+      functions:
+        get_player_stats:
+          endpoint: "/{api_key}/searchplayers.php"
+          path_params: ["api_key"]
+          required_params: ["p"] # 'p' for player name
+          response_path: ["player"]
+          data_map:
+            id: "idPlayer"
+            name: "strPlayer"
+            team: "strTeam"
+            sport: "strSport"
+            nationality: "strNationality"
+            position: "strPosition"
+            description: "strDescriptionEN"
+            # Note: TheSportsDB has very limited structured stats.
+            # More detailed stats would require a premium API like Sportradar.
+        get_team_stats:
+          endpoint: "/{api_key}/searchteams.php"
+          path_params: ["api_key"]
+          required_params: ["t"] # 't' for team name
+          response_path: ["teams"]
+          data_map:
+            id: "idTeam"
+            name: "strTeam"
+            league: "strLeague"
+            sport: "strSport"
+            country: "strCountry"
+            description: "strDescriptionEN"
+            # Again, limited stats in free tier.
+        get_league_info:
+          endpoint: "/{api_key}/searchleagues.php"
+          path_params: ["api_key"]
+          required_params: ["l"] # 'l' for league name
+          response_path: ["leagues"]
+          data_map:
+            id: "idLeague"
+            name: "strLeague"
+            sport: "strSport"
+            country: "strCountry"
+            description: "strDescriptionEN"
+            # No direct "current champion" or "top scorer" in free API, would need more calls.
