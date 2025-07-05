@@ -19,6 +19,8 @@ from config.config_manager import config_manager
 from utils.user_manager import get_user_tier_capability
 # Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,82 +355,121 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=e
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
 # --- Mock Data for Fallback ---
 _mock_travel_data = {
-    "flights": [
-        {
-            "flight_id": "FLT-001",
-            "origin": "LAG",
-            "destination": "NYC",
+    "flight_info": {
+        "london_to_paris": {
+            "origin": "London (LHR)",
+            "destination": "Paris (CDG)",
             "departure_date": (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
             "return_date": (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"),
-            "airline": "MockAir",
-            "price": "500 USD",
-            "duration": "10h 30m",
-            "stops": 1
+            "price": "£150",
+            "airline": "British Airways",
+            "flight_number": "BA303",
+            "duration": "1h 15m"
         },
-        {
-            "flight_id": "FLT-002",
-            "origin": "NYC",
-            "destination": "LON",
-            "departure_date": (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d"),
-            "return_date": (datetime.now() + timedelta(days=17)).strftime("%Y-%m-%d"),
-            "airline": "GlobalWings",
-            "price": "650 USD",
-            "duration": "7h 0m",
-            "stops": 0
+        "new_york_to_los_angeles": {
+            "origin": "New York (JFK)",
+            "destination": "Los Angeles (LAX)",
+            "departure_date": (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d"),
+            "return_date": (datetime.now() + timedelta(days=27)).strftime("%Y-%m-%d"),
+            "price": "$300",
+            "airline": "American Airlines",
+            "flight_number": "AA123",
+            "duration": "5h 30m"
         }
-    ],
-    "hotels": [
-        {
-            "hotel_id": "HTL-001",
-            "name": "Grand Central Hotel",
-            "location": "New York, USA",
-            "check_in": (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d"),
-            "check_out": (datetime.now() + timedelta(days=23)).strftime("%Y-%m-%d"),
-            "price_per_night": "150 USD",
-            "rating": "4.5 stars",
-            "amenities": ["WiFi", "Pool", "Gym"]
+    },
+    "hotel_info": {
+        "grand_hotel_paris": {
+            "name": "Grand Hotel Paris",
+            "location": "Paris, France",
+            "stars": 5,
+            "price_per_night": "€250",
+            "amenities": ["Free Wi-Fi", "Pool", "Restaurant"],
+            "availability": "Available"
         },
-        {
-            "hotel_id": "HTL-002",
-            "name": "Riverside Inn",
+        "city_inn_london": {
+            "name": "City Inn London",
             "location": "London, UK",
-            "check_in": (datetime.now() + timedelta(days=25)).strftime("%Y-%m-%d"),
-            "check_out": (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d"),
-            "price_per_night": "120 GBP",
-            "rating": "4.0 stars",
-            "amenities": ["WiFi", "Breakfast"]
+            "stars": 3,
+            "price_per_night": "£100",
+            "amenities": ["Free Wi-Fi", "Breakfast"],
+            "availability": "Available"
         }
-    ],
-    "destinations": {
-        "paris": {
-            "name": "Paris, France",
-            "description": "The 'City of Love', famous for its Eiffel Tower, Louvre Museum, and exquisite cuisine.",
-            "attractions": ["Eiffel Tower", "Louvre Museum", "Notre Dame Cathedral"],
-            "best_time_to_visit": "Spring (April-June) or Autumn (September-November)"
-        },
+    },
+    "destination_info": {
         "tokyo": {
-            "name": "Tokyo, Japan",
-            "description": "A bustling metropolis blending traditional culture with futuristic technology.",
+            "city": "Tokyo, Japan",
+            "description": "A vibrant metropolis known for its futuristic skyscrapers, historic temples, and unique culture.",
             "attractions": ["Tokyo Skytree", "Shibuya Crossing", "Senso-ji Temple"],
-            "best_time_to_visit": "Spring (March-May) for cherry blossoms or Autumn (September-November) for foliage"
+            "best_time_to_visit": "Spring (March-May) or Autumn (September-November)"
+        },
+        "rome": {
+            "city": "Rome, Italy",
+            "description": "The 'Eternal City' with ancient ruins, iconic landmarks, and delicious cuisine.",
+            "attractions": ["Colosseum", "Vatican City", "Trevi Fountain"],
+            "best_time_to_visit": "Spring (April-May) or Autumn (September-October)"
         }
     }
 }
@@ -325,15 +477,15 @@ _mock_travel_data = {
 @tool
 def search_flights(origin: str, destination: str, departure_date: str, return_date: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Searches for flight information between an origin and destination, for specified departure and optional return dates.
-    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'August 15, 2024').
+    Searches for flights between an origin and destination on specified dates.
+    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'July 5, 2025').
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        origin (str): The origin airport code (e.g., 'LAG' for Lagos) or city name.
-        destination (str): The destination airport code (e.g., 'NYC' for New York) or city name.
+        origin (str): The departure city or airport code (e.g., "London", "LHR").
+        destination (str): The arrival city or airport code (e.g., "Paris", "CDG").
         departure_date (str): The desired departure date.
-        return_date (str, optional): The desired return date for a round trip.
+        return_date (str, optional): The desired return date for round trips.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
@@ -362,230 +514,153 @@ def search_flights(origin: str, destination: str, departure_date: str, return_da
     if parsed_return_date:
         params["return_date"] = parsed_return_date
 
-    api_data = _make_dynamic_api_request(
-        "travel", "search_flights",
-        params,
-        user_token
-    )
+    api_data = asyncio.run(_make_dynamic_api_request("travel", "search_flights", params, user_token))
 
     if api_data and api_data.get("data"):
         flights = api_data["data"]
         if flights:
-            response_str = "Found Flights:\n"
+            response_str = f"Found Flights from {origin} to {destination}:\n"
             for i, flight in enumerate(flights[:5]): # Limit to top 5 flights
-                dep_date = flight.get('departure_date', 'N/A')
-                ret_date = flight.get('return_date', 'N/A')
-                try:
-                    dep_date = datetime.strptime(dep_date, "%Y-%m-%d").strftime("%B %d, %Y")
-                except ValueError: pass
-                try:
-                    ret_date = datetime.strptime(ret_date, "%Y-%m-%d").strftime("%B %d, %Y")
-                except ValueError: pass
-
                 response_str += (
-                    f"{i+1}. From: {flight.get('origin', 'N/A')} to {flight.get('destination', 'N/A')}\n"
-                    f"   Departure: {dep_date}\n"
-                )
-                if ret_date != 'N/A':
-                    response_str += f"   Return: {ret_date}\n"
-                response_str += (
-                    f"   Airline: {flight.get('airline', 'N/A')}\n"
+                    f"{i+1}. Airline: {flight.get('airline', 'N/A')}\n"
+                    f"   Flight Number: {flight.get('flight_number', 'N/A')}\n"
+                    f"   Departure: {flight.get('departure_date', 'N/A')}\n"
+                    f"   Return: {flight.get('return_date', 'N/A') if flight.get('return_date') else 'N/A'}\n"
                     f"   Price: {flight.get('price', 'N/A')}\n"
-                    f"   Duration: {flight.get('duration', 'N/A')}\n"
-                    f"   Stops: {flight.get('stops', 'N/A')}\n\n"
+                    f"   Duration: {flight.get('duration', 'N/A')}\n\n"
                 )
             return response_str
         else:
-            return f"No live flights found for your criteria (origin='{origin}', destination='{destination}', departure_date='{departure_date}'). Falling back to mock data."
+            return f"No live flights found for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_flights = _mock_travel_data.get("flights", [])
-    filtered_mock_flights = []
-    for flight in mock_flights:
-        match = True
-        if origin.lower() not in flight.get("origin", "").lower() and origin.lower() not in flight.get("origin_city", "").lower():
-            match = False
-        if destination.lower() not in flight.get("destination", "").lower() and destination.lower() not in flight.get("destination_city", "").lower():
-            match = False
-        if parsed_departure_date and flight.get("departure_date") != parsed_departure_date:
-            match = False
-        if parsed_return_date and flight.get("return_date") != parsed_return_date:
-            match = False
-        if match:
-            filtered_mock_flights.append(flight)
-
-    if filtered_mock_flights:
-        response_str = "Found Flights (Mock Data Fallback):\n"
-        for i, flight in enumerate(filtered_mock_flights[:2]): # Limit mock to top 2
-            dep_date = flight.get('departure_date', 'N/A')
-            ret_date = flight.get('return_date', 'N/A')
-            try:
-                dep_date = datetime.strptime(dep_date, "%Y-%m-%d").strftime("%B %d, %Y")
-            except ValueError: pass
-            try:
-                ret_date = datetime.strptime(ret_date, "%Y-%m-%d").strftime("%B %d, %Y")
-            except ValueError: pass
-
-            response_str += (
-                f"{i+1}. From: {flight.get('origin', 'N/A')} to {flight.get('destination', 'N/A')}\n"
-                f"   Departure: {dep_date}\n"
-            )
-            if ret_date != 'N/A':
-                response_str += f"   Return: {ret_date}\n"
-            response_str += (
-                f"   Airline: {flight.get('airline', 'N/A')}\n"
-                f"   Price: {flight.get('price', 'N/A')}\n"
-                f"   Duration: {flight.get('duration', 'N/A')}\n"
-                f"   Stops: {flight.get('stops', 'N/A')}\n\n"
-            )
+    mock_data_key = f"{origin.lower().replace(' ', '_')}_to_{destination.lower().replace(' ', '_')}"
+    mock_flight = _mock_travel_data.get("flight_info", {}).get(mock_data_key)
+    if mock_flight and mock_flight.get("departure_date") == parsed_departure_date and \
+       (not parsed_return_date or mock_flight.get("return_date") == parsed_return_date):
+        response_str = (
+            f"Found Flights from {mock_flight['origin']} to {mock_flight['destination']} (Mock Data Fallback):\n"
+            f"1. Airline: {mock_flight['airline']}\n"
+            f"   Flight Number: {mock_flight['flight_number']}\n"
+            f"   Departure: {mock_flight['departure_date']}\n"
+            f"   Return: {mock_flight['return_date'] if mock_flight.get('return_date') else 'N/A'}\n"
+            f"   Price: {mock_flight['price']}\n"
+            f"   Duration: {mock_flight['duration']}\n\n"
+        )
         return response_str
     else:
-        return f"Flight information not found for your criteria. (API/Mock Fallback Failed)"
+        return f"Flights for '{origin}' to '{destination}' not found. (API/Mock Fallback Failed)"
 
 
 @tool
-def search_hotels(location: str, check_in_date: str, check_out_date: str, user_token: str = "default") -> str:
+def search_hotels(location: str, checkin_date: str, checkout_date: str, user_token: str = "default") -> str:
     """
-    Searches for hotel availability in a specified location for given check-in and check-out dates.
-    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'September 1, 2024').
+    Searches for hotels in a specified location for given check-in and check-out dates.
+    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'July 5, 2025').
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        location (str): The city or specific area for the hotel search (e.g., "New York", "London City Centre").
-        check_in_date (str): The desired check-in date.
-        check_out_date (str): The desired check-out date.
+        location (str): The city or area for hotel search.
+        checkin_date (str): The desired check-in date.
+        checkout_date (str): The desired check-out date.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of hotel information, or an error/fallback message.
     """
-    logger.info(f"Tool: search_hotels called for location='{location}', check_in='{check_in_date}', check_out='{check_out_date}' by user: {user_token}")
+    logger.info(f"Tool: search_hotels called for location='{location}', checkin_date='{checkin_date}', checkout_date='{checkout_date}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'travel_tool_access', False):
         return "Error: Access to travel tools is not enabled for your current tier."
     
-    parsed_check_in_date = parse_date_to_yyyymmdd(check_in_date)
-    if not parsed_check_in_date:
+    parsed_checkin_date = parse_date_to_yyyymmdd(checkin_date)
+    if not parsed_checkin_date:
         return "Error: Could not parse the provided check-in date. Please ensure the date is valid."
     
-    parsed_check_out_date = parse_date_to_yyyymmdd(check_out_date)
-    if not parsed_check_out_date:
+    parsed_checkout_date = parse_date_to_yyyymmdd(checkout_date)
+    if not parsed_checkout_date:
         return "Error: Could not parse the provided check-out date. Please ensure the date is valid."
 
     params = {
         "location": location,
-        "check_in": parsed_check_in_date,
-        "check_out": parsed_check_out_date
+        "checkin_date": parsed_checkin_date,
+        "checkout_date": parsed_checkout_date
     }
 
-    api_data = _make_dynamic_api_request(
-        "travel", "search_hotels",
-        params,
-        user_token
-    )
+    api_data = asyncio.run(_make_dynamic_api_request("travel", "search_hotels", params, user_token))
 
     if api_data and api_data.get("data"):
         hotels = api_data["data"]
         if hotels:
-            response_str = "Found Hotels:\n"
+            response_str = f"Found Hotels in {location}:\n"
             for i, hotel in enumerate(hotels[:5]): # Limit to top 5 hotels
-                check_in_str = hotel.get('check_in', 'N/A')
-                check_out_str = hotel.get('check_out', 'N/A')
-                try:
-                    check_in_str = datetime.strptime(check_in_str, "%Y-%m-%d").strftime("%B %d, %Y")
-                except ValueError: pass
-                try:
-                    check_out_str = datetime.strptime(check_out_str, "%Y-%m-%d").strftime("%B %d, %Y")
-                except ValueError: pass
-
                 response_str += (
                     f"{i+1}. Name: {hotel.get('name', 'N/A')}\n"
-                    f"   Location: {hotel.get('location', 'N/A')}\n"
-                    f"   Check-in: {check_in_str}\n"
-                    f"   Check-out: {check_out_str}\n"
+                    f"   Stars: {hotel.get('stars', 'N/A')} star(s)\n"
                     f"   Price per Night: {hotel.get('price_per_night', 'N/A')}\n"
-                    f"   Rating: {hotel.get('rating', 'N/A')}\n"
-                    f"   Amenities: {', '.join(hotel.get('amenities', []))}\n\n"
+                    f"   Amenities: {', '.join(hotel.get('amenities', []))}\n"
+                    f"   Availability: {hotel.get('availability', 'N/A')}\n\n"
                 )
             return response_str
         else:
-            return f"No live hotels found for your criteria (location='{location}', check_in='{check_in_date}', check_out='{check_out_date}'). Falling back to mock data."
+            return f"No live hotels found for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_hotels = _mock_travel_data.get("hotels", [])
+    mock_hotels = _mock_travel_data.get("hotel_info", {})
     filtered_mock_hotels = []
-    for hotel in mock_hotels:
-        match = True
-        if location.lower() not in hotel.get("location", "").lower() and location.lower() not in hotel.get("name", "").lower():
-            match = False
-        if parsed_check_in_date and hotel.get("check_in") != parsed_check_in_date:
-            match = False
-        if parsed_check_out_date and hotel.get("check_out") != parsed_check_out_date:
-            match = False
-        if match:
-            filtered_mock_hotels.append(hotel)
-
+    for key, hotel in mock_hotels.items():
+        if location.lower() in hotel.get("location", "").lower():
+            # Simple date check for mock: assume availability if dates are reasonable
+            if parsed_checkin_date <= (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d") and \
+               parsed_checkout_date >= (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"):
+                filtered_mock_hotels.append(hotel)
+    
     if filtered_mock_hotels:
-        response_str = "Found Hotels (Mock Data Fallback):\n"
+        response_str = f"Found Hotels in {location} (Mock Data Fallback):\n"
         for i, hotel in enumerate(filtered_mock_hotels[:2]): # Limit mock to top 2
-            check_in_str = hotel.get('check_in', 'N/A')
-            check_out_str = hotel.get('check_out', 'N/A')
-            try:
-                check_in_str = datetime.strptime(check_in_str, "%Y-%m-%d").strftime("%B %d, %Y")
-            except ValueError: pass
-            try:
-                check_out_str = datetime.strptime(check_out_str, "%Y-%m-%d").strftime("%B %d, %Y")
-            except ValueError: pass
             response_str += (
                 f"{i+1}. Name: {hotel.get('name', 'N/A')}\n"
-                f"   Location: {hotel.get('location', 'N/A')}\n"
-                f"   Check-in: {check_in_str}\n"
-                f"   Check-out: {check_out_str}\n"
+                f"   Stars: {hotel.get('stars', 'N/A')} star(s)\n"
                 f"   Price per Night: {hotel.get('price_per_night', 'N/A')}\n"
-                f"   Rating: {hotel.get('rating', 'N/A')}\n"
-                f"   Amenities: {', '.join(hotel.get('amenities', []))}\n\n"
+                f"   Amenities: {', '.join(hotel.get('amenities', []))}\n"
+                f"   Availability: {hotel.get('availability', 'N/A')}\n\n"
             )
         return response_str
     else:
-        return f"Hotel information not found for your criteria. (API/Mock Fallback Failed)"
+        return f"Hotels for '{location}' not found. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_destination_info(destination_name: str, user_token: str = "default") -> str:
+def get_destination_info(city: str, user_token: str = "default") -> str:
     """
-    Retrieves information about a travel destination, including its description, attractions, and best time to visit.
+    Retrieves information about a travel destination, including its description, main attractions, and best time to visit.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        destination_name (str): The name of the destination (e.g., "Paris", "Tokyo").
+        city (str): The city for which to get destination information (e.g., "Tokyo", "Rome").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of destination information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_destination_info called for destination: {destination_name} by user: {user_token}")
+    logger.info(f"Tool: get_destination_info called for city: '{city}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'travel_tool_access', False):
         return "Error: Access to travel tools is not enabled for your current tier."
     
-    params = {"name": destination_name}
-
-    api_data = _make_dynamic_api_request(
-        "travel", "get_destination_info",
-        params,
-        user_token
-    )
+    params = {"city": city}
+    api_data = asyncio.run(_make_dynamic_api_request("travel", "get_destination_info", params, user_token))
 
     if api_data:
         try:
-            name = api_data.get("name")
+            destination_city = api_data.get("city")
             description = api_data.get("description")
             attractions = api_data.get("attractions")
             best_time_to_visit = api_data.get("best_time_to_visit")
 
-            if name and description:
+            if destination_city and description:
                 response_str = (
-                    f"Information for Destination: {name}\n"
+                    f"Information for Destination: {destination_city}\n"
                     f"  Description: {description}\n"
                 )
                 if attractions:
@@ -594,18 +669,18 @@ def get_destination_info(destination_name: str, user_token: str = "default") -> 
                     response_str += f"  Best Time to Visit: {best_time_to_visit}\n"
                 return response_str
             else:
-                logger.warning(f"Live API data for destination '{destination_name}' is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live destination information for '{destination_name}'. Falling back to mock data."
+                logger.warning(f"Live API data for destination '{city}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live destination information for '{city}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live destination data for '{destination_name}': {e}")
-            return f"Error parsing live data for '{destination_name}'. Falling back to mock data."
+            logger.error(f"Error parsing live destination info data for '{city}': {e}")
+            return f"Error parsing live data for '{city}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_key = destination_name.lower().replace(" ", "_").replace(",", "")
-    mock_data = _mock_travel_data.get("destinations", {}).get(mock_data_key)
+    mock_data_key = city.lower().replace(" ", "_")
+    mock_data = _mock_travel_data.get("destination_info", {}).get(mock_data_key)
     if mock_data:
         response_str = (
-            f"Information for Destination: {mock_data['name']} (Mock Data Fallback)\n"
+            f"Information for Destination: {mock_data['city']} (Mock Data Fallback):\n"
             f"  Description: {mock_data['description']}\n"
         )
         if mock_data.get('attractions'):
@@ -614,7 +689,7 @@ def get_destination_info(destination_name: str, user_token: str = "default") -> 
             response_str += f"  Best Time to Visit: {mock_data['best_time_to_visit']}\n"
         return response_str
     else:
-        return f"Destination information not found for '{destination_name}'. (API/Mock Fallback Failed)"
+        return f"Destination information for '{city}' not found. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in travel context) ---
@@ -626,7 +701,7 @@ def travel_search_web(query: str, user_token: str = "default", max_chars: int = 
     This tool wraps the generic `scrape_web` tool, providing a travel-specific interface.
     
     Args:
-        query (str): The travel-related search query (e.g., "best places to visit in Europe", "visa requirements for Nigeria").
+        query (str): The travel-related search query (e.g., "visa requirements for Japan", "best restaurants in Rome").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -643,7 +718,7 @@ def travel_query_uploaded_docs(query: str, user_token: str = "default", export: 
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "travel".
     
     Args:
-        query (str): The search query to find relevant travel documents (e.g., "my travel itinerary for Paris", "packing list for a beach vacation").
+        query (str): The search query to find relevant travel documents (e.g., "my travel itinerary", "packing list for Europe").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -658,7 +733,7 @@ def travel_query_uploaded_docs(query: str, user_token: str = "default", export: 
 @tool
 def travel_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to travel (e.g., itineraries, travel guides) located at the given file path.
+    Summarizes a document related to travel (e.g., travel guides, visa applications) located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
@@ -688,8 +763,8 @@ def travel_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -701,8 +776,8 @@ if __name__ == "__main__":
     class MockSecrets:
         def __init__(self):
             self.travel_api_key = "MOCK_TRAVEL_API_KEY"
-            self.amadeus_client_id = "MOCK_AMADEUS_CLIENT_ID"
-            self.amadeus_client_secret = "MOCK_AMADEUS_CLIENT_SECRET"
+            self.amadeus_client_id = "MOCK_AMADEUS_CLIENT_ID" # For Amadeus
+            self.amadeus_client_secret = "MOCK_AMADEUS_CLIENT_SECRET" # For Amadeus
             self.openai_api_key = "sk-mock-openai-key-12345"
             self.google_api_key = "AIzaSy-mock-google-key"
             self.firebase_config = "{}"
@@ -729,82 +804,67 @@ if __name__ == "__main__":
                 'default_user_tier': 'free',
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
-                    'travel': 'travel_api' # Default to hypothetical API
+                    'travel': 'amadeus' # Using amadeus for travel mock
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for travel
                 "travel": {
-                    "travel_api": { # Hypothetical generic travel API
-                        "base_url": "https://api.example.com/travel",
-                        "api_key_name": "travel_api_key",
-                        "api_key_param_name": "api_key",
-                        "functions": {
-                            "search_flights": {
-                                "endpoint": "/flights",
-                                "required_params": ["origin", "destination", "departure_date"],
-                                "optional_params": ["return_date"],
-                                "response_path": ["data"],
-                                "data_map": {
-                                    "flight_id": "id",
-                                    "origin": "origin",
-                                    "destination": "destination",
-                                    "departure_date": "departure_date",
-                                    "return_date": "return_date",
-                                    "airline": "airline",
-                                    "price": "price",
-                                    "duration": "duration",
-                                    "stops": "stops"
-                                }
-                            },
-                            "search_hotels": {
-                                "endpoint": "/hotels",
-                                "required_params": ["location", "check_in", "check_out"],
-                                "response_path": ["data"],
-                                "data_map": {
-                                    "hotel_id": "id",
-                                    "name": "name",
-                                    "location": "location",
-                                    "check_in": "check_in",
-                                    "check_out": "check_out",
-                                    "price_per_night": "price_per_night",
-                                    "rating": "rating",
-                                    "amenities": "amenities"
-                                }
-                            },
-                            "get_destination_info": {
-                                "endpoint": "/destinations",
-                                "required_params": ["name"],
-                                "response_path": ["data", 0], # Assuming first result is most relevant
-                                "data_map": {
-                                    "name": "name",
-                                    "description": "description",
-                                    "attractions": "attractions",
-                                    "best_time_to_visit": "best_time"
-                                }
-                            }
-                        }
-                    },
-                    "amadeus": { # Amadeus configuration for flight search (example from api_providers.yml)
+                    "amadeus": { # Mocking Amadeus for flight search
                         "base_url": "https://test.api.amadeus.com/v2",
                         "api_key_name": "amadeus_client_id",
                         "api_secret_name": "amadeus_client_secret",
                         "token_endpoint": "https://test.api.amadeus.com/v1/security/oauth2/token",
                         "functions": {
-                            "search_flights": { # This would be the actual Amadeus flight search
+                            "search_flights": {
                                 "endpoint": "/shopping/flight-offers",
                                 "required_params": ["originLocationCode", "destinationLocationCode", "departureDate"],
-                                "optional_params": ["returnDate", "adults", "travelClass", "max"],
+                                "optional_params": ["returnDate", "adults", "children", "travelClass", "max"],
                                 "response_path": ["data"],
                                 "data_map": {
-                                    "flight_id": "id",
-                                    "origin": "itineraries.segments.departure.iataCode", # Example nested path
-                                    "destination": "itineraries.segments.arrival.iataCode",
-                                    "departure_date": "itineraries.segments.departure.at",
-                                    "return_date": "itineraries.segments.arrival.at",
-                                    "airline": "validatingAirlineCodes", # This might need more complex mapping
-                                    "price": "price.grandTotal",
-                                    "duration": "itineraries.duration",
-                                    "stops": "itineraries.segments.numberOfStops"
+                                    "origin": ["itineraries", 0, "segments", 0, "departure", "iataCode"],
+                                    "destination": ["itineraries", 0, "segments", -1, "arrival", "iataCode"],
+                                    "departure_date": ["itineraries", 0, "segments", 0, "departure", "at"], # Needs parsing
+                                    "return_date": ["itineraries", 1, "segments", 0, "departure", "at"], # Needs parsing
+                                    "price": ["price", "grandTotal"],
+                                    "airline": ["itineraries", 0, "segments", 0, "carrierCode"],
+                                    "flight_number": ["itineraries", 0, "segments", 0, "number"],
+                                    "duration": ["itineraries", 0, "duration"]
+                                }
+                            }
+                        }
+                    },
+                    "travel_api": { # Generic travel API for hotels and destinations
+                        "base_url": "https://api.example.com/travel",
+                        "api_key_name": "travel_api_key",
+                        "api_key_param_name": "api_key",
+                        "functions": {
+                            "search_hotels": {
+                                "endpoint": "/hotels",
+                                "required_params": ["location", "checkin_date", "checkout_date"],
+                                "response_path": ["data"],
+                                "data_map": {
+                                    "name": "name",
+                                    "location": "address.city",
+                                    "stars": "stars",
+                                    "price_per_night": "price.per_night",
+                                    "amenities": "amenities",
+                                    "availability": "availability_status"
+                                }
+                            },
+                            "get_destination_info": {
+                                "endpoint": "/destinations",
+                                "required_params": ["city"],
+                                "response_path": ["data", 0],
+                                "data_map": {
+                                    "city": "name",
+                                    "description": "description",
+                                    "attractions": "attractions",
+                                    "best_time_to_visit": "best_time"
                                 }
                             }
                         }
@@ -908,225 +968,240 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Travel API responses
-        if "api.example.com/travel" in url:
-            if "/flights" in url:
-                origin = params.get("origin", "").upper()
-                destination = params.get("destination", "").upper()
-                departure_date = params.get("departure_date")
-                return_date = params.get("return_date")
-                
-                mock_flights = [
-                    {
-                        "id": "FLT-001",
-                        "origin": "LAG", "destination": "NYC",
-                        "departure_date": (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
-                        "return_date": (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"),
-                        "airline": "MockAir", "price": "500 USD", "duration": "10h 30m", "stops": 1
-                    },
-                    {
-                        "id": "FLT-002",
-                        "origin": "NYC", "destination": "LON",
-                        "departure_date": (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d"),
-                        "return_date": (datetime.now() + timedelta(days=17)).strftime("%Y-%m-%d"),
-                        "airline": "GlobalWings", "price": "650 USD", "duration": "7h 0m", "stops": 0
-                    }
-                ]
-                
-                filtered_flights = []
-                for flight in mock_flights:
-                    match = True
-                    if origin and flight["origin"] != origin:
-                        match = False
-                    if destination and flight["destination"] != destination:
-                        match = False
-                    if departure_date and flight["departure_date"] != departure_date:
-                        match = False
-                    if return_date and flight.get("return_date") != return_date:
-                        match = False
-                    if match:
-                        filtered_flights.append(flight)
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
 
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_flights}
-                return mock_response
+        # Mock requests.get and requests.post for external API calls
+        original_requests_get = requests.get
+        original_requests_post = requests.post
 
-            elif "/hotels" in url:
-                location = params.get("location", "").lower()
-                check_in = params.get("check_in")
-                check_out = params.get("check_out")
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Travel API responses (using generic travel_api for hotels/destinations)
+            if "api.example.com/travel" in url:
+                if "/hotels" in url:
+                    location = params.get("location", "").lower()
+                    checkin_date = params.get("checkin_date")
+                    checkout_date = params.get("checkout_date")
+                    
+                    mock_hotels = [
+                        {
+                            "name": "Grand Hotel Paris",
+                            "address": {"city": "Paris"},
+                            "stars": 5,
+                            "price": {"per_night": "€250"},
+                            "amenities": ["Free Wi-Fi", "Pool"],
+                            "availability_status": "Available"
+                        },
+                        {
+                            "name": "City Inn London",
+                            "address": {"city": "London"},
+                            "stars": 3,
+                            "price": {"per_night": "£100"},
+                            "amenities": ["Free Wi-Fi"],
+                            "availability_status": "Available"
+                        }
+                    ]
+                    
+                    filtered_hotels = []
+                    for hotel in mock_hotels:
+                        match = True
+                        if location and location not in hotel["address"]["city"].lower():
+                            match = False
+                        # Simple mock date check, assumes availability if within a reasonable range
+                        if checkin_date and checkin_date > (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d"):
+                            match = False
+                        if checkout_date and checkout_date < (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"):
+                            match = False
+                        if match:
+                            filtered_hotels.append(hotel)
 
-                mock_hotels = [
-                    {
-                        "id": "HTL-001",
-                        "name": "Grand Central Hotel",
-                        "location": "New York, USA",
-                        "check_in": (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d"),
-                        "check_out": (datetime.now() + timedelta(days=23)).strftime("%Y-%m-%d"),
-                        "price_per_night": "150 USD",
-                        "rating": "4.5 stars",
-                        "amenities": ["WiFi", "Pool", "Gym"]
-                    },
-                    {
-                        "id": "HTL-002",
-                        "name": "Riverside Inn",
-                        "location": "London, UK",
-                        "check_in": (datetime.now() + timedelta(days=25)).strftime("%Y-%m-%d"),
-                        "check_out": (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d"),
-                        "price_per_night": "120 GBP",
-                        "rating": "4.0 stars",
-                        "amenities": ["WiFi", "Breakfast"]
-                    }
-                ]
-                
-                filtered_hotels = []
-                for hotel in mock_hotels:
-                    match = True
-                    if location and location not in hotel["location"].lower():
-                        match = False
-                    if check_in and hotel["check_in"] != check_in:
-                        match = False
-                    if check_out and hotel["check_out"] != check_out:
-                        match = False
-                    if match:
-                        filtered_hotels.append(hotel)
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_hotels}
+                    return mock_response
+                elif "/destinations" in url:
+                    city = params.get("city", "").lower()
+                    
+                    mock_destinations = [
+                        {
+                            "name": "Tokyo, Japan",
+                            "description": "A vibrant metropolis...",
+                            "attractions": ["Tokyo Skytree"],
+                            "best_time": "Spring"
+                        },
+                        {
+                            "name": "Rome, Italy",
+                            "description": "The 'Eternal City'...",
+                            "attractions": ["Colosseum"],
+                            "best_time": "Spring"
+                        }
+                    ]
+                    
+                    filtered_destinations = []
+                    for dest in mock_destinations:
+                        match = True
+                        if city and city not in dest["name"].lower():
+                            match = False
+                        if match:
+                            filtered_destinations.append(dest)
 
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_hotels}
-                return mock_response
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_destinations}
+                    return mock_response
+                else:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 400
+                    mock_response.json.return_value = {"error": "Invalid endpoint"}
+                    return mock_response
             
-            elif "/destinations" in url:
-                name = params.get("name", "").lower()
-                if "paris" in name:
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'travel')}</h1><p>Some travel related content from web search.</p></body></html>"
+                return mock_response
+
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+
+        def mock_requests_post_dynamic(url, data, timeout):
+            # Simulate Amadeus token endpoint
+            if "test.api.amadeus.com/v1/security/oauth2/token" in url:
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = {"access_token": "MOCK_AMADEUS_ACCESS_TOKEN", "expires_in": 3600}
+                return mock_response
+            return original_requests_post(url, data=data, timeout=timeout)
+
+        requests.get = mock_requests_get_dynamic
+        requests.post = mock_requests_post_dynamic # Patch post for Amadeus token
+
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
+
+        async def run_travel_tests():
+            print("\n--- Testing travel_tool functions with Analytics ---")
+
+            # Test search_flights (success) - using Amadeus mock
+            print("\n--- Test 1: search_flights (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            # Temporarily set API default for travel to amadeus for this test
+            sys.modules['config.config_manager'].config_manager._config_data['api_defaults']['travel'] = 'amadeus'
+            
+            # Mock Amadeus flight search response
+            def mock_amadeus_flight_search(url, params, headers, timeout):
+                if "/shopping/flight-offers" in url:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
                     mock_response.json.return_value = {
                         "data": [{
-                            "name": "Paris, France",
-                            "description": "City of Love.",
-                            "attractions": ["Eiffel Tower", "Louvre"],
-                            "best_time": "Spring"
+                            "type": "flight-offer",
+                            "id": "1",
+                            "source": "GDS",
+                            "itineraries": [
+                                {
+                                    "duration": "PT1H15M",
+                                    "segments": [
+                                        {"departure": {"iataCode": "LHR", "at": "2025-07-12T10:00:00"}, "arrival": {"iataCode": "CDG", "at": "2025-07-12T11:15:00"}, "carrierCode": "BA", "number": "303"}
+                                    ]
+                                },
+                                { # Return itinerary
+                                    "duration": "PT1H15M",
+                                    "segments": [
+                                        {"departure": {"iataCode": "CDG", "at": "2025-07-19T15:00:00"}, "arrival": {"iataCode": "LHR", "at": "2025-07-19T16:15:00"}, "carrierCode": "BA", "number": "304"}
+                                    ]
+                                }
+                            ],
+                            "price": {"currency": "GBP", "total": "150.00", "grandTotal": "150.00"}
                         }]
                     }
                     return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
-                    return mock_response
-        
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'travel')}</h1><p>Some travel related content from web search.</p></body></html>"
-            return mock_response
+                return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            requests.get = mock_amadeus_flight_search
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            result_flights = await search_flights("London", "Paris", (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"), (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"), user_token=test_user_pro)
+            print(f"Flights Info: {result_flights}")
+            assert "Found Flights from London to Paris:" in result_flights
+            assert "Airline: BA" in result_flights
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "travel_search_flights"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    requests.get = mock_requests_get_dynamic
+            # Restore original get mock for subsequent tests
+            requests.get = mock_requests_get_dynamic
+            # Reset API default for travel to generic travel_api
+            sys.modules['config.config_manager'].config_manager._config_data['api_defaults']['travel'] = 'travel_api'
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
 
-    print("\n--- Testing travel_tool functions ---")
+            # Test search_hotels (API failure - no data found)
+            print("\n--- Test 2: search_hotels (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_hotels = await search_hotels("NonExistentCity", "2025-08-01", "2025-08-05", user_token=test_user_pro)
+            print(f"Hotels Info (API Error): {result_hotels}")
+            assert "No live hotels found for your criteria." in result_hotels
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "travel_search_hotels"
+            assert logged_data["success"] is False
+            assert "Response path 'data' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test search_flights
-    print("\n--- Testing search_flights ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_flights = search_flights("LAG", "NYC", "2025-07-12", "2025-07-19", user_token=test_user_pro)
-    print(f"Flights (Pro User, API):\n{result_flights[:500]}...")
-    assert "Found Flights:" in result_flights
-    assert "From: LAG to NYC" in result_flights
-    assert "Departure: July 12, 2025" in result_flights
-    print("Test 1 Passed.")
+            # Test get_destination_info (RBAC denied)
+            print("\n--- Test 3: get_destination_info (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_destination_rbac_denied = await get_destination_info("Kyoto", user_token=test_user_free)
+            print(f"Destination Info (Free User, RBAC Denied): {result_destination_rbac_denied}")
+            assert "Error: Access to travel tools is not enabled for your current tier." in result_destination_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test search_flights (flexible date format)
-    result_flights_flex_date = search_flights("NYC", "LON", "July 15, 2025", "July 22, 2025", user_token=test_user_pro)
-    print(f"Flights (Pro User, API - Flexible Date):\n{result_flights_flex_date[:500]}...")
-    assert "Found Flights:" in result_flights_flex_date
-    assert "From: NYC to LON" in result_flights_flex_date
-    assert "Departure: July 15, 2025" in result_flights_flex_date
-    print("Test 2 Passed.")
+            # Test travel_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: travel_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await travel_search_web("best travel insurance for Europe", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for best travel insurance for Europe" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test search_flights (fallback)
-    print("\n--- Testing search_flights (Fallback) ---")
-    with patch('domain_tools.travel_tools.travel_tool._make_dynamic_api_request', return_value=None):
-        result_flights_fallback = search_flights("ABV", "DXB", "2025-08-01", user_token=test_user_pro)
-        print(f"Flights (Pro User, Fallback):\n{result_flights_fallback[:500]}...")
-        assert "Found Flights (Mock Data Fallback):" in result_flights_fallback
-    print("Test 3 Passed.")
+            print("\nAll travel_tool tests with analytics considerations completed.")
 
-    # Test search_hotels
-    print("\n--- Testing search_hotels ---")
-    result_hotels = search_hotels("New York", "2025-07-20", "2025-07-23", user_token=test_user_pro)
-    print(f"Hotels (Pro User, API):\n{result_hotels[:500]}...")
-    assert "Found Hotels:" in result_hotels
-    assert "Grand Central Hotel" in result_hotels
-    assert "Check-in: July 20, 2025" in result_hotels
-    print("Test 4 Passed.")
+        await run_travel_tests()
 
-    # Test search_hotels (flexible date format)
-    result_hotels_flex_date = search_hotels("London", "Sept 1, 2025", "Sept 5, 2025", user_token=test_user_pro)
-    print(f"Hotels (Pro User, API - Flexible Date):\n{result_hotels_flex_date[:500]}...")
-    assert "Found Hotels:" in result_hotels_flex_date
-    assert "Riverside Inn" in result_hotels_flex_date
-    assert "Check-in: September 01, 2025" in result_hotels_flex_date
-    print("Test 5 Passed.")
+        # Restore original requests.get and requests.post
+        requests.get = original_requests_get
+        requests.post = original_requests_post
 
-    # Test get_destination_info
-    print("\n--- Testing get_destination_info ---")
-    result_destination = get_destination_info("Paris", user_token=test_user_pro)
-    print(f"Destination Info (Pro User, API):\n{result_destination[:200]}...")
-    assert "Information for Destination: Paris, France" in result_destination
-    assert "City of Love." in result_destination
-    print("Test 6 Passed.")
-
-    # Test RBAC for travel_tool_access (e.g., search_flights for free user)
-    print("\n--- Testing RBAC for travel_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = search_flights("LAX", "MIA", "2025-09-01", user_token=test_user_free)
-    print(f"Flights (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to travel tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 7 Passed.")
-
-    # Test travel_search_web
-    print("\n--- Testing travel_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "travel guide to Bali"
-    search_web_result = travel_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for travel guide to Bali" in search_web_result
-    print("Test 8 Passed.")
-
-    # Test travel_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing travel_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "travel"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "itinerary.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a travel itinerary for a trip to Rome. It includes visits to the Colosseum and Vatican City.")
-    
-    result_summary = travel_summarize_document_by_path(str(dummy_file_path))
-    print(f"Itinerary Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "trip to Rome" in result_summary
-    print("Test 9 Passed.")
-
-    print("\nAll travel_tool tests completed.")
-
-    # Restore original requests.get
-    requests.get = original_requests_get
-
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
