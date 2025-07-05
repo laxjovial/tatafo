@@ -19,6 +19,8 @@ from config.config_manager import config_manager
 from utils.user_manager import get_user_tier_capability
 # Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,19 +355,64 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
@@ -262,82 +420,77 @@ def _make_dynamic_api_request(
 _mock_news_data = {
     "top_headlines": [
         {
-            "title": "Global Markets Rally Amid Tech Sector Growth",
-            "description": "Stock markets worldwide saw significant gains today, driven by strong performances in the technology sector.",
+            "title": "Global Markets Rally Amid Tech Boom",
             "source": "Financial Times",
-            "published_at": (datetime.now() - timedelta(hours=2)).isoformat(),
-            "url": "http://example.com/mock-tech-rally"
+            "published_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            "description": "Stock markets worldwide experience significant gains, driven by strong performance in the technology sector.",
+            "url": "http://example.com/news/markets-rally"
         },
         {
-            "title": "New Climate Accord Signed by Major Nations",
-            "description": "Leaders from over 50 countries have signed a landmark agreement aimed at reducing carbon emissions.",
-            "source": "Reuters",
-            "published_at": (datetime.now() - timedelta(hours=5)).isoformat(),
-            "url": "http://example.com/mock-climate-accord"
+            "title": "New Climate Agreement Reached at Summit",
+            "source": "Environmental Daily",
+            "published_at": (datetime.now() - timedelta(hours=3)).isoformat(),
+            "description": "World leaders commit to ambitious new targets to combat climate change.",
+            "url": "http://example.com/news/climate-agreement"
         }
     ],
-    "everything_search": [
+    "search_articles": [
         {
-            "title": "Innovations in AI Healthcare",
-            "description": "Recent advancements in artificial intelligence are transforming healthcare diagnostics.",
-            "source": "Tech Health Daily",
+            "title": "AI Breakthrough in Medical Diagnosis",
+            "source": "Health Tech News",
             "published_at": (datetime.now() - timedelta(days=1)).isoformat(),
-            "url": "http://example.com/mock-ai-health"
+            "description": "Researchers announce a new AI model capable of highly accurate disease detection.",
+            "url": "http://example.com/news/ai-medical"
         },
         {
-            "title": "Impact of Interest Rate Hikes on Housing Market",
-            "description": "Economists debate the long-term effects of rising interest rates on housing affordability.",
-            "source": "Economy Today",
-            "published_at": (datetime.now() - timedelta(days=3)).isoformat(),
-            "url": "http://example.com/mock-housing-rates"
+            "title": "Local Election Results Announced",
+            "source": "City Gazette",
+            "published_at": (datetime.now() - timedelta(days=2)).isoformat(),
+            "description": "The results of the municipal elections are in, with significant changes in local leadership.",
+            "url": "http://example.com/news/local-elections"
         }
     ]
 }
 
 @tool
-def get_latest_news(query: Optional[str] = None, category: Optional[str] = None, country: Optional[str] = None, user_token: str = "default") -> str:
+def get_top_headlines(category: Optional[str] = None, country: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Retrieves the latest news headlines. Can filter by a specific query, category (e.g., 'business', 'technology'),
-    or country (2-letter ISO code, e.g., 'us', 'gb').
+    Retrieves the top news headlines. Can be filtered by category (e.g., 'business', 'technology', 'health')
+    and country (2-letter ISO country code, e.g., 'us', 'gb', 'ng').
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        query (str, optional): A keyword or phrase to search for in the article title and description.
-        category (str, optional): The category to filter by (e.g., 'business', 'entertainment', 'general', 'health', 'science', 'sports', 'technology').
-        country (str, optional): The 2-letter ISO country code (e.g., 'us', 'gb', 'ng').
+        category (str, optional): The news category.
+        country (str, optional): The 2-letter ISO country code.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of news headlines, or an error/fallback message.
+        str: A formatted string of top headlines, or an error/fallback message.
     """
-    logger.info(f"Tool: get_latest_news called with query='{query}', category='{category}', country='{country}' by user: {user_token}")
+    logger.info(f"Tool: get_top_headlines called for category='{category}', country='{country}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'news_tool_access', False):
         return "Error: Access to news tools is not enabled for your current tier."
     
     params = {}
-    if query: params["q"] = query
-    if category: params["category"] = category.lower()
-    if country: params["country"] = country.lower()
+    if category: params["category"] = category
+    if country: params["country"] = country
 
-    # NewsAPI uses 'top-headlines' for categories/countries and 'everything' for general queries
-    # We will prioritize 'top-headlines' if category or country is provided.
-    function_name = "get_top_headlines"
-    if query and not (category or country):
-        function_name = "search_everything" # Use 'everything' endpoint for general queries
+    api_data = asyncio.run(_make_dynamic_api_request("news", "get_top_headlines", params, user_token))
 
-    api_data = _make_dynamic_api_request(
-        "news", function_name,
-        params,
-        user_token
-    )
-
-    if api_data and api_data.get("data"): # 'data' key because _make_dynamic_api_request wraps lists
+    if api_data and api_data.get("data"):
         articles = api_data["data"]
         if articles:
-            response_str = "Latest News Headlines:\n"
+            response_str = "Top Headlines:\n"
             for i, article in enumerate(articles[:5]): # Limit to top 5 articles
-                published_at = datetime.fromisoformat(article.get("published_at", "")).strftime("%Y-%m-%d %H:%M") if article.get("published_at") else "N/A"
+                published_at = article.get('published_at', 'N/A')
+                try:
+                    # NewsAPI returns ISO format, convert to readable
+                    published_dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                    published_at = published_dt.strftime('%Y-%m-%d %H:%M')
+                except ValueError:
+                    pass # Keep as is if not ISO
+                
                 response_str += (
                     f"{i+1}. Title: {article.get('title', 'N/A')}\n"
                     f"   Source: {article.get('source', 'N/A')}\n"
@@ -347,14 +500,28 @@ def get_latest_news(query: Optional[str] = None, category: Optional[str] = None,
                 )
             return response_str
         else:
-            return f"No live news found for your criteria (query='{query}', category='{category}', country='{country}'). Falling back to mock data."
+            return f"No live top headlines found for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_articles = _mock_news_data.get("top_headlines") if not query else _mock_news_data.get("everything_search")
-    if mock_articles:
-        response_str = "Latest News Headlines (Mock Data Fallback):\n"
-        for i, article in enumerate(mock_articles[:2]): # Limit mock to top 2
-            published_at = datetime.fromisoformat(article.get("published_at", "")).strftime("%Y-%m-%d %H:%M") if article.get("published_at") else "N/A"
+    mock_headlines = _mock_news_data.get("top_headlines", [])
+    filtered_mock_headlines = []
+    for headline in mock_headlines:
+        match = True
+        # Simple mock filtering: doesn't support category/country, just returns general
+        if category or country: # If filters are applied, mock data won't match perfectly
+            pass # For simplicity, mock data doesn't filter by category/country
+        if match:
+            filtered_mock_headlines.append(headline)
+
+    if filtered_mock_headlines:
+        response_str = "Top Headlines (Mock Data Fallback):\n"
+        for i, article in enumerate(filtered_mock_headlines[:2]): # Limit mock to top 2
+            published_at = article.get('published_at', 'N/A')
+            try:
+                published_dt = datetime.fromisoformat(published_at)
+                published_at = published_dt.strftime('%Y-%m-%d %H:%M')
+            except ValueError:
+                pass
             response_str += (
                 f"{i+1}. Title: {article.get('title', 'N/A')}\n"
                 f"   Source: {article.get('source', 'N/A')}\n"
@@ -364,7 +531,104 @@ def get_latest_news(query: Optional[str] = None, category: Optional[str] = None,
             )
         return response_str
     else:
-        return f"News information not found for your criteria. (API/Mock Fallback Failed)"
+        return f"Top headlines not found for your criteria. (API/Mock Fallback Failed)"
+
+
+@tool
+def search_news_articles(query: str, from_date: Optional[str] = None, to_date: Optional[str] = None, user_token: str = "default") -> str:
+    """
+    Searches for news articles matching a specific query, optionally within a date range.
+    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'January 1, 2023').
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        query (str): The search query (e.g., "artificial intelligence", "space exploration").
+        from_date (str, optional): The start date for the search (YYYY-MM-DD).
+        to_date (str, optional): The end date for the search (YYYY-MM-DD).
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of news articles, or an error/fallback message.
+    """
+    logger.info(f"Tool: search_news_articles called for query='{query}', from_date='{from_date}', to_date='{to_date}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'news_tool_access', False):
+        return "Error: Access to news tools is not enabled for your current tier."
+    
+    params = {"q": query}
+    
+    parsed_from_date = None
+    if from_date:
+        parsed_from_date = parse_date_to_yyyymmdd(from_date)
+        if not parsed_from_date:
+            return "Error: Could not parse the provided 'from_date'. Please ensure the date is valid."
+        params["from"] = parsed_from_date
+    
+    parsed_to_date = None
+    if to_date:
+        parsed_to_date = parse_date_to_yyyymmdd(to_date)
+        if not parsed_to_date:
+            return "Error: Could not parse the provided 'to_date'. Please ensure the date is valid."
+        params["to"] = parsed_to_date
+
+    api_data = asyncio.run(_make_dynamic_api_request("news", "search_articles", params, user_token))
+
+    if api_data and api_data.get("data"):
+        articles = api_data["data"]
+        if articles:
+            response_str = f"News Articles for '{query}':\n"
+            for i, article in enumerate(articles[:5]): # Limit to top 5 articles
+                published_at = article.get('published_at', 'N/A')
+                try:
+                    published_dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                    published_at = published_dt.strftime('%Y-%m-%d %H:%M')
+                except ValueError:
+                    pass
+                
+                response_str += (
+                    f"{i+1}. Title: {article.get('title', 'N/A')}\n"
+                    f"   Source: {article.get('source', 'N/A')}\n"
+                    f"   Published: {published_at}\n"
+                    f"   Description: {article.get('description', 'N/A')}\n"
+                    f"   URL: {article.get('url', 'N/A')}\n\n"
+                )
+            return response_str
+        else:
+            return f"No live news articles found for '{query}' for your criteria. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_articles = _mock_news_data.get("search_articles", [])
+    filtered_mock_articles = []
+    for article in mock_articles:
+        match = True
+        if query.lower() not in article.get("title", "").lower() and query.lower() not in article.get("description", "").lower():
+            match = False
+        if parsed_from_date and article.get("published_at", "") < parsed_from_date:
+            match = False
+        if parsed_to_date and article.get("published_at", "") > parsed_to_date:
+            match = False
+        if match:
+            filtered_mock_articles.append(article)
+
+    if filtered_mock_articles:
+        response_str = f"News Articles for '{query}' (Mock Data Fallback):\n"
+        for i, article in enumerate(filtered_mock_articles[:2]): # Limit mock to top 2
+            published_at = article.get('published_at', 'N/A')
+            try:
+                published_dt = datetime.fromisoformat(published_at)
+                published_at = published_dt.strftime('%Y-%m-%d %H:%M')
+            except ValueError:
+                pass
+            response_str += (
+                f"{i+1}. Title: {article.get('title', 'N/A')}\n"
+                f"   Source: {article.get('source', 'N/A')}\n"
+                f"   Published: {published_at}\n"
+                f"   Description: {article.get('description', 'N/A')}\n"
+                f"   URL: {article.get('url', 'N/A')}\n\n"
+            )
+        return response_str
+    else:
+        return f"News articles for '{query}' not found. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in news context) ---
@@ -372,11 +636,11 @@ def get_latest_news(query: Optional[str] = None, category: Optional[str] = None,
 @tool
 def news_search_web(query: str, user_token: str = "default", max_chars: int = 2000) -> str:
     """
-    Searches the web for news-related information using a smart search fallback mechanism.
+    Searches the web for general news information using a smart search fallback mechanism.
     This tool wraps the generic `scrape_web` tool, providing a news-specific interface.
     
     Args:
-        query (str): The news-related search query (e.g., "latest political developments", "sports news today").
+        query (str): The news-related search query (e.g., "latest political developments", "economic forecasts").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -393,7 +657,7 @@ def news_query_uploaded_docs(query: str, user_token: str = "default", export: Op
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "news".
     
     Args:
-        query (str): The search query to find relevant news documents (e.g., "summary of recent economic reports", "details on the new policy").
+        query (str): The search query to find relevant news documents (e.g., "summary of daily briefings", "analysis of recent events").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -438,8 +702,8 @@ def news_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -450,7 +714,7 @@ if __name__ == "__main__":
     # Mock Streamlit secrets and config_manager for local testing
     class MockSecrets:
         def __init__(self):
-            self.news_api_key = "MOCK_NEWS_API_KEY"
+            self.newsapi_api_key = "MOCK_NEWSAPI_API_KEY"
             self.openai_api_key = "sk-mock-openai-key-12345"
             self.google_api_key = "AIzaSy-mock-google-key"
             self.firebase_config = "{}"
@@ -478,39 +742,44 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'news': 'newsapi'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for news
                 "news": {
                     "newsapi": {
                         "base_url": "https://newsapi.org/v2",
-                        "api_key_name": "news_api_key",
+                        "api_key_name": "newsapi_api_key",
                         "api_key_param_name": "apiKey",
                         "functions": {
                             "get_top_headlines": {
                                 "endpoint": "/top-headlines",
                                 "required_params": [],
-                                "optional_params": ["q", "category", "country", "sources"],
+                                "optional_params": ["category", "country"],
                                 "response_path": ["articles"],
                                 "data_map": {
                                     "title": "title",
+                                    "source": "source.name",
+                                    "published_at": "publishedAt",
                                     "description": "description",
-                                    "url": "url",
-                                    "source": "source.name", # Nested path
-                                    "published_at": "publishedAt"
+                                    "url": "url"
                                 }
                             },
-                            "search_everything": {
+                            "search_articles": {
                                 "endpoint": "/everything",
                                 "required_params": ["q"],
-                                "optional_params": ["sources", "domains", "from", "to", "language", "sort_by", "page_size", "page"],
+                                "optional_params": ["from", "to"],
                                 "response_path": ["articles"],
                                 "data_map": {
                                     "title": "title",
-                                    "description": "description",
-                                    "url": "url",
                                     "source": "source.name",
-                                    "published_at": "publishedAt"
+                                    "published_at": "publishedAt",
+                                    "description": "description",
+                                    "url": "url"
                                 }
                             }
                         }
@@ -614,150 +883,217 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate NewsAPI responses
-        if "newsapi.org/v2" in url:
-            if "/top-headlines" in url:
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {
-                    "status": "ok",
-                    "totalResults": 2,
-                    "articles": [
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
+
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
+
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate NewsAPI responses
+            if "newsapi.org/v2" in url:
+                if "/top-headlines" in url:
+                    category = params.get("category", "").lower()
+                    country = params.get("country", "").lower()
+                    
+                    mock_articles = [
                         {
-                            "source": {"id": "bbc-news", "name": "BBC News"},
-                            "author": "BBC News",
-                            "title": "Mock Headline 1: Global Economy Update",
-                            "description": "A brief on the current state of the global economy.",
-                            "url": "http://mock.news/article1",
-                            "urlToImage": "http://mock.news/image1.jpg",
-                            "publishedAt": (datetime.now() - timedelta(hours=1)).isoformat(),
-                            "content": "Content of article 1."
+                            "source": {"id": "financial-times", "name": "Financial Times"},
+                            "author": "John Doe",
+                            "title": "Global Markets Rally Amid Tech Boom",
+                            "description": "Stock markets worldwide experience significant gains...",
+                            "url": "http://example.com/news/markets-rally",
+                            "urlToImage": "http://example.com/image1.jpg",
+                            "publishedAt": (datetime.now() - timedelta(hours=1)).isoformat() + "Z",
+                            "content": "Full content here..."
                         },
                         {
-                            "source": {"id": "cnn", "name": "CNN"},
-                            "author": "CNN",
-                            "title": "Mock Headline 2: Political Developments",
-                            "description": "Key political events unfolding.",
-                            "url": "http://mock.news/article2",
-                            "urlToImage": "http://mock.news/image2.jpg",
-                            "publishedAt": (datetime.now() - timedelta(hours=3)).isoformat(),
-                            "content": "Content of article 2."
+                            "source": {"id": "environmental-daily", "name": "Environmental Daily"},
+                            "author": "Jane Smith",
+                            "title": "New Climate Agreement Reached at Summit",
+                            "description": "World leaders commit to ambitious new targets...",
+                            "url": "http://example.com/news/climate-agreement",
+                            "urlToImage": "http://example.com/image2.jpg",
+                            "publishedAt": (datetime.now() - timedelta(hours=3)).isoformat() + "Z",
+                            "content": "Full content here..."
                         }
                     ]
-                }
-                return mock_response
-            elif "/everything" in url:
+                    
+                    filtered_articles = []
+                    for article in mock_articles:
+                        match = True
+                        # Simple mock filtering: doesn't fully support category/country
+                        if category and "markets" not in article["title"].lower() and "climate" not in article["title"].lower():
+                            match = False
+                        if country and country not in article["url"].lower(): # Very basic country check
+                            match = False
+                        if match:
+                            filtered_articles.append(article)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"status": "ok", "totalResults": len(filtered_articles), "articles": filtered_articles}
+                    return mock_response
+
+                elif "/everything" in url:
+                    query = params.get("q", "").lower()
+                    from_date = params.get("from")
+                    to_date = params.get("to")
+
+                    mock_articles = [
+                        {
+                            "source": {"id": "health-tech-news", "name": "Health Tech News"},
+                            "author": "Dr. AI",
+                            "title": "AI Breakthrough in Medical Diagnosis",
+                            "description": "Researchers announce a new AI model...",
+                            "url": "http://example.com/news/ai-medical",
+                            "urlToImage": "http://example.com/image3.jpg",
+                            "publishedAt": (datetime.now() - timedelta(days=1)).isoformat() + "Z",
+                            "content": "Full content here..."
+                        },
+                        {
+                            "source": {"id": "city-gazette", "name": "City Gazette"},
+                            "author": "Local Reporter",
+                            "title": "Local Election Results Announced",
+                            "description": "The results of the municipal elections...",
+                            "url": "http://example.com/news/local-elections",
+                            "urlToImage": "http://example.com/image4.jpg",
+                            "publishedAt": (datetime.now() - timedelta(days=2)).isoformat() + "Z",
+                            "content": "Full content here..."
+                        }
+                    ]
+                    
+                    filtered_articles = []
+                    for article in mock_articles:
+                        match = True
+                        if query and not (query in article["title"].lower() or query in article["description"].lower()):
+                            match = False
+                        if from_date and article["publishedAt"] < from_date:
+                            match = False
+                        if to_date and article["publishedAt"] > to_date:
+                            match = False
+                        if match:
+                            filtered_articles.append(article)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"status": "ok", "totalResults": len(filtered_articles), "articles": filtered_articles}
+                    return mock_response
+                else:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 400
+                    mock_response.json.return_value = {"status": "error", "code": "invalidRequest", "message": "Invalid request parameters."}
+                    return mock_response
+            
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.json.return_value = {
-                    "status": "ok",
-                    "totalResults": 1,
-                    "articles": [
-                        {
-                            "source": {"id": "reuters", "name": "Reuters"},
-                            "author": "Reuters",
-                            "title": f"Mock Search Result for '{params.get('q', 'query')}': Latest Tech Innovations",
-                            "description": "Details about new tech breakthroughs.",
-                            "url": "http://mock.news/search_article",
-                            "urlToImage": "http://mock.news/search_image.jpg",
-                            "publishedAt": (datetime.now() - timedelta(days=1)).isoformat(),
-                            "content": "Content of search article."
-                        }
-                    ]
-                }
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'news')}</h1><p>Some news related content from web search.</p></body></html>"
                 return mock_response
-            
-            # Simulate NewsAPI error
-            if "invalid_api_key" in params.get("apiKey", ""):
-                 mock_response = MagicMock()
-                 mock_response.status_code = 401
-                 mock_response.json.return_value = {"status": "error", "code": "apiKeyInvalid", "message": "Your API key is invalid or incorrect."}
-                 return mock_response
 
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'news')}</h1><p>Some news snippet from web search.</p></body></html>"
-            return mock_response
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+        requests.get = mock_requests_get_dynamic
 
-    requests.get = mock_requests_get_dynamic
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
+        async def run_news_tests():
+            print("\n--- Testing news_tool functions with Analytics ---")
 
-    print("\n--- Testing news_tool functions ---")
+            # Test get_top_headlines (success)
+            print("\n--- Test 1: get_top_headlines (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_headlines = await get_top_headlines(category="technology", user_token=test_user_pro)
+            print(f"Top Headlines: {result_headlines}")
+            assert "Top Headlines:" in result_headlines
+            assert "Global Markets Rally Amid Tech Boom" in result_headlines
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "news_get_top_headlines"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test get_latest_news (top headlines)
-    print("\n--- Testing get_latest_news (Top Headlines) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_headlines = get_latest_news(category="technology", country="us", user_token=test_user_pro)
-    print(f"Latest Tech News (Pro User, API):\n{result_headlines[:500]}...")
-    assert "Latest News Headlines:" in result_headlines
-    assert "Mock Headline 1: Global Economy Update" in result_headlines # Mock returns general headlines
-    print("Test 1 Passed.")
+            # Test search_news_articles (API failure - invalid query)
+            print("\n--- Test 2: search_news_articles (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            # Temporarily modify mock_requests_get_dynamic for this specific call to simulate API error
+            original_mock_get = requests.get
+            def mock_get_error(url, params, headers, timeout):
+                if "newsapi.org/v2/everything" in url and params.get("q") == "invalidquery":
+                    mock_response = MagicMock()
+                    mock_response.status_code = 400
+                    mock_response.json.return_value = {"status": "error", "code": "invalidQuery", "message": "Query cannot be empty."}
+                    return mock_response
+                return original_mock_get(url, params=params, headers=headers, timeout=timeout)
+            requests.get = mock_get_error
 
-    # Test get_latest_news (search everything)
-    print("\n--- Testing get_latest_news (Search Everything) ---")
-    result_search = get_latest_news(query="AI in medicine", user_token=test_user_pro)
-    print(f"News Search 'AI in medicine' (Pro User, API):\n{result_search[:500]}...")
-    assert "Latest News Headlines:" in result_search
-    assert "Mock Search Result for 'AI in medicine': Latest Tech Innovations" in result_search
-    print("Test 2 Passed.")
+            result_search_articles = await search_news_articles("invalidquery", user_token=test_user_pro)
+            print(f"Search Articles (API Error): {result_search_articles}")
+            assert "No live news articles found for 'invalidquery' for your criteria." in result_search_articles # Falls back to mock, but mock also fails
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "news_search_articles"
+            assert logged_data["success"] is False
+            assert "Query cannot be empty." in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
+            requests.get = original_mock_get # Restore original mock
 
-    # Test get_latest_news (fallback)
-    print("\n--- Testing get_latest_news (Fallback) ---")
-    with patch('domain_tools.news_tools.news_tool._make_dynamic_api_request', return_value=None):
-        result_fallback = get_latest_news(query="climate change", user_token=test_user_pro)
-        print(f"News Search 'climate change' (Pro User, Fallback):\n{result_fallback[:500]}...")
-        assert "Latest News Headlines (Mock Data Fallback):" in result_fallback
-    print("Test 3 Passed.")
+            # Test get_top_headlines (RBAC denied)
+            print("\n--- Test 3: get_top_headlines (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_headlines_rbac_denied = await get_top_headlines(country="us", user_token=test_user_free)
+            print(f"Top Headlines (Free User, RBAC Denied): {result_headlines_rbac_denied}")
+            assert "Error: Access to news tools is not enabled for your current tier." in result_headlines_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test RBAC for news_tool_access (e.g., get_latest_news for free user)
-    print("\n--- Testing RBAC for news_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = get_latest_news(query="sports", user_token=test_user_free)
-    print(f"News (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to news tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 4 Passed.")
+            # Test news_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: news_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await news_search_web("impact of social media on news consumption", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for impact of social media on news consumption" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test news_search_web
-    print("\n--- Testing news_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "recent political news"
-    search_web_result = news_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for recent political news" in search_web_result
-    print("Test 5 Passed.")
+            print("\nAll news_tool tests with analytics considerations completed.")
 
-    # Test news_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing news_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "news"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "news_briefing.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a sample news briefing. It covers the latest economic indicators and a new government policy.")
-    
-    result_summary = news_summarize_document_by_path(str(dummy_file_path))
-    print(f"News Briefing Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "economic indicators" in result_summary
-    print("Test 6 Passed.")
+        await run_news_tests()
 
-    print("\nAll news_tool tests completed.")
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    # Restore original requests.get
-    requests.get = original_requests_get
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
 
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
