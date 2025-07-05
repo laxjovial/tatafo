@@ -255,4 +255,3 @@ class FirestoreManager:
 
 # Instantiate the FirestoreManager as a singleton
 firestore_manager = FirestoreManager()
-
