@@ -19,6 +19,8 @@ from config.config_manager import config_manager
 from utils.user_manager import get_user_tier_capability
 # Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
+# Import analytics_tracker
+from utils import analytics_tracker # Import the module
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-def _make_dynamic_api_request(
+async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
     domain: str,
     function_name: str,
     params: Dict[str, Any],
@@ -49,17 +51,37 @@ def _make_dynamic_api_request(
     Makes an API request to the dynamically configured provider for a given domain and function.
     Handles API key retrieval, request construction, and basic error handling.
     Returns parsed JSON data or None on failure (triggering mock fallback).
+    Logs tool usage analytics.
     """
-    # Get the default active API provider for the domain from config.yml
+    # Check if analytics is enabled for logging tool usage
+    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+
+    # Get the default active API provider for the domain from data/config.yml
     active_provider_name = config_manager.get(f"api_defaults.{domain}")
     if not active_provider_name:
         logger.error(f"No default API provider configured for domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"No default API provider configured for domain '{domain}'."
+            )
         return None
 
     # Get the full configuration for the active provider from api_providers.yml
     provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
     if not provider_config:
         logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
+            )
         return None
 
     base_url = provider_config.get("base_url")
@@ -74,6 +96,14 @@ def _make_dynamic_api_request(
 
         if not api_key or not api_secret or not token_endpoint:
             logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message="Amadeus API credentials or token endpoint missing."
+                )
             return None
         
         # Get Amadeus access token (simplified for demonstration)
@@ -87,21 +117,53 @@ def _make_dynamic_api_request(
             access_token = token_response.json().get('access_token')
             if not access_token:
                 logger.error("Failed to get Amadeus access token.")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message="Failed to get Amadeus access token."
+                    )
                 return None
             headers = {"Authorization": f"Bearer {access_token}"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting Amadeus access token: {e}")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Error getting Amadeus access token: {e}"
+                )
             return None
     else:
         headers = {} # No special headers by default
 
     if not base_url:
         logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Base URL not configured for '{active_provider_name}'."
+            )
         return None
 
     function_details = provider_config.get("functions", {}).get(function_name)
     if not function_details:
         logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+            )
         return None
 
     endpoint = function_details.get("endpoint")
@@ -110,6 +172,14 @@ def _make_dynamic_api_request(
 
     if not endpoint and not function_param:
         logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=f"Endpoint or function_param missing for '{function_name}'."
+            )
         return None
 
     # Construct URL
@@ -121,7 +191,16 @@ def _make_dynamic_api_request(
             value = str(params.pop(p_param))
             full_url = full_url.replace(f"{{{p_param}}}", value)
         else:
-            logger.warning(f"Missing path parameter '{p_param}' for function '{function_name}'.")
+            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Cannot construct URL without required path params
 
     # Construct query parameters
@@ -141,7 +220,16 @@ def _make_dynamic_api_request(
         if param_key in params:
             query_params[param_key] = params[param_key]
         elif param_key in function_details.get("required_params", []):
-            logger.warning(f"Missing required parameter '{param_key}' for function '{function_name}'.")
+            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+            logger.warning(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
             return None # Missing required param, cannot proceed
 
     try:
@@ -151,23 +239,30 @@ def _make_dynamic_api_request(
         raw_data = response.json()
         
         # Check for API-specific error messages in the response body
+        api_error_message = None
         if "Error Message" in raw_data: # Alpha Vantage specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data['Error Message']}")
-            return None
-        if "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            logger.warning(f"API rate limit hit for {active_provider_name}: {raw_data['Note']}")
-            return None
-        if raw_data.get("status") == "error": # NewsAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}")
-            return None
-        if raw_data.get("Error"): # OMDBAPI specific
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('Error')}")
-            return None
-        if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            logger.error(f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}")
-            return None
-        if raw_data.get("result") == "error": # ExchangeRate-API error
-            logger.error(f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}")
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+        elif raw_data.get("status") == "error": # NewsAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+        elif raw_data.get("Error"): # OMDBAPI specific
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+        elif raw_data.get("result") == "error": # ExchangeRate-API error
+            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+        if api_error_message:
+            logger.error(api_error_message)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=api_error_message
+                )
             return None
 
 
@@ -177,7 +272,16 @@ def _make_dynamic_api_request(
         if response_path:
             data_to_map = _get_nested_value(raw_data, response_path)
             if data_to_map is None:
-                logger.warning(f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}")
+                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
                 return None
 
         # Apply data mapping
@@ -199,7 +303,7 @@ def _make_dynamic_api_request(
                         else:
                             mapped_item[mapped_key] = item.get(original_key_path)
                 mapped_data_list.append(mapped_item)
-            return {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
         elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
             # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
             processed_data = {}
@@ -213,7 +317,7 @@ def _make_dynamic_api_request(
                     else:
                         mapped_values[mapped_key] = values.get(original_key_path)
                 processed_data[date_key] = mapped_values
-            return {"data": processed_data}
+            final_result = {"data": processed_data}
         else: # For single object responses
             # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
             if function_name == "get_crypto_price" and active_provider_name == "coingecko":
@@ -230,9 +334,18 @@ def _make_dynamic_api_request(
                         mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
                     if "last_updated_at" in raw_data[crypto_id]:
                         mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    return mapped_data
+                    final_result = mapped_data
                 else:
-                    logger.warning(f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}")
+                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                    logger.warning(error_msg)
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message=error_msg
+                        )
                     return None
             
             for mapped_key, original_key_path in data_map.items():
@@ -242,97 +355,146 @@ def _make_dynamic_api_request(
                     mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
                 else:
                     mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            return mapped_data
+            final_result = mapped_data
+
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=True
+            )
+        return final_result
 
     except requests.exceptions.Timeout:
-        logger.error(f"API request to {active_provider_name} timed out for function '{function_name}'.")
+        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request to {active_provider_name} for function '{function_name}': {e}")
+        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except json.JSONDecodeError:
-        logger.error(f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'.")
+        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+        logger.error(error_msg)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
     except Exception as e:
-        logger.error(f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}", exc_info=True)
+        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+        logger.error(error_msg, exc_info=True)
+        if log_tool_usage_enabled:
+            await analytics_tracker.log_tool_usage(
+                tool_name=f"{domain}_{function_name}",
+                tool_params=params,
+                user_token=user_token,
+                success=False,
+                error_message=error_msg
+            )
         return None
 
 
 # --- Mock Data for Fallback ---
 _mock_entertainment_data = {
-    "movie_search": [
-        {
+    "movie_info": {
+        "inception": {
             "title": "Inception",
-            "year": "2010",
-            "genre": "Action, Sci-Fi, Thriller",
             "director": "Christopher Nolan",
-            "plot": "A thief who steals information by entering people's dreams is given the inverse task of planting an idea into the mind of a C.E.O.",
-            "imdb_rating": "8.8",
-            "poster_url": "https://placehold.co/100x150/000/FFF?text=Inception"
+            "year": 2010,
+            "genre": "Sci-Fi, Action",
+            "plot": "A thief who steals corporate secrets through use of dream-sharing technology...",
+            "imdb_rating": 8.8,
+            "cast": ["Leonardo DiCaprio", "Joseph Gordon-Levitt"]
         },
-        {
+        "the_matrix": {
             "title": "The Matrix",
-            "year": "1999",
-            "genre": "Action, Sci-Fi",
             "director": "Lana Wachowski, Lilly Wachowski",
-            "plot": "A computer hacker learns from mysterious rebels about the true nature of his reality and his role in the war against its controllers.",
-            "imdb_rating": "8.7",
-            "poster_url": "https://placehold.co/100x150/000/FFF?text=Matrix"
+            "year": 1999,
+            "genre": "Sci-Fi, Action",
+            "plot": "A computer hacker learns from mysterious rebels about the true nature of his reality...",
+            "imdb_rating": 8.7,
+            "cast": ["Keanu Reeves", "Laurence Fishburne"]
         }
-    ],
-    "event_search": [
-        {
-            "event_id": "EVT-2024-001",
-            "name": "Summer Music Festival",
-            "date": "2024-08-15",
-            "location": "Central Park, New York",
-            "genre": "Music",
-            "description": "An annual festival featuring various musical artists.",
-            "tickets_url": "http://example.com/tickets/musicfest"
+    },
+    "tv_show_info": {
+        "breaking_bad": {
+            "title": "Breaking Bad",
+            "creator": "Vince Gilligan",
+            "year_start": 2008,
+            "year_end": 2013,
+            "genre": "Crime, Drama, Thriller",
+            "plot": "A chemistry teacher turns to a life of crime after being diagnosed with lung cancer.",
+            "imdb_rating": 9.5,
+            "seasons": 5
         },
-        {
-            "event_id": "EVT-2024-002",
-            "name": "Comedy Night Live",
-            "date": "2024-07-20",
-            "location": "The Laugh Factory, Los Angeles",
+        "the_office_us": {
+            "title": "The Office (US)",
+            "creator": "Ricky Gervais, Stephen Merchant, Greg Daniels",
+            "year_start": 2005,
+            "year_end": 2013,
             "genre": "Comedy",
-            "description": "A stand-up comedy show with popular comedians.",
-            "tickets_url": "http://example.com/tickets/comedynight"
+            "plot": "A mockumentary about the everyday lives of office employees.",
+            "imdb_rating": 9.0,
+            "seasons": 9
         }
-    ],
-    "artist_info": {
-        "taylor_swift": {
-            "name": "Taylor Swift",
-            "genre": "Pop, Country",
-            "active_since": "2004",
-            "notable_albums": ["Fearless", "1989", "Midnights"],
-            "website": "https://www.taylorswift.com"
+    },
+    "upcoming_events": [
+        {
+            "event_name": "Summer Music Festival",
+            "type": "Music Concert",
+            "date": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+            "location": "Central Park, New York",
+            "artists": ["Artist A", "Band B"],
+            "ticket_info": "Tickets available on Ticketmaster."
         },
-        "beyonce": {
-            "name": "Beyoncé",
-            "genre": "R&B, Pop, Soul",
-            "active_since": "1997 (Destiny's Child), 2003 (Solo)",
-            "notable_albums": ["Dangerously in Love", "Lemonade", "Renaissance"],
-            "website": "https://www.beyonce.com"
+        {
+            "event_name": "Sci-Fi Movie Convention",
+            "type": "Convention",
+            "date": (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d"),
+            "location": "Los Angeles Convention Center",
+            "guests": ["Actor X", "Director Y"],
+            "ticket_info": "Early bird tickets on Eventbrite."
         }
-    }
+    ]
 }
 
 @tool
-def search_movies(title: str, year: Optional[int] = None, user_token: str = "default") -> str:
+def get_movie_info(title: str, year: Optional[int] = None, user_token: str = "default") -> str:
     """
-    Searches for movie information by title and optional release year.
+    Retrieves information about a movie, including its director, cast, plot, and IMDb rating.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
         title (str): The title of the movie (e.g., "Inception", "The Matrix").
-        year (int, optional): The release year of the movie.
+        year (int, optional): The release year of the movie to refine the search.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of movie information, or an error/fallback message.
     """
-    logger.info(f"Tool: search_movies called for title='{title}', year='{year}' by user: {user_token}")
+    logger.info(f"Tool: get_movie_info called for title: '{title}', year: '{year}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'entertainment_tool_access', False):
         return "Error: Access to entertainment tools is not enabled for your current tier."
@@ -340,92 +502,149 @@ def search_movies(title: str, year: Optional[int] = None, user_token: str = "def
     params = {"title": title}
     if year: params["year"] = year
 
-    api_data = _make_dynamic_api_request(
-        "entertainment", "search_movies",
-        params,
-        user_token
-    )
+    api_data = asyncio.run(_make_dynamic_api_request("entertainment", "get_movie_info", params, user_token))
 
     if api_data:
         try:
             movie_title = api_data.get("title")
-            movie_year = api_data.get("year")
-            genre = api_data.get("genre")
             director = api_data.get("director")
+            release_year = api_data.get("year")
+            genre = api_data.get("genre")
             plot = api_data.get("plot")
             imdb_rating = api_data.get("imdb_rating")
-            poster_url = api_data.get("poster_url")
+            cast = api_data.get("cast")
 
             if movie_title and plot:
                 response_str = (
-                    f"Information for Movie: {movie_title} ({movie_year})\n"
-                    f"  Genre: {genre}\n"
+                    f"Information for Movie: {movie_title} ({release_year})\n"
                     f"  Director: {director}\n"
-                    f"  Plot: {plot}\n"
+                    f"  Genre: {genre}\n"
                     f"  IMDb Rating: {imdb_rating}\n"
+                    f"  Plot: {plot}\n"
                 )
-                if poster_url:
-                    response_str += f"  Poster: {poster_url}\n"
+                if cast:
+                    response_str += f"  Cast: {', '.join(cast)}\n"
                 return response_str
             else:
                 logger.warning(f"Live API data for movie '{title}' is incomplete. Raw: {api_data}")
                 return f"Could not retrieve complete live movie information for '{title}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live movie data for '{title}': {e}")
+            logger.error(f"Error parsing live movie info data for '{title}': {e}")
             return f"Error parsing live data for '{title}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_movies = _mock_entertainment_data.get("movie_search", [])
-    filtered_mock_movies = []
-    for movie in mock_movies:
-        match = True
-        if title.lower() not in movie.get("title", "").lower():
-            match = False
-        if year and int(movie.get("year", 0)) != year:
-            match = False
-        if match:
-            filtered_mock_movies.append(movie)
-
-    if filtered_mock_movies:
-        movie = filtered_mock_movies[0] # Take the first matching mock movie
+    mock_data_key = title.lower().replace(" ", "_")
+    mock_data = _mock_entertainment_data.get("movie_info", {}).get(mock_data_key)
+    if mock_data and (not year or mock_data.get("year") == year):
         response_str = (
-            f"Information for Movie: {movie.get('title', 'N/A')} ({movie.get('year', 'N/A')}) (Mock Data Fallback)\n"
-            f"  Genre: {movie.get('genre', 'N/A')}\n"
-            f"  Director: {movie.get('director', 'N/A')}\n"
-            f"  Plot: {movie.get('plot', 'N/A')}\n"
-            f"  IMDb Rating: {movie.get('imdb_rating', 'N/A')}\n"
+            f"Information for Movie: {mock_data['title']} ({mock_data['year']}) (Mock Data Fallback)\n"
+            f"  Director: {mock_data['director']}\n"
+            f"  Genre: {mock_data['genre']}\n"
+            f"  IMDb Rating: {mock_data['imdb_rating']}\n"
+            f"  Plot: {mock_data['plot']}\n"
         )
-        if movie.get('poster_url'):
-            response_str += f"  Poster: {movie.get('poster_url', 'N/A')}\n"
+        if mock_data.get('cast'):
+            response_str += f"  Cast: {', '.join(mock_data['cast'])}\n"
         return response_str
     else:
         return f"Movie information not found for '{title}'. (API/Mock Fallback Failed)"
 
 
 @tool
-def search_events(query: str, date: Optional[str] = None, location: Optional[str] = None, user_token: str = "default") -> str:
+def get_tv_show_info(title: str, user_token: str = "default") -> str:
     """
-    Searches for entertainment events based on a query, optional date, and optional location.
-    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'August 15, 2024').
+    Retrieves information about a TV show, including its creator, plot, and IMDb rating.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        query (str): The search query for events (e.g., "music festival", "comedy show").
-        date (str, optional): The date of the event to filter by.
-        location (str, optional): The location of the event.
+        title (str): The title of the TV show (e.g., "Breaking Bad", "The Office").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of event information, or an error/fallback message.
+        str: A formatted string of TV show information, or an error/fallback message.
     """
-    logger.info(f"Tool: search_events called with query='{query}', date='{date}', location='{location}' by user: {user_token}")
+    logger.info(f"Tool: get_tv_show_info called for title: '{title}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'entertainment_tool_access', False):
         return "Error: Access to entertainment tools is not enabled for your current tier."
     
-    params = {"query": query}
-    if location: params["location"] = location
+    params = {"title": title}
+    api_data = asyncio.run(_make_dynamic_api_request("entertainment", "get_tv_show_info", params, user_token))
+
+    if api_data:
+        try:
+            show_title = api_data.get("title")
+            creator = api_data.get("creator")
+            year_start = api_data.get("year_start")
+            year_end = api_data.get("year_end")
+            genre = api_data.get("genre")
+            plot = api_data.get("plot")
+            imdb_rating = api_data.get("imdb_rating")
+            seasons = api_data.get("seasons")
+
+            if show_title and plot:
+                response_str = (
+                    f"Information for TV Show: {show_title} ({year_start}-{year_end if year_end else 'Present'})\n"
+                    f"  Creator: {creator}\n"
+                    f"  Genre: {genre}\n"
+                    f"  IMDb Rating: {imdb_rating}\n"
+                    f"  Seasons: {seasons}\n"
+                    f"  Plot: {plot}\n"
+                )
+                return response_str
+            else:
+                logger.warning(f"Live API data for TV show '{title}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live TV show information for '{title}'. Falling back to mock data."
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing live TV show info data for '{title}': {e}")
+            return f"Error parsing live data for '{title}'. Falling back to mock data."
+
+    # Fallback to mock data
+    mock_data_key = title.lower().replace(" ", "_")
+    # Handle "The Office" specifically for US vs UK versions if needed in mock
+    if "the office" in mock_data_key and "us" in mock_data_key:
+        mock_data_key = "the_office_us"
+    mock_data = _mock_entertainment_data.get("tv_show_info", {}).get(mock_data_key)
+    if mock_data:
+        response_str = (
+            f"Information for TV Show: {mock_data['title']} ({mock_data['year_start']}-{mock_data['year_end'] if mock_data['year_end'] else 'Present'}) (Mock Data Fallback)\n"
+            f"  Creator: {mock_data['creator']}\n"
+            f"  Genre: {mock_data['genre']}\n"
+            f"  IMDb Rating: {mock_data['imdb_rating']}\n"
+            f"  Seasons: {mock_data['seasons']}\n"
+            f"  Plot: {mock_data['plot']}\n"
+        )
+        return response_str
+    else:
+        return f"TV show information not found for '{title}'. (API/Mock Fallback Failed)"
+
+
+@tool
+def search_upcoming_entertainment_events(event_type: Optional[str] = None, location: Optional[str] = None, date: Optional[str] = None, user_token: str = "default") -> str:
+    """
+    Searches for upcoming entertainment events (e.g., music concerts, festivals, conventions)
+    optionally filtered by type, location, or date.
+    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'July 5, 2025').
+    Falls back to mock data if API key is missing or API call fails.
+
+    Args:
+        event_type (str, optional): The type of event (e.g., 'Music Concert', 'Convention', 'Play').
+        location (str, optional): The city or venue of the event.
+        date (str, optional): The specific date of the event.
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+    Returns:
+        str: A formatted string of upcoming event information, or an error/fallback message.
+    """
+    logger.info(f"Tool: search_upcoming_entertainment_events called for type: '{event_type}', location: '{location}', date: '{date}' by user: {user_token}")
+
+    if not get_user_tier_capability(user_token, 'entertainment_tool_access', False):
+        return "Error: Access to entertainment tools is not enabled for your current tier."
     
+    params = {}
+    if event_type: params["type"] = event_type
+    if location: params["location"] = location
+
     parsed_date = None
     if date:
         parsed_date = parse_date_to_yyyymmdd(date)
@@ -433,44 +652,37 @@ def search_events(query: str, date: Optional[str] = None, location: Optional[str
             return "Error: Could not parse the provided date. Please ensure the date is valid."
         params["date"] = parsed_date
 
-    api_data = _make_dynamic_api_request(
-        "entertainment", "search_events",
-        params,
-        user_token
-    )
+    api_data = asyncio.run(_make_dynamic_api_request("entertainment", "search_upcoming_entertainment_events", params, user_token))
 
     if api_data and api_data.get("data"):
         events = api_data["data"]
         if events:
-            response_str = "Found Entertainment Events:\n"
+            response_str = "Upcoming Entertainment Events:\n"
             for i, event in enumerate(events[:5]): # Limit to top 5 events
-                event_date = event.get('date', 'N/A')
-                # Format date if it's a valid YYYY-MM-DD string
+                event_date_str = event.get('date', 'N/A')
                 try:
-                    event_date = datetime.strptime(event_date, "%Y-%m-%d").strftime("%B %d, %Y")
-                except ValueError:
-                    pass # Keep as is if not YYYY-MM-DD
-                
+                    event_date_str = datetime.strptime(event_date_str, "%Y-%m-%d").strftime("%B %d, %Y")
+                except ValueError: pass
+
                 response_str += (
-                    f"{i+1}. Name: {event.get('name', 'N/A')}\n"
-                    f"   Date: {event_date}\n"
+                    f"{i+1}. Event: {event.get('event_name', 'N/A')} ({event.get('type', 'N/A')})\n"
+                    f"   Date: {event_date_str}\n"
                     f"   Location: {event.get('location', 'N/A')}\n"
-                    f"   Genre: {event.get('genre', 'N/A')}\n"
-                    f"   Description: {event.get('description', 'N/A')}\n"
-                    f"   Tickets: {event.get('tickets_url', 'N/A')}\n\n"
+                    f"   Details: {event.get('artists', event.get('guests', ''))}\n" # Combine artists/guests
+                    f"   Tickets: {event.get('ticket_info', 'N/A')}\n\n"
                 )
             return response_str
         else:
-            return f"No live entertainment events found for your criteria (query='{query}', date='{date}', location='{location}'). Falling back to mock data."
+            return f"No live upcoming entertainment events found for your criteria. Falling back to mock data."
 
     # Fallback to mock data
-    mock_events = _mock_entertainment_data.get("event_search", [])
+    mock_events = _mock_entertainment_data.get("upcoming_events", [])
     filtered_mock_events = []
     for event in mock_events:
         match = True
-        if query and query.lower() not in event.get("name", "").lower() and query.lower() not in event.get("description", "").lower():
+        if event_type and event.get("type", "").lower() != event_type.lower():
             match = False
-        if location and event.get("location", "").lower() not in location.lower():
+        if location and location.lower() not in event.get("location", "").lower():
             match = False
         if parsed_date and event.get("date") != parsed_date:
             match = False
@@ -478,96 +690,22 @@ def search_events(query: str, date: Optional[str] = None, location: Optional[str
             filtered_mock_events.append(event)
 
     if filtered_mock_events:
-        response_str = "Found Entertainment Events (Mock Data Fallback):\n"
+        response_str = "Upcoming Entertainment Events (Mock Data Fallback):\n"
         for i, event in enumerate(filtered_mock_events[:2]): # Limit mock to top 2
-            event_date = event.get('date', 'N/A')
+            event_date_str = event.get('date', 'N/A')
             try:
-                event_date = datetime.strptime(event_date, "%Y-%m-%d").strftime("%B %d, %Y")
-            except ValueError:
-                pass
+                event_date_str = datetime.strptime(event_date_str, "%Y-%m-%d").strftime("%B %d, %Y")
+            except ValueError: pass
             response_str += (
-                f"{i+1}. Name: {event.get('name', 'N/A')}\n"
-                f"   Date: {event_date}\n"
+                f"{i+1}. Event: {event.get('event_name', 'N/A')} ({event.get('type', 'N/A')})\n"
+                f"   Date: {event_date_str}\n"
                 f"   Location: {event.get('location', 'N/A')}\n"
-                f"   Genre: {event.get('genre', 'N/A')}\n"
-                f"   Description: {event.get('description', 'N/A')}\n"
-                f"   Tickets: {event.get('tickets_url', 'N/A')}\n\n"
+                f"   Details: {event.get('artists', event.get('guests', ''))}\n"
+                f"   Tickets: {event.get('ticket_info', 'N/A')}\n\n"
             )
         return response_str
     else:
-        return f"Entertainment event information not found for your criteria. (API/Mock Fallback Failed)"
-
-
-@tool
-def get_artist_info(artist_name: str, user_token: str = "default") -> str:
-    """
-    Retrieves information about a musical artist or band.
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        artist_name (str): The name of the artist or band (e.g., "Taylor Swift", "Beyoncé").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of artist information, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_artist_info called for artist: {artist_name} by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'entertainment_tool_access', False):
-        return "Error: Access to entertainment tools is not enabled for your current tier."
-    
-    params = {"name": artist_name}
-
-    api_data = _make_dynamic_api_request(
-        "entertainment", "get_artist_info",
-        params,
-        user_token
-    )
-
-    if api_data:
-        try:
-            name = api_data.get("name")
-            genre = api_data.get("genre")
-            active_since = api_data.get("active_since")
-            notable_albums = api_data.get("notable_albums")
-            website = api_data.get("website")
-
-            if name and genre:
-                response_str = (
-                    f"Information for Artist: {name}\n"
-                    f"  Genre: {genre}\n"
-                )
-                if active_since:
-                    response_str += f"  Active Since: {active_since}\n"
-                if notable_albums:
-                    response_str += f"  Notable Albums: {', '.join(notable_albums)}\n"
-                if website:
-                    response_str += f"  Website: {website}\n"
-                return response_str
-            else:
-                logger.warning(f"Live API data for artist '{artist_name}' is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live artist information for '{artist_name}'. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live artist data for '{artist_name}': {e}")
-            return f"Error parsing live data for '{artist_name}'. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_data_key = artist_name.lower().replace(" ", "_")
-    mock_data = _mock_entertainment_data.get("artist_info", {}).get(mock_data_key)
-    if mock_data:
-        response_str = (
-            f"Information for Artist: {mock_data['name']} (Mock Data Fallback)\n"
-            f"  Genre: {mock_data['genre']}\n"
-        )
-        if mock_data.get('active_since'):
-            response_str += f"  Active Since: {mock_data['active_since']}\n"
-        if mock_data.get('notable_albums'):
-            response_str += f"  Notable Albums: {', '.join(mock_data['notable_albums'])}\n"
-        if mock_data.get('website'):
-            response_str += f"  Website: {mock_data['website']}\n"
-        return response_str
-    else:
-        return f"Artist information not found for '{artist_name}'. (API/Mock Fallback Failed)"
+        return f"Upcoming entertainment events not found for your criteria. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in entertainment context) ---
@@ -579,7 +717,7 @@ def entertainment_search_web(query: str, user_token: str = "default", max_chars:
     This tool wraps the generic `scrape_web` tool, providing an entertainment-specific interface.
     
     Args:
-        query (str): The entertainment-related search query (e.g., "new movie releases", "concerts near me").
+        query (str): The entertainment-related search query (e.g., "new movie releases 2024", "best TV series to binge-watch").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -596,7 +734,7 @@ def entertainment_query_uploaded_docs(query: str, user_token: str = "default", e
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "entertainment".
     
     Args:
-        query (str): The search query to find relevant entertainment documents (e.g., "review of album X", "script for movie Y").
+        query (str): The search query to find relevant entertainment documents (e.g., "script for my play", "fan theories about show X").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -611,13 +749,13 @@ def entertainment_query_uploaded_docs(query: str, user_token: str = "default", e
 @tool
 def entertainment_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to entertainment (e.g., movie scripts, concert reviews) located at the given file path.
+    Summarizes a document related to entertainment (e.g., movie reviews, script excerpts) located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
     Args:
         file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/entertainment/movie_script.pdf"
+                              Example: "uploads/default/entertainment/movie_review.pdf"
     
     Returns:
         str: A concise summary of the document content.
@@ -641,8 +779,8 @@ def entertainment_summarize_document_by_path(file_path_str: str) -> str:
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
@@ -681,6 +819,11 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'entertainment': 'entertainment_api'
+                },
+                'analytics': { # Mock analytics settings
+                    'enabled': True,
+                    'log_tool_usage': True,
+                    'log_query_failures': True
                 }
             }
             self._api_providers_data = { # Mock api_providers_data for entertainment
@@ -690,46 +833,49 @@ if __name__ == "__main__":
                         "api_key_name": "entertainment_api_key",
                         "api_key_param_name": "api_key",
                         "functions": {
-                            "search_movies": {
-                                "endpoint": "/movies/search",
+                            "get_movie_info": {
+                                "endpoint": "/movies",
                                 "required_params": ["title"],
                                 "optional_params": ["year"],
-                                "response_path": ["data", 0], # Assuming first result is most relevant
-                                "data_map": {
-                                    "title": "title",
-                                    "year": "year",
-                                    "genre": "genre",
-                                    "director": "director",
-                                    "plot": "plot",
-                                    "imdb_rating": "imdb_rating",
-                                    "poster_url": "poster_url"
-                                }
-                            },
-                            "search_events": {
-                                "endpoint": "/events/search",
-                                "required_params": ["query"],
-                                "optional_params": ["date", "location"],
-                                "response_path": ["data"],
-                                "data_map": {
-                                    "event_id": "id",
-                                    "name": "name",
-                                    "date": "date",
-                                    "location": "location",
-                                    "genre": "genre",
-                                    "description": "description",
-                                    "tickets_url": "tickets_url"
-                                }
-                            },
-                            "get_artist_info": {
-                                "endpoint": "/artists",
-                                "required_params": ["name"],
                                 "response_path": ["data", 0],
                                 "data_map": {
-                                    "name": "name",
+                                    "title": "title",
+                                    "director": "director",
+                                    "year": "year",
                                     "genre": "genre",
-                                    "active_since": "active_since",
-                                    "notable_albums": "albums",
-                                    "website": "website"
+                                    "plot": "plot",
+                                    "imdb_rating": "rating",
+                                    "cast": "cast"
+                                }
+                            },
+                            "get_tv_show_info": {
+                                "endpoint": "/tvshows",
+                                "required_params": ["title"],
+                                "response_path": ["data", 0],
+                                "data_map": {
+                                    "title": "title",
+                                    "creator": "creator",
+                                    "year_start": "start_year",
+                                    "year_end": "end_year",
+                                    "genre": "genre",
+                                    "plot": "plot",
+                                    "imdb_rating": "rating",
+                                    "seasons": "num_seasons"
+                                }
+                            },
+                            "search_upcoming_entertainment_events": {
+                                "endpoint": "/events/upcoming",
+                                "required_params": [],
+                                "optional_params": ["type", "location", "date"],
+                                "response_path": ["data"],
+                                "data_map": {
+                                    "event_name": "name",
+                                    "type": "type",
+                                    "date": "date",
+                                    "location": "location",
+                                    "artists": "artists",
+                                    "guests": "guests",
+                                    "ticket_info": "tickets"
                                 }
                             }
                         }
@@ -833,215 +979,233 @@ if __name__ == "__main__":
     sys.modules['utils.user_manager'] = MockUserManager()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
 
-    # Mock requests.get for external API calls
-    original_requests_get = requests.get
+    # Mock analytics_tracker
+    mock_analytics_tracker_db = MagicMock()
+    mock_analytics_tracker_auth = MagicMock()
+    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
+    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    def mock_requests_get_dynamic(url, params, headers, timeout):
-        # Simulate hypothetical Entertainment API responses
-        if "api.example.com/entertainment" in url:
-            if "/movies/search" in url:
-                title = params.get("title", "").lower()
-                year = params.get("year")
-                
-                mock_movies = [
-                    {
-                        "id": "MOV-001",
-                        "title": "Inception",
-                        "year": "2010",
-                        "genre": "Sci-Fi",
-                        "director": "Christopher Nolan",
-                        "plot": "Dreams within dreams.",
-                        "imdb_rating": "8.8",
-                        "poster_url": "https://placehold.co/100x150/000/FFF?text=Inception"
-                    },
-                    {
-                        "id": "MOV-002",
-                        "title": "Interstellar",
-                        "year": "2014",
-                        "genre": "Sci-Fi",
-                        "director": "Christopher Nolan",
-                        "plot": "Space travel to save humanity.",
-                        "imdb_rating": "8.6",
-                        "poster_url": "https://placehold.co/100x150/000/FFF?text=Interstellar"
-                    }
-                ]
-                
-                filtered_movies = []
-                for movie in mock_movies:
-                    match = True
-                    if title and title not in movie["title"].lower():
-                        match = False
-                    if year and int(movie["year"]) != year:
-                        match = False
-                    if match:
-                        filtered_movies.append(movie)
+    # Patch firebase_admin.firestore for the local import within log_event
+    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
+        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
+        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        
+        # Initialize the actual analytics_tracker with mocks
+        analytics_tracker.initialize_analytics(
+            mock_analytics_tracker_db,
+            mock_analytics_tracker_auth,
+            "test_app_id_for_analytics",
+            "mock_user_123"
+        )
 
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_movies}
-                return mock_response
+        # Mock requests.get for external API calls
+        original_requests_get = requests.get
 
-            elif "/events/search" in url:
-                query = params.get("query", "").lower()
-                date = params.get("date")
-                location = params.get("location", "").lower()
+        def mock_requests_get_dynamic(url, params, headers, timeout):
+            # Simulate hypothetical Entertainment API responses
+            if "api.example.com/entertainment" in url:
+                if "/movies" in url:
+                    title = params.get("title", "").lower()
+                    year = params.get("year")
+                    
+                    mock_movies = [
+                        {
+                            "title": "Inception",
+                            "director": "Christopher Nolan",
+                            "year": 2010,
+                            "genre": "Sci-Fi, Action",
+                            "plot": "A thief who steals corporate secrets...",
+                            "rating": 8.8,
+                            "cast": ["Leonardo DiCaprio"]
+                        },
+                        {
+                            "title": "The Matrix",
+                            "director": "Lana Wachowski",
+                            "year": 1999,
+                            "genre": "Sci-Fi, Action",
+                            "plot": "A computer hacker learns...",
+                            "rating": 8.7,
+                            "cast": ["Keanu Reeves"]
+                        }
+                    ]
+                    
+                    filtered_movies = []
+                    for movie in mock_movies:
+                        match = True
+                        if title and title not in movie["title"].lower():
+                            match = False
+                        if year and movie["year"] != year:
+                            match = False
+                        if match:
+                            filtered_movies.append(movie)
 
-                mock_events = [
-                    {
-                        "id": "EVT-2024-001",
-                        "name": "Summer Music Festival",
-                        "date": "2024-08-15",
-                        "location": "Central Park, New York",
-                        "genre": "Music",
-                        "description": "Annual music festival.",
-                        "tickets_url": "http://example.com/musicfest"
-                    },
-                    {
-                        "id": "EVT-2024-002",
-                        "name": "Comedy Night Live",
-                        "date": "2024-07-20",
-                        "location": "The Laugh Factory, Los Angeles",
-                        "genre": "Comedy",
-                        "description": "Stand-up comedy show.",
-                        "tickets_url": "http://example.com/comedynight"
-                    }
-                ]
-
-                filtered_events = []
-                for event in mock_events:
-                    match = True
-                    if query and not (query in event["name"].lower() or query in event["description"].lower()):
-                        match = False
-                    if date and event["date"] != date:
-                        match = False
-                    if location and location not in event["location"].lower():
-                        match = False
-                    if match:
-                        filtered_events.append(event)
-
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"data": filtered_events}
-                return mock_response
-            
-            elif "/artists" in url:
-                name = params.get("name", "").lower()
-                if "taylor swift" in name:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "data": [{
-                            "name": "Taylor Swift",
-                            "genre": "Pop, Country",
-                            "active_since": "2004",
-                            "albums": ["Fearless", "1989"],
-                            "website": "https://www.taylorswift.com"
-                        }]
-                    }
+                    mock_response.json.return_value = {"data": filtered_movies}
+                    return mock_response
+                elif "/tvshows" in url:
+                    title = params.get("title", "").lower()
+                    
+                    mock_tv_shows = [
+                        {
+                            "title": "Breaking Bad",
+                            "creator": "Vince Gilligan",
+                            "start_year": 2008,
+                            "end_year": 2013,
+                            "genre": "Crime, Drama",
+                            "plot": "A chemistry teacher turns to crime.",
+                            "rating": 9.5,
+                            "num_seasons": 5
+                        },
+                        {
+                            "title": "The Office (US)",
+                            "creator": "Greg Daniels",
+                            "start_year": 2005,
+                            "end_year": 2013,
+                            "genre": "Comedy",
+                            "plot": "A mockumentary about office employees.",
+                            "rating": 9.0,
+                            "num_seasons": 9
+                        }
+                    ]
+                    
+                    filtered_shows = []
+                    for show in mock_tv_shows:
+                        match = True
+                        if title and title not in show["title"].lower():
+                            match = False
+                        if match:
+                            filtered_shows.append(show)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_shows}
+                    return mock_response
+                elif "/events/upcoming" in url:
+                    event_type = params.get("type", "").lower()
+                    location = params.get("location", "").lower()
+                    date = params.get("date")
+
+                    mock_events = [
+                        {
+                            "name": "Summer Music Festival",
+                            "type": "Music Concert",
+                            "date": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                            "location": "Central Park, New York",
+                            "artists": ["Artist A"],
+                            "tickets": "Ticketmaster."
+                        },
+                        {
+                            "name": "Sci-Fi Movie Convention",
+                            "type": "Convention",
+                            "date": (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d"),
+                            "location": "Los Angeles Convention Center",
+                            "guests": ["Actor X"],
+                            "tickets": "Eventbrite."
+                        }
+                    ]
+
+                    filtered_events = []
+                    for event in mock_events:
+                        match = True
+                        if event_type and event["type"].lower() != event_type:
+                            match = False
+                        if location and location not in event["location"].lower():
+                            match = False
+                        if date and event["date"] != date:
+                            match = False
+                        if match:
+                            filtered_events.append(event)
+
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {"data": filtered_events}
                     return mock_response
                 else:
                     mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": []}
+                    mock_response.status_code = 400
+                    mock_response.json.return_value = {"error": "Invalid endpoint"}
                     return mock_response
-        
-        # Simulate scrape_web's internal requests.get if needed
-        if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'entertainment')}</h1><p>Some entertainment news snippet from web search.</p></body></html>"
-            return mock_response
+            
+            # Simulate scrape_web's internal requests.get if needed
+            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'entertainment')}</h1><p>Some entertainment related content from web search.</p></body></html>"
+                return mock_response
 
-        return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
-    requests.get = mock_requests_get_dynamic
+        requests.get = mock_requests_get_dynamic
 
-    test_user_pro = "mock_pro_token"
-    test_user_free = "mock_free_token"
+        test_user_pro = "mock_pro_token"
+        test_user_free = "mock_free_token"
 
-    print("\n--- Testing entertainment_tool functions ---")
+        async def run_entertainment_tests():
+            print("\n--- Testing entertainment_tool functions with Analytics ---")
 
-    # Test search_movies
-    print("\n--- Testing search_movies ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result_movie = search_movies("Inception", year=2010, user_token=test_user_pro)
-    print(f"Movie Info (Pro User, API):\n{result_movie[:500]}...")
-    assert "Information for Movie: Inception (2010)" in result_movie
-    assert "Dreams within dreams." in result_movie
-    print("Test 1 Passed.")
+            # Test get_movie_info (success)
+            print("\n--- Test 1: get_movie_info (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
+            result_movie_info = await get_movie_info("Inception", user_token=test_user_pro)
+            print(f"Movie Info: {result_movie_info}")
+            assert "Information for Movie: Inception (2010)" in result_movie_info
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "entertainment_get_movie_info"
+            assert logged_data["success"] is True
+            print("Test 1 Passed (and analytics logged success).")
 
-    # Test search_movies (fallback)
-    print("\n--- Testing search_movies (Fallback) ---")
-    with patch('domain_tools.entertainment_tools.entertainment_tool._make_dynamic_api_request', return_value=None):
-        result_movie_fallback = search_movies("Avatar", user_token=test_user_pro)
-        print(f"Movie Info (Pro User, Fallback):\n{result_movie_fallback[:500]}...")
-        assert "Information for Movie: Inception (2010) (Mock Data Fallback)" in result_movie_fallback # Falls back to a default mock if none match
-    print("Test 2 Passed.")
+            # Test get_tv_show_info (API failure - no data found)
+            print("\n--- Test 2: get_tv_show_info (API Failure) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_tv_show_info = await get_tv_show_info("NonExistent Show", user_token=test_user_pro)
+            print(f"TV Show Info (API Error): {result_tv_show_info}")
+            assert "Could not retrieve complete live TV show information for 'NonExistent Show'." in result_tv_show_info
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "entertainment_get_tv_show_info"
+            assert logged_data["success"] is False
+            assert "Response path 'data.0' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            print("Test 2 Passed (and analytics logged failure).")
 
-    # Test search_events
-    print("\n--- Testing search_events ---")
-    result_event = search_events("music festival", date="2024-08-15", location="New York", user_token=test_user_pro)
-    print(f"Events (Pro User, API):\n{result_event[:500]}...")
-    assert "Found Entertainment Events:" in result_event
-    assert "Summer Music Festival" in result_event
-    assert "August 15, 2024" in result_event # Check formatted date
-    print("Test 3 Passed.")
+            # Test search_upcoming_entertainment_events (RBAC denied)
+            print("\n--- Test 3: search_upcoming_entertainment_events (RBAC Denied) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_events_rbac_denied = await search_upcoming_entertainment_events(event_type="Concert", user_token=test_user_free)
+            print(f"Upcoming Events (Free User, RBAC Denied): {result_events_rbac_denied}")
+            assert "Error: Access to entertainment tools is not enabled for your current tier." in result_events_rbac_denied
+            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-    # Test search_events (flexible date format)
-    result_event_flex_date = search_events("comedy show", date="July 20, 2024", location="Los Angeles", user_token=test_user_pro)
-    print(f"Events (Pro User, API - Flexible Date):\n{result_event_flex_date[:500]}...")
-    assert "Found Entertainment Events:" in result_event_flex_date
-    assert "Comedy Night Live" in result_event_flex_date
-    assert "July 20, 2024" in result_event_flex_date
-    print("Test 4 Passed.")
+            # Test entertainment_search_web (generic tool, not using _make_dynamic_api_request)
+            print("\n--- Test 4: entertainment_search_web (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_web_search = await entertainment_search_web("best sci-fi movies of all time", user_token=test_user_pro)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Search results for best sci-fi movies of all time" in result_web_search
+            # Analytics for generic tools like scrape_web or summarize_document
+            # would need to be integrated within those shared_tools themselves,
+            # or wrapped by a higher-level agent logging.
+            # For now, we are focusing on _make_dynamic_api_request.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 4 Passed (no analytics expected for generic tool directly).")
 
-    # Test get_artist_info
-    print("\n--- Testing get_artist_info ---")
-    result_artist = get_artist_info("Taylor Swift", user_token=test_user_pro)
-    print(f"Artist Info (Pro User, API):\n{result_artist[:200]}...")
-    assert "Information for Artist: Taylor Swift" in result_artist
-    assert "Pop, Country" in result_artist
-    print("Test 5 Passed.")
+            print("\nAll entertainment_tool tests with analytics considerations completed.")
 
-    # Test RBAC for entertainment_tool_access (e.g., search_movies for free user)
-    print("\n--- Testing RBAC for entertainment_tool_access (Free User) ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result_rbac_denied = search_movies("Dune", user_token=test_user_free)
-    print(f"Movies (Free User, RBAC Denied): {result_rbac_denied}")
-    assert "Error: Access to entertainment tools is not enabled for your current tier." in result_rbac_denied
-    print("Test 6 Passed.")
+        await run_entertainment_tests()
 
-    # Test entertainment_search_web
-    print("\n--- Testing entertainment_search_web ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    search_web_query = "upcoming concerts in Lagos"
-    search_web_result = entertainment_search_web(search_web_query, user_token=test_user_pro)
-    print(f"Web Search Result for '{search_web_query}':\n{search_web_result[:500]}...")
-    assert "Search results for upcoming concerts in Lagos" in search_web_result
-    print("Test 7 Passed.")
+        # Restore original requests.get
+        requests.get = original_requests_get
 
-    # Test entertainment_summarize_document_by_path (requires a dummy file)
-    print("\n--- Testing entertainment_summarize_document_by_path ---")
-    dummy_upload_dir = Path("uploads") / test_user_pro / "entertainment"
-    dummy_upload_dir.mkdir(parents=True, exist_ok=True)
-    dummy_file_path = dummy_upload_dir / "movie_review.txt"
-    with open(dummy_file_path, "w") as f:
-        f.write("This is a review of the new action movie. The special effects were stunning, but the plot was weak.")
-    
-    result_summary = entertainment_summarize_document_by_path(str(dummy_file_path))
-    print(f"Movie Review Summary (Pro User): {result_summary}")
-    assert "Mock summary of the provided text." in result_summary
-    assert "special effects were stunning" in result_summary
-    print("Test 8 Passed.")
-
-    print("\nAll entertainment_tool tests completed.")
-
-    # Restore original requests.get
-    requests.get = original_requests_get
-
-    # Clean up dummy files and directories
-    test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-    for d in test_user_dirs:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"Cleaned up {d}")
+        # Clean up dummy files and directories
+        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        for d in test_user_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Cleaned up {d}")
