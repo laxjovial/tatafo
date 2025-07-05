@@ -1,12 +1,13 @@
 # database/firestore_manager.py
 
 import firebase_admin
-from firebase_admin import credentials, firestore, auth
+from firebase_admin import firestore, auth # No need for credentials here anymore
 import logging
-import json
-from typing import Optional, Dict, Any
+import json # Not strictly needed here anymore, but good to keep if other parts use it
+from typing import Optional, Dict, Any, List
+from datetime import datetime
 
-# Assuming ConfigManager is accessible
+# Assuming ConfigManager is accessible, but it won't be used for Admin SDK init here
 from config.config_manager import config_manager
 
 logger = logging.getLogger(__name__)
@@ -15,81 +16,61 @@ class FirestoreManager:
     _instance = None
     _db = None
     _auth = None
-    _app_id = None # Store the app_id here
+    _app_id = None # Store the app_id here (optional, for context)
     _is_initialized = False
 
-    def __new__(cls):
+    # The constructor now takes initialized db and auth instances
+    def __new__(cls, db_instance=None, auth_instance=None):
         if cls._instance is None:
             cls._instance = super(FirestoreManager, cls).__new__(cls)
-            if not cls._instance._is_initialized:
-                cls._instance._initialize_firestore()
+            # Initialize only if instances are provided and not already initialized
+            if db_instance and auth_instance and not cls._instance._is_initialized:
+                cls._instance._db = db_instance
+                cls._instance._auth = auth_instance
+                # Optionally, get app_id from the initialized Firebase app
+                try:
+                    cls._instance._app_id = firebase_admin.get_app().project_id
+                except ValueError:
+                    # Fallback if app_id cannot be retrieved from initialized app (e.g., mock env)
+                    # This fallback uses the client config projectId, which is fine for app_id.
+                    firebase_client_config_str = config_manager.get_secret('firebase_config')
+                    if firebase_client_config_str:
+                        try:
+                            firebase_client_config = json.loads(firebase_client_config_str)
+                            cls._instance._app_id = firebase_client_config.get('projectId', 'default-app-id')
+                        except json.JSONDecodeError:
+                            cls._instance._app_id = 'default-app-id'
+                            logger.warning("Failed to parse firebase_config from secrets.toml for app_id fallback.")
+                    else:
+                        cls._instance._app_id = 'default-app-id'
+                        logger.warning("Firebase client config not found for app_id fallback.")
+
+                cls._instance._is_initialized = True
+                logger.info("Firestore client and Auth received and initialized in FirestoreManager.")
+            elif not db_instance or not auth_instance:
+                # This case should ideally not happen if called correctly from main.py
+                logger.error("FirestoreManager instantiated without providing initialized db and auth instances.")
+                # For robustness, we could raise an error here, but for now, just log.
+                # raise RuntimeError("FirestoreManager must be initialized with db and auth instances.")
         return cls._instance
-
-    def _initialize_firestore(self):
-        if self._is_initialized:
-            return
-
-        try:
-            # Try to get __app_id from Canvas globals (if running in Canvas)
-            # This is primarily for frontend Firebase client SDK, but we'll try to get it
-            # if it's available for consistency, though it's not strictly needed for admin SDK.
-            self._app_id = config_manager.get_secret('__app_id', 'default-app-id')
-            if self._app_id == 'default-app-id':
-                logger.warning("Canvas-provided ____app_id not found. Falling back to default or config.")
-
-            # For the Firebase Admin SDK, we need the service account key.
-            # This should be stored in secrets.toml as firebase_admin_cert_json
-            firebase_admin_cert_json_str = config_manager.get_secret('firebase_admin_cert_json')
-
-            if not firebase_admin_cert_json_str:
-                raise ValueError("Firebase Admin SDK service account key (firebase_admin_cert_json) not found in secrets.")
-
-            # Parse the JSON string into a Python dictionary
-            try:
-                firebase_admin_cert = json.loads(firebase_admin_cert_json_str)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Failed to parse firebase_admin_cert_json: {e}")
-
-            # Initialize Firebase Admin SDK
-            # The credentials.Certificate expects a dictionary or a path to the JSON file
-            cred = credentials.Certificate(firebase_admin_cert)
-            
-            # Initialize the app if not already initialized
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
-                logger.info("Firebase Admin SDK initialized successfully.")
-            else:
-                logger.info("Firebase Admin SDK already initialized.")
-
-            self._db = firestore.client()
-            self._auth = auth
-            self._is_initialized = True
-            logger.info("Firestore client and Auth initialized.")
-
-        except ValueError as e:
-            logger.error(f"Failed to initialize Firestore: {e}")
-            raise RuntimeError(f"Failed to initialize Firestore: {e}")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during Firestore initialization: {e}")
-            raise RuntimeError(f"An unexpected error occurred during Firestore initialization: {e}")
 
     @property
     def db(self):
         if not self._is_initialized:
-            raise RuntimeError("Firestore not initialized. Call _initialize_firestore first.")
+            raise RuntimeError("Firestore not initialized. Ensure FirestoreManager is instantiated with db and auth.")
         return self._db
 
     @property
     def auth(self):
         if not self._is_initialized:
-            raise RuntimeError("Firebase Auth not initialized. Call _initialize_firestore first.")
+            raise RuntimeError("Firebase Auth not initialized. Ensure FirestoreManager is instantiated with db and auth.")
         return self._auth
 
     @property
     def app_id(self):
         return self._app_id
 
-    # --- Utility methods for Firestore operations ---
+    # --- Utility methods for Firestore operations (rest of the class remains the same) ---
 
     def get_document(self, collection_path: str, document_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a single document."""
@@ -174,5 +155,45 @@ class FirestoreManager:
             logger.error(f"Error getting collection {collection_path}: {e}")
             return []
 
-# Instantiate the FirestoreManager as a singleton
-firestore_manager = FirestoreManager()
+    async def get_analytics_events(
+        self,
+        event_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves analytics events from Firestore with optional filters.
+        """
+        events_ref = self.db.collection("analytics_events")
+        query = events_ref
+
+        if event_type:
+            query = query.where("event_type", "==", event_type)
+        if user_id:
+            query = query.where("user_id", "==", user_id)
+        if start_date:
+            query = query.where("timestamp", ">=", start_date)
+        if end_date:
+            query = query.where("timestamp", "<=", end_date)
+        
+        # Note: Firestore queries with multiple range filters or different fields
+        # in range filters often require composite indexes. If you encounter errors,
+        # you might need to create these indexes in your Firebase console.
+        # Also, orderBy is intentionally omitted to avoid index issues as per previous instructions.
+
+        try:
+            docs = query.stream()
+            events = []
+            for doc in docs:
+                event_data = doc.to_dict()
+                events.append(event_data)
+            logger.info(f"Retrieved {len(events)} analytics events.")
+            return events
+        except Exception as e:
+            logger.error(f"Error fetching analytics events: {e}", exc_info=True)
+            return []
+
+# The instantiation of FirestoreManager will now happen in main.py,
+# passing the initialized db and auth objects.
+# So, remove the `firestore_manager = FirestoreManager()` line from here.
