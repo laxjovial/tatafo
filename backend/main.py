@@ -10,7 +10,7 @@ import os
 import asyncio
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field # Import Field for validation
 from datetime import datetime, timezone
 
 # Project imports
@@ -137,9 +137,11 @@ app.add_middleware(
 # OAuth2PasswordBearer for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+# --- Pydantic Models for Request/Response Bodies ---
+
 class UserData(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(min_length=6)
     username: Optional[str] = None
 
 class Token(BaseModel):
@@ -148,20 +150,20 @@ class Token(BaseModel):
 
 class UserProfileUpdate(BaseModel):
     username: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     # Add other fields that can be updated by user
     # Do NOT include tier or roles here, as they are admin-only
 
 class PasswordChange(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(min_length=6)
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 class ResetPasswordRequest(BaseModel):
     oobCode: str # Out-of-band code from Firebase
-    newPassword: str
+    newPassword: str = Field(min_length=6)
 
 class DocumentUploadRequest(BaseModel):
     file_name: str
@@ -180,7 +182,13 @@ class LLMGenerateRequest(BaseModel):
 
 class UserRoleTierUpdate(BaseModel):
     new_tier: str
-    new_roles: List[str]
+    roles: List[str]
+
+class ToolInvocationRequest(BaseModel):
+    tool_name: str # e.g., "finance_tools.get_stock_price"
+    tool_args: Dict[str, Any]
+    user_id: str # User making the request
+
 
 # Dependency to get the current user based on Firebase ID token
 async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
@@ -190,7 +198,8 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
         user_id = decoded_token['uid']
         
         # Fetch user profile and capabilities from Firestore
-        user_profile_data = await user_manager.get_user_profile(user_id)
+        # This call now directly uses the user_manager instance
+        user_profile_data = await user_manager.get_user_profile_from_firestore(user_id)
         if not user_profile_data:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -204,9 +213,11 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
             "uid": user_id,
             "email": decoded_token.get('email'),
             "username": user_profile_data.get('username'),
-            "capabilities": user_profile_data.get('capabilities', {})
+            "capabilities": user_profile_data.get('capabilities', {}), # Ensure capabilities are included
+            "tier": user_profile_data.get('tier', 'free'),
+            "roles": user_profile_data.get('roles', ['user'])
         }
-    except auth.InvalidIdTokenError as e:
+    except auth_sdk.InvalidIdTokenError as e:
         logger.warning(f"Invalid ID token: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -214,7 +225,7 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
             headers={"WWW-Authenticate": "Bearer"},
         )
     except Exception as e:
-        logger.error(f"Error in get_current_user: {e}")
+        logger.error(f"Error in get_current_user: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during authentication.",
@@ -222,8 +233,8 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
 
 # Dependency to check for admin role
 async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)):
-    user_capabilities = current_user.get('capabilities', {})
-    if not user_capabilities.get('analytics_access', False): # Using analytics_access as proxy for admin
+    user_roles = current_user.get('roles', [])
+    if "admin" not in user_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions. Admin access required."
@@ -236,7 +247,7 @@ async def read_root():
     return {"message": "Welcome to Intelli-Agent Backend!"}
 
 @app.post("/register")
-async def register_user(user_data: UserData):
+async def register_user_endpoint(user_data: UserData):
     """Registers a new user."""
     logger.info(f"Attempting to register user: {user_data.email}")
     result = await user_manager.register_user(user_data.email, user_data.password, user_data.username)
@@ -245,7 +256,7 @@ async def register_user(user_data: UserData):
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.post("/login")
-async def login_user(user_data: UserData):
+async def login_user_endpoint(user_data: UserData):
     """Logs in a user and returns an ID token."""
     logger.info(f"Attempting to log in user: {user_data.email}")
     result = await user_manager.login_user(user_data.email, user_data.password)
@@ -253,61 +264,62 @@ async def login_user(user_data: UserData):
         return {"success": True, "id_token": result["id_token"], "user_id": result["user_id"], "message": "Login successful."}
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=result["message"])
 
-@app.post("/refresh_token")
-async def refresh_id_token(request: Request):
-    """Refreshes the ID token using a refresh token."""
-    refresh_token = request.headers.get("X-Refresh-Token")
-    if not refresh_token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refresh token missing.")
+# @app.post("/refresh_token") # This endpoint is typically handled client-side by Firebase JS SDK
+# async def refresh_id_token(request: Request):
+#     """Refreshes the ID token using a refresh token."""
+#     refresh_token = request.headers.get("X-Refresh-Token")
+#     if not refresh_token:
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refresh token missing.")
     
-    result = await user_manager.refresh_id_token(refresh_token)
-    if result["success"]:
-        return {"success": True, "id_token": result["id_token"], "message": "Token refreshed successfully."}
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=result["message"])
+#     result = await user_manager.refresh_id_token(refresh_token)
+#     if result["success"]:
+#         return {"success": True, "id_token": result["id_token"], "message": "Token refreshed successfully."}
+#     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=result["message"])
 
 @app.post("/logout")
-async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def logout_user_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Logs out the current user."""
     user_id = current_user['uid']
-    result = await user_manager.logout_user(user_id)
+    result = await user_manager.logout_user(user_id) # This will revoke refresh token
     if result["success"]:
         return {"success": True, "message": "Logout successful."}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.get("/user/profile")
-async def get_user_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Retrieves the profile of the current authenticated user."""
     user_id = current_user['uid']
     logger.info(f"Fetching profile for user: {user_id}")
-    profile = await user_manager.get_user_profile(user_id)
-    if profile:
-        return {"success": True, "profile": profile}
+    profile_data = await user_manager.get_user_profile_from_firestore(user_id)
+    if profile_data:
+        # The user_manager.get_user_profile_from_firestore already formats it correctly
+        return {"success": True, "profile": profile_data}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
 
 @app.put("/user/profile")
-async def update_user_profile(profile_update: UserProfileUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
+async def update_user_profile_endpoint(profile_update: UserProfileUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Updates the profile of the current authenticated user."""
     user_id = current_user['uid']
     logger.info(f"Updating profile for user: {user_id}")
     update_data = profile_update.dict(exclude_unset=True)
-    result = await user_manager.update_user_profile(user_id, update_data)
+    result = await user_manager.update_user_profile_in_firestore(user_id, update_data)
     if result["success"]:
         return {"success": True, "message": "Profile updated successfully."}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.post("/user/change_password")
-async def change_password(password_change: PasswordChange, current_user: Dict[str, Any] = Depends(get_current_user)):
+async def change_password_endpoint(password_change: PasswordChange, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Changes the password for the current authenticated user."""
     user_id = current_user['uid']
-    id_token = Depends(oauth2_scheme).__wrapped__(current_user) # Get the ID token from the dependency
+    # The current_password is for client-side re-authentication. Backend doesn't verify it directly.
     logger.info(f"User {user_id} attempting to change password.")
-    result = await user_manager.change_password(user_id, password_change.current_password, password_change.new_password, id_token)
+    result = await user_manager.change_password_auth_sdk(user_id, password_change.new_password)
     if result["success"]:
         return {"success": True, "message": "Password changed successfully."}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.post("/user/forgot_password")
-async def forgot_password(request: ForgotPasswordRequest):
+async def forgot_password_endpoint(request: ForgotPasswordRequest):
     """Sends a password reset email."""
     logger.info(f"Received forgot password request for: {request.email}")
     result = await user_manager.send_password_reset_email(request.email)
@@ -316,7 +328,7 @@ async def forgot_password(request: ForgotPasswordRequest):
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.post("/user/reset_password")
-async def reset_password(request: ResetPasswordRequest):
+async def reset_password_endpoint(request: ResetPasswordRequest):
     """Resets password using an out-of-band code."""
     logger.info(f"Received password reset request with oobCode.")
     result = await user_manager.reset_password_with_oob_code(request.oobCode, request.newPassword)
@@ -325,7 +337,7 @@ async def reset_password(request: ResetPasswordRequest):
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.post("/documents/upload")
-async def upload_document(doc_request: DocumentUploadRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+async def upload_document_endpoint(doc_request: DocumentUploadRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Uploads a document to cloud storage and processes it for vector search."""
     user_id = current_user['uid']
     if user_id != doc_request.user_id:
@@ -348,11 +360,11 @@ async def upload_document(doc_request: DocumentUploadRequest, current_user: Dict
             return {"success": True, "message": result["message"]}
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
     except Exception as e:
-        logger.error(f"Error processing document upload for user {user_id}: {e}")
+        logger.error(f"Error processing document upload for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to process document: {e}")
 
 @app.post("/documents/query")
-async def query_documents(query_request: DocumentQueryRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+async def query_documents_endpoint(query_request: DocumentQueryRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Queries uploaded documents for relevant information."""
     user_id = current_user['uid']
     if user_id != query_request.user_id:
@@ -372,11 +384,11 @@ async def query_documents(query_request: DocumentQueryRequest, current_user: Dic
         results = await vector_utils.query_documents(query_request.query_text, user_id, k=k_to_use)
         return {"success": True, "results": results}
     except Exception as e:
-        logger.error(f"Error querying documents for user {user_id}: {e}")
+        logger.error(f"Error querying documents for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to query documents: {e}")
 
 @app.post("/llm/generate")
-async def generate_llm_response(llm_request: LLMGenerateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+async def generate_llm_response_endpoint(llm_request: LLMGenerateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Generates a response from the LLM, potentially using tools."""
     user_id = current_user['uid']
     if user_id != llm_request.user_id:
@@ -398,6 +410,8 @@ async def generate_llm_response(llm_request: LLMGenerateRequest, current_user: D
                         f"In a real scenario, I would use advanced tools and an LLM to answer this."
 
     # Example of tool usage logic (conceptual, not fully implemented here)
+    # This section is for demonstration of how tools *could* be called from the LLM endpoint
+    # if an agent were integrated here. For direct tool invocation, use the /tools/invoke endpoint.
     if "stock price" in llm_request.prompt.lower():
         # This would typically be decided by an agent, not a simple keyword match
         try:
@@ -427,23 +441,89 @@ async def generate_llm_response(llm_request: LLMGenerateRequest, current_user: D
 
     return {"success": True, "response": mock_llm_response}
 
+# --- Generic Tool Invocation Endpoint ---
+@app.post("/tools/invoke")
+async def invoke_tool_endpoint(
+    request: ToolInvocationRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Invokes a specified tool with given arguments.
+    Performs RBAC check based on the tool's domain access.
+    """
+    user_id = current_user['uid']
+    if user_id != request.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID mismatch.")
+
+    tool_name_parts = request.tool_name.split('.')
+    if len(tool_name_parts) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tool name format (e.g., 'finance_tools.get_stock_price').")
+    
+    domain_name = tool_name_parts[0].replace('_tools', '') # e.g., 'finance' from 'finance_tools'
+    tool_function_name = tool_name_parts[1]
+
+    # Map domain names to tool instances
+    domain_tool_instances = {
+        "finance": finance_tools,
+        "crypto": crypto_tools,
+        "medical": medical_tools,
+        "news": news_tools,
+        "legal": legal_tools,
+        "education": education_tools,
+        "entertainment": entertainment_tools,
+        "weather": weather_tools,
+        "travel": travel_tools,
+        "sports": sports_tools,
+    }
+
+    tool_instance = domain_tool_instances.get(domain_name)
+    if not tool_instance:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tool domain '{domain_name}' not found.")
+
+    tool_function = getattr(tool_instance, tool_function_name, None)
+    # Ensure the function exists and is callable (and an async function)
+    if not tool_function or not callable(tool_function) or not asyncio.iscoroutinefunction(tool_function):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tool function '{tool_function_name}' not found or not callable/async in '{domain_name}_tools'.")
+
+    # RBAC Check for tool access
+    # Capability key example: 'finance_tool_access'
+    capability_key = f"{domain_name}_tool_access"
+    user_capabilities = current_user.get('capabilities', {})
+    if not user_capabilities.get(capability_key, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access to {domain_name} tools not enabled for your account tier."
+        )
+
+    logger.info(f"User {user_id} invoking tool: {request.tool_name} with args: {request.tool_args}")
+    try:
+        # Pass user_id to the tool function for internal logging
+        tool_result = await tool_function(**request.tool_args, user_id=user_id)
+        return {"success": True, "result": tool_result}
+    except HTTPException as e: # Re-raise HTTPExceptions from tool functions
+        logger.error(f"HTTPException from tool {request.tool_name}: {e.detail}", exc_info=True)
+        raise e
+    except Exception as e:
+        logger.error(f"Error invoking tool {request.tool_name} for user {user_id}: {e}", exc_info=True)
+        # The tool functions themselves should be logging analytics events for success/failure
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error executing tool: {e}")
+
+
 # --- Admin Endpoints (Requires Admin Role) ---
 
 @app.get("/admin/users")
-async def get_all_users(current_user: Dict[str, Any] = Depends(get_current_admin_user)):
+async def get_all_users_endpoint(current_user: Dict[str, Any] = Depends(get_current_admin_user)):
     """Retrieves all user profiles (admin only)."""
     logger.info(f"Admin user {current_user['uid']} requesting all user profiles.")
     try:
-        users = await user_manager.get_all_users()
-        # Filter out sensitive info like password hashes if they were ever stored directly
-        # and ensure Firebase Auth UIDs are not confused with Firestore doc IDs
+        users = await user_manager.get_all_users() # This gets from Firestore and Firebase Auth
         return {"success": True, "users": users}
     except Exception as e:
-        logger.error(f"Error getting all users for admin {current_user['uid']}: {e}")
+        logger.error(f"Error getting all users for admin {current_user['uid']}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve users: {e}")
 
 @app.put("/admin/user/{user_id}/roles_and_tier")
-async def update_user_roles_and_tier(
+async def update_user_roles_and_tier_endpoint(
     user_id: str,
     update_data: UserRoleTierUpdate,
     current_user: Dict[str, Any] = Depends(get_current_admin_user)
@@ -452,14 +532,14 @@ async def update_user_roles_and_tier(
     if user_id == current_user['uid']:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins cannot change their own roles or tier via this endpoint for security reasons.")
 
-    logger.info(f"Admin user {current_user['uid']} updating user {user_id}'s tier to {update_data.new_tier} and roles to {update_data.new_roles}.")
-    result = await user_manager.update_user_roles_and_tier(user_id, update_data.new_tier, update_data.new_roles)
+    logger.info(f"Admin user {current_user['uid']} updating user {user_id}'s tier to {update_data.new_tier} and roles to {update_data.roles}.")
+    result = await user_manager.update_user_roles_and_tier(user_id, update_data.new_tier, update_data.roles)
     if result["success"]:
         return {"success": True, "message": "User roles and tier updated successfully."}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
 @app.get("/admin/analytics/events")
-async def get_analytics_events(
+async def get_analytics_events_endpoint(
     event_type: Optional[str] = None,
     user_id: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -482,6 +562,6 @@ async def get_analytics_events(
         )
         return {"success": True, "events": events}
     except Exception as e:
-        logger.error(f"Error retrieving analytics events for admin {current_user['uid']}: {e}")
+        logger.error(f"Error retrieving analytics events for admin {current_user['uid']}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve analytics events: {e}")
 
