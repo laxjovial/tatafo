@@ -688,7 +688,7 @@ def finance_query_uploaded_docs(query: str, user_token: str = "default", export:
 
 
 @tool
-def finance_summarize_document_by_path(file_path_str: str) -> str:
+async def finance_summarize_document_by_path(file_path_str: str) -> str:
     """
     Summarizes a document related to finance (e.g., financial reports, market analysis) located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
@@ -714,7 +714,7 @@ def finance_summarize_document_by_path(file_path_str: str) -> str:
         # it's better to make this tool function `async` and `await` summarize_document.
         # For now, if this is called in a synchronous context, it will raise an error
         # or require an existing event loop.
-        summary = asyncio.run(summarize_document(file_path.read_text(), user_token="default")) # Assuming default user for CLI test
+        summary = await summarize_document(file_path.read_text(), user_token="default") # Assuming default user for CLI test
         return f"Summary of '{file_path.name}':\n{summary}"
     except ValueError as e:
         logger.error(f"Error summarizing document '{file_path_str}': {e}")
@@ -1189,7 +1189,10 @@ if __name__ == "__main__":
 
             print("\nAll finance_tool tests with analytics considerations completed.")
 
-        await run_finance_tests()
+        # Ensure tests are only run when the script is executed directly
+        if __name__ == "__main__":
+            # Use asyncio.run to execute the async test function
+            asyncio.run(run_finance_tests())
 
         # Restore original requests.get
         requests.get = original_requests_get
