@@ -1,7 +1,7 @@
 # domain_tools/news_tools/__init__.py
 
 import logging
-from typing import Any
+from typing import Any, Optional # <--- ENSURE THIS LINE IS PRESENT
 
 # Import individual tool functions from the news_tool module
 from .news_tool import (
