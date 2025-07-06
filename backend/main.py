@@ -21,6 +21,8 @@ import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import m
 import shared_tools.vector_utils as vector_utils_module # Import module
 from utils.date_parser import parse_date_to_yyyymmdd # CORRECTED: Changed from parse_date_string
 from utils.user_manager import UserManager
+
+# Import all domain-specific tool classes
 from domain_tools.finance_tools import FinanceTools
 from domain_tools.crypto_tools import CryptoTools
 from domain_tools.medical_tools import MedicalTools
@@ -153,7 +155,10 @@ firestore_manager = FirestoreManager(db_instance=db, auth_instance=auth_sdk)
 cloud_storage_utils = CloudStorageUtilsWrapper(config_manager)
 vector_utils = VectorUtilsWrapper(firestore_manager, cloud_storage_utils, config_manager) # Pass the wrapper instance
 
+# Instantiate UserManager with all required dependencies
 user_manager = UserManager(db=db, auth_sdk=auth_sdk, firestore_manager=firestore_manager, config_manager=config_manager, log_event=log_event)
+
+# Instantiate all domain-specific tool classes
 finance_tools = FinanceTools(config_manager, log_event)
 crypto_tools = CryptoTools(config_manager, log_event)
 medical_tools = MedicalTools(config_manager, log_event)
@@ -175,8 +180,8 @@ app = FastAPI(
 # Configure CORS middleware
 origins = [
     "http://localhost",
-    "http://localhost:8501",  # Streamlit default port
-    "http://localhost:3000",  # React default port
+    "http://localhost:8501",   # Streamlit default port
+    "http://localhost:3000",   # React default port
     config_manager.get("frontend_url", "http://localhost:8501") # Allow configurable frontend URL
 ]
 
@@ -490,7 +495,8 @@ async def generate_llm_response_endpoint(llm_request: LLMGenerateRequest, curren
         try:
             location = "London" # Or parse from prompt
             weather_data = await weather_tools.get_current_weather(location, user_id)
-            mock_llm_response = f"The current weather in {location} is {weather_data.get('description', 'N/A')} with a temperature of {weather_data.get('temperature', 'N/A')}°C. (Powered by Weather Tool)"
+            # Weather tool returns a string, so we use it directly
+            mock_llm_response = f"The current weather in {location} is: {weather_data}. (Powered by Weather Tool)"
             asyncio.create_task(log_event('tool_usage', {'tool': 'weather_tools.get_current_weather', 'location': location, 'status': 'success'}, user_id=user_id, success=True))
         except Exception as e:
             mock_llm_response = f"Sorry, I couldn't get the weather. Error: {e}"
@@ -613,7 +619,7 @@ async def get_analytics_events_endpoint(
     
     # Parse dates if provided
     parsed_start_date = parse_date_to_yyyymmdd(start_date) if start_date else None # CORRECTED: Changed function call
-    parsed_end_date = parse_date_to_yyyymmdd(end_date) if end_date else None     # CORRECTED: Changed function call
+    parsed_end_date = parse_date_to_yyyymmdd(end_date) if end_date else None      # CORRECTED: Changed function call
 
     try:
         events = await firestore_manager.get_analytics_events(
@@ -626,6 +632,8 @@ async def get_analytics_events_endpoint(
     except Exception as e:
         logger.error(f"Error retrieving analytics events for admin {current_user['uid']}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve analytics events: {e}")
+
+
 
 
 
