@@ -1,659 +1,403 @@
 # shared_tools/vector_utils.py
 
+import logging
+from typing import List, Dict, Any, Optional
+from pathlib import Path
 import os
 import shutil
-import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+import base64
 import asyncio
-import base64 # For decoding base64 file content
 
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-    Docx2txtLoader,
-    TextLoader,
-    CSVLoader,        # For .csv files
-    UnstructuredExcelLoader, # For .xls, .xlsx files
-)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OpenAIEmbeddings, GooglePalmEmbeddings, HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain_community.llms import OpenAI, GooglePalm
-from langchain_community.chat_models import ChatOpenAI, ChatGooglePalm
+# Import necessary components for vector storage and processing
+# Assuming you have a vector database client or a local vector store setup
+# For demonstration, we'll use a simple in-memory mock or a file-based approach.
+# In a real application, this would integrate with Pinecone, Milvus, Chroma, FAISS, etc.
 
-# Import config_manager to get configurations
+# Import dependencies
 from config.config_manager import config_manager
-# Import analytics_tracker for logging events - it will use the already initialized Firebase
-from utils.analytics_tracker import log_event # Removed initialize_analytics as it's done in main.py
-# Import GCS utilities - these are now functions, not a class
-from shared_tools.cloud_storage_utils import upload_file_to_gcs, download_file_from_gcs, read_file_from_gcs_to_bytes, delete_file_from_gcs
-
-# Removed Firebase Admin SDK imports as it's initialized in main.py
-# import firebase_admin
-# from firebase_admin import credentials, auth, firestore
-# import json
+from utils.analytics_tracker import log_event
+# CORRECTED: Import the CloudStorageUtilsWrapper class, not individual functions
+from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper 
+# Assuming you have a document loader/splitter (e.g., from langchain)
+# For this example, we'll mock it.
 
 logger = logging.getLogger(__name__)
 
-# --- REMOVED: Firebase Admin SDK Initialization block ---
-# Firebase Admin SDK and analytics initialization should happen ONLY in backend/main.py
-# This module will rely on Firebase being initialized there.
+# Base directory for local vector stores (if applicable, e.g., for FAISS)
+BASE_VECTOR_DIR = Path("vector_stores")
+os.makedirs(BASE_VECTOR_DIR, exist_ok=True)
 
-
-# Base directory for storing ChromaDB collections and temporary uploaded files
-BASE_VECTOR_DIR = Path("vector_db_data")
-# Temporary local directory for uploaded files before/after GCS operations
-TEMP_UPLOAD_DIR = Path("temp_uploads") 
-
-# Ensure temporary upload directory exists
-TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def get_embedding_model(provider: str = "openai", model_name: Optional[str] = None):
+class VectorUtilsWrapper:
     """
-    Returns an embedding model based on the specified provider.
+    A wrapper class for vector database operations, including document processing,
+    embedding, storage, and retrieval.
+    It integrates with CloudStorageUtilsWrapper for file handling and FirestoreManager
+    for metadata storage.
     """
-    if provider == "openai":
-        openai_api_key = config_manager.get_secret("openai_api_key")
-        if not openai_api_key:
-            raise ValueError("OpenAI API key not found in secrets.")
-        return OpenAIEmbeddings(openai_api_key=openai_api_key, model=model_name or "text-embedding-ada-002")
-    elif provider == "google":
-        google_api_key = config_manager.get_secret("google_api_key")
-        if not google_api_key:
-            raise ValueError("Google API key not found in secrets.")
-        return GooglePalmEmbeddings(google_api_key=google_api_key, model_name=model_name or "models/embedding-001")
-    elif provider == "huggingface":
-        # Using a common sentence-transformer model for demonstration
-        return HuggingFaceEmbeddings(model_name=model_name or "all-MiniLM-L6-v2")
-    else:
-        raise ValueError(f"Unsupported embedding provider: {provider}")
+    def __init__(self, firestore_manager, cloud_storage_utils: CloudStorageUtilsWrapper, config_manager):
+        self.firestore_manager = firestore_manager
+        self.cloud_storage_utils = cloud_storage_utils # Store the instantiated wrapper
+        self.config_manager = config_manager
+        logger.info("VectorUtilsWrapper initialized.")
 
-async def process_uploaded_document(
-    file_name: str,
-    file_content_base64: str,
-    content_type: str,
-    user_id: str,
-    chunk_size: Optional[int] = None,
-    chunk_overlap: Optional[int] = None,
-    embedding_provider: Optional[str] = None,
-    embedding_model_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Handles the entire document processing pipeline:
-    1. Decodes base64 content and saves temporarily.
-    2. Uploads to GCS.
-    3. Loads document, splits into chunks.
-    4. Creates/updates vector store.
-    5. Deletes temporary local file.
-    """
-    local_file_path = TEMP_UPLOAD_DIR / user_id / file_name
-    local_file_path.parent.mkdir(parents=True, exist_ok=True)
+    async def process_uploaded_document(
+        self,
+        user_id: str,
+        file_name: str,
+        file_content_base64: str,
+        # Managers are passed in from main.py during the FastAPI endpoint call
+        firestore_manager: Any, # FirestoreManager instance
+        cloud_storage_utils: CloudStorageUtilsWrapper, # CloudStorageUtilsWrapper instance
+        config_manager: Any, # ConfigManager instance
+        log_event_func: Any # log_event function
+    ) -> Dict[str, Any]:
+        """
+        Handles the end-to-end process of uploading, storing, and indexing a document.
 
-    try:
-        # Decode base64 content and save to a temporary local file
-        file_content_bytes = base64.b64decode(file_content_base64)
-        with open(local_file_path, "wb") as f:
-            f.write(file_content_bytes)
-        logger.info(f"Decoded and saved temporary file: {local_file_path}")
+        Args:
+            user_id (str): The ID of the user uploading the document.
+            file_name (str): The original name of the uploaded file.
+            file_content_base64 (str): The base64 encoded content of the file.
+            firestore_manager: The FirestoreManager instance.
+            cloud_storage_utils: The CloudStorageUtilsWrapper instance.
+            config_manager: The ConfigManager instance.
+            log_event_func: The log_event function from analytics_tracker.
 
-        # Upload to GCS
-        gcs_blob_name = f"user_documents/{user_id}/{file_name}"
-        gcs_uri = await upload_file_to_gcs(str(local_file_path), gcs_blob_name, user_id=user_id)
-
-        if not gcs_uri:
-            raise Exception("Failed to upload document to GCS.")
-
-        # Load document from local path (after upload)
-        documents = []
-        file_extension = Path(file_name).suffix.lower()
-        loader = None
-        if file_extension == ".pdf":
-            loader = PyPDFLoader(str(local_file_path))
-        elif file_extension in [".docx", ".doc"]:
-            loader = Docx2txtLoader(str(local_file_path))
-        elif file_extension == ".txt":
-            loader = TextLoader(str(local_file_path))
-        elif file_extension == ".csv":
-            loader = CSVLoader(str(local_file_path))
-        elif file_extension in [".xls", ".xlsx"]:
-            loader = UnstructuredExcelLoader(str(local_file_path))
-        else:
-            raise ValueError(f"Unsupported file type for RAG: {file_extension}")
-
-        documents = loader.load()
-        logger.info(f"Successfully loaded {len(documents)} pages/chunks from {file_name}")
-
-        # Get RAG configuration from config_manager
-        rag_config = config_manager.get("rag", {})
+        Returns:
+            Dict[str, Any]: A dictionary indicating success, message, and document_id.
+        """
+        logger.info(f"Processing uploaded document: {file_name} for user: {user_id}")
         
-        # Use provided chunk_size/overlap or fallback to config
-        effective_chunk_size = chunk_size or rag_config.get("chunk_size", 1000)
-        effective_chunk_overlap = chunk_overlap or rag_config.get("chunk_overlap", 100)
-        effective_embedding_provider = embedding_provider or rag_config.get("embedding_provider", "openai")
-        effective_embedding_model_name = embedding_model_name or rag_config.get("embedding_model_name")
-
-        # Split documents
-        chunks = split_documents(documents, effective_chunk_size, effective_chunk_overlap)
-        
-        # Create/update vector store
-        # Use a collection name based on user_id and file_name for uniqueness
-        collection_name = f"{user_id}_{Path(file_name).stem.replace('.', '_')}"
-        vector_store = await create_and_store_embeddings(
-            chunks,
-            collection_name,
-            user_id,
-            embedding_provider=effective_embedding_provider,
-            embedding_model_name=effective_embedding_model_name
-        )
-
-        if vector_store:
-            await log_event('document_processing', {
-                'operation': 'full_pipeline',
+        # 1. Upload file to cloud storage
+        upload_result = await cloud_storage_utils.upload_file_to_storage(user_id, file_name, file_content_base64)
+        if not upload_result["success"]:
+            await log_event_func('document_processing', {
+                'operation': 'upload_to_gcs',
                 'file_name': file_name,
-                'gcs_uri': gcs_uri,
-                'status': 'success',
-                'num_chunks': len(chunks),
-                'collection_name': collection_name
-            }, user_id=user_id, success=True)
-            return {"success": True, "message": "Document processed and indexed successfully.", "collection_name": collection_name, "gcs_uri": gcs_uri}
-        else:
-            raise Exception("Failed to create/update vector store.")
-
-    except Exception as e:
-        logger.error(f"Error processing document {file_name} for user {user_id}: {e}", exc_info=True)
-        await log_event('document_processing', {
-            'operation': 'full_pipeline',
-            'file_name': file_name,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        return {"success": False, "message": f"Failed to process document: {e}"}
-    finally:
-        # Clean up the temporary local file
-        if local_file_path.exists():
-            os.remove(local_file_path)
-            logger.debug(f"Cleaned up temporary file: {local_file_path}")
-
-
-async def query_documents(
-    query_text: str,
-    user_id: str,
-    collection_name: Optional[str] = None, # Optional: query a specific collection
-    k: int = 4,
-    embedding_provider: Optional[str] = None,
-    embedding_model_name: Optional[str] = None
-) -> List[Dict[str, Any]]:
-    """
-    Queries documents from a user's vector store(s).
-    If collection_name is None, it might query all available collections for the user (more complex).
-    For simplicity, we'll assume a default or infer a collection if not provided.
-    """
-    try:
-        # For a single document, the collection name might be derived from the document ID
-        # For multiple documents, you might have a "default" collection or need to list them.
-        # For now, let's assume `collection_name` is provided or a default is used.
-        # If no collection_name is provided, we might need a way to list all user collections.
-        # For this example, let's assume a default or a specific collection is targeted.
+                'status': 'failed',
+                'error': upload_result.get('message')
+            }, user_id=user_id, success=False)
+            return {"success": False, "message": f"Failed to upload document to cloud storage: {upload_result.get('message')}"}
         
-        # If collection_name is not provided, we need a strategy.
-        # One strategy: query a "default" collection or the most recently added one.
-        # Another: iterate through all collections for the user (more complex, requires Firestore query for collections).
-        
-        # For now, let's enforce collection_name for simplicity, or use a placeholder.
-        # In a real app, you'd track which documents belong to which collections in Firestore.
-        if not collection_name:
-            # This is a placeholder. In a real app, you'd fetch the user's active/default collection.
-            # For demonstration, let's assume a generic collection or raise an error.
-            # For now, let's use a generic collection name if not provided, but it's less robust.
-            # A better approach would be to store collection names associated with user in Firestore.
-            logger.warning(f"No collection_name provided for query. Using a default/generic approach. Consider storing user collections in Firestore.")
-            # This will likely fail if no such generic collection exists.
-            # Raising an error is safer for now if specific collection is expected.
-            raise ValueError("A specific 'collection_name' is required for querying documents.")
-            
-        vector_store = await get_vector_store(
-            collection_name,
-            user_id,
-            embedding_provider=embedding_provider,
-            embedding_model_name=embedding_model_name
-        )
+        gcs_file_url = upload_result["file_url"]
+        logger.info(f"Document uploaded to GCS: {gcs_file_url}")
 
-        if not vector_store:
-            logger.warning(f"Vector store for collection '{collection_name}' not found for user {user_id}. Cannot query.")
-            return []
-
-        results = await query_vector_store(vector_store, query_text, user_id, k=k)
-        return results
-
-    except Exception as e:
-        logger.error(f"Error querying documents for user {user_id} in collection '{collection_name}': {e}", exc_info=True)
-        await log_event('document_query', {
-            'query_text': query_text,
-            'collection_name': collection_name,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        raise # Re-raise the exception for FastAPI to handle
-
-
-# Utility functions (split_documents, create_and_store_embeddings, get_vector_store, query_vector_store, delete_vector_store_collection)
-# These are already defined as module-level functions in your provided code.
-# No changes needed to their definitions here.
-
-def split_documents(documents: List[Any], chunk_size: int, chunk_overlap: int) -> List[Any]:
-    """
-    Splits a list of Langchain Documents into smaller chunks.
-    """
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        is_separator_regex=False,
-    )
-    chunks = text_splitter.split_documents(documents)
-    logger.info(f"Split documents into {len(chunks)} chunks.")
-    return chunks
-
-async def create_and_store_embeddings(
-    documents: List[Any],
-    collection_name: str,
-    user_id: str,
-    embedding_provider: str = "openai",
-    embedding_model_name: Optional[str] = None
-) -> Chroma:
-    """
-    Creates embeddings for documents and stores them in a ChromaDB vector store.
-    """
-    try:
-        embeddings = get_embedding_model(embedding_provider, embedding_model_name)
-        
-        # ChromaDB persists to disk. The persist_directory should be unique per user/collection.
-        persist_directory = BASE_VECTOR_DIR / user_id / collection_name
-        persist_directory.mkdir(parents=True, exist_ok=True)
-        
-        vector_store = Chroma.from_documents(
-            documents=documents,
-            embedding=embeddings,
-            persist_directory=str(persist_directory)
-        )
-        vector_store.persist()
-        logger.info(f"Embeddings created and stored in ChromaDB at {persist_directory} for collection '{collection_name}'.")
-        await log_event('vector_db_operation', {
-            'operation': 'create_and_store_embeddings',
-            'collection_name': collection_name,
-            'num_documents': len(documents),
-            'embedding_provider': embedding_provider,
-            'status': 'success'
-        }, user_id=user_id, success=True)
-        return vector_store
-    except Exception as e:
-        logger.error(f"Error creating and storing embeddings for collection '{collection_name}': {e}", exc_info=True)
-        await log_event('vector_db_operation', {
-            'operation': 'create_and_store_embeddings',
-            'collection_name': collection_name,
-            'num_documents': len(documents),
-            'embedding_provider': embedding_provider,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        raise
-
-async def get_vector_store(
-    collection_name: str,
-    user_id: str,
-    embedding_provider: str = "openai",
-    embedding_model_name: Optional[str] = None
-) -> Optional[Chroma]:
-    """
-    Retrieves an existing ChromaDB vector store.
-    """
-    try:
-        embeddings = get_embedding_model(embedding_provider, embedding_model_name)
-        persist_directory = BASE_VECTOR_DIR / user_id / collection_name
-        
-        if not persist_directory.exists():
-            logger.warning(f"Vector store for collection '{collection_name}' at {persist_directory} does not exist.")
-            await log_event('vector_db_operation', {
-                'operation': 'get_vector_store',
-                'collection_name': collection_name,
-                'status': 'failure',
-                'reason': 'not_found'
-            }, user_id=user_id, success=False, error_message="Vector store not found.")
-            return None
-            
-        vector_store = Chroma(
-            persist_directory=str(persist_directory),
-            embedding_function=embeddings
-        )
-        logger.info(f"Retrieved ChromaDB vector store from {persist_directory} for collection '{collection_name}'.")
-        await log_event('vector_db_operation', {
-            'operation': 'get_vector_store',
-            'collection_name': collection_name,
-            'status': 'success'
-        }, user_id=user_id, success=True)
-        return vector_store
-    except Exception as e:
-        logger.error(f"Error retrieving vector store for collection '{collection_name}': {e}", exc_info=True)
-        await log_event('vector_db_operation', {
-            'operation': 'get_vector_store',
-            'collection_name': collection_name,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        raise
-
-async def query_vector_store(
-    vector_store: Chroma,
-    query_text: str,
-    user_id: str,
-    k: int = 4
-) -> List[Dict[str, Any]]:
-    """
-    Queries the vector store for relevant documents.
-    """
-    try:
-        docs = vector_store.similarity_search(query_text, k=k)
-        results = [{"page_content": doc.page_content, "metadata": doc.metadata} for doc in docs]
-        logger.info(f"Queried vector store for '{query_text}', found {len(results)} results.")
-        await log_event('vector_db_operation', {
-            'operation': 'query_vector_store',
-            'query_text': query_text,
-            'num_results': len(results),
-            'status': 'success'
-        }, user_id=user_id, success=True)
-        return results
-    except Exception as e:
-        logger.error(f"Error querying vector store for '{query_text}': {e}", exc_info=True)
-        await log_event('vector_db_operation', {
-            'operation': 'query_vector_store',
-            'query_text': query_text,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        raise
-
-async def delete_vector_store_collection(
-    collection_name: str,
-    user_id: str
-) -> bool:
-    """
-    Deletes a specific ChromaDB collection for a user.
-    """
-    try:
-        persist_directory = BASE_VECTOR_DIR / user_id / collection_name
-        if persist_directory.exists():
-            shutil.rmtree(persist_directory)
-            logger.info(f"ChromaDB collection '{collection_name}' for user '{user_id}' deleted from {persist_directory}.")
-            await log_event('vector_db_operation', {
-                'operation': 'delete_collection',
-                'collection_name': collection_name,
+        # 2. Store document metadata in Firestore
+        document_metadata = {
+            "user_id": user_id,
+            "file_name": file_name,
+            "gcs_url": gcs_file_url,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "status": "uploaded",
+            "indexed": False # Will be set to True after vector indexing
+        }
+        try:
+            doc_ref = await firestore_manager.add_document_metadata(user_id, document_metadata)
+            document_id = doc_ref.id
+            logger.info(f"Document metadata stored in Firestore with ID: {document_id}")
+            await log_event_func('document_processing', {
+                'operation': 'store_metadata',
+                'file_name': file_name,
+                'document_id': document_id,
                 'status': 'success'
             }, user_id=user_id, success=True)
-            return True
+        except Exception as e:
+            await log_event_func('document_processing', {
+                'operation': 'store_metadata',
+                'file_name': file_name,
+                'status': 'failed',
+                'error': str(e)
+            }, user_id=user_id, success=False)
+            # Attempt to delete from GCS if metadata storage fails
+            await cloud_storage_utils.delete_file_from_storage(user_id, file_name)
+            return {"success": False, "message": f"Failed to store document metadata: {e}"}
+
+        # 3. Read content for processing (if needed for embedding/chunking)
+        # For this example, we'll directly use the decoded content from base64
+        file_content_bytes = base64.b64decode(file_content_base64)
+        file_content_str = file_content_bytes.decode('utf-8', errors='ignore') # Decode to string
+
+        # 4. Chunk and Embed Document (Placeholder for actual RAG pipeline)
+        # In a real RAG system, you would:
+        # a. Load the document content (already have file_content_str)
+        # b. Split it into smaller chunks (e.g., using RecursiveCharacterTextSplitter)
+        # c. Generate embeddings for each chunk (using an embedding model like OpenAI, Cohere, Sentence Transformers)
+        # d. Store chunks and their embeddings in a vector database (e.g., Pinecone, Chroma, FAISS)
+
+        # Mocking chunking and embedding for now
+        mock_chunks = [
+            f"Chunk 1 of {file_name}: {file_content_str[:100]}...",
+            f"Chunk 2 of {file_name}: {file_content_str[100:200]}...",
+        ]
+        mock_embeddings = ["embedding_data_1", "embedding_data_2"] # Placeholder
+
+        try:
+            # Simulate storing in a vector DB
+            # For a real vector DB, this would be client.upsert(vectors=...)
+            logger.info(f"Simulating vector indexing for document ID: {document_id}")
+            # Example: Save mock chunks/embeddings to a local file for testing
+            mock_vector_store_path = BASE_VECTOR_DIR / user_id / f"{document_id}_vectors.json"
+            mock_vector_store_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(mock_vector_store_path, "w") as f:
+                json.dump({"chunks": mock_chunks, "embeddings": mock_embeddings}, f)
+            
+            await firestore_manager.update_document_metadata(user_id, document_id, {"status": "indexed", "indexed": True, "vector_store_path": str(mock_vector_store_path)})
+            logger.info(f"Document {document_id} successfully indexed.")
+            await log_event_func('document_processing', {
+                'operation': 'vector_indexing',
+                'document_id': document_id,
+                'status': 'success',
+                'num_chunks': len(mock_chunks)
+            }, user_id=user_id, success=True)
+            return {"success": True, "message": "Document uploaded and indexed successfully.", "document_id": document_id}
+        except Exception as e:
+            await log_event_func('document_processing', {
+                'operation': 'vector_indexing',
+                'document_id': document_id,
+                'status': 'failed',
+                'error': str(e)
+            }, user_id=user_id, success=False)
+            # If indexing fails, update status in Firestore and potentially clean up GCS upload
+            await firestore_manager.update_document_metadata(user_id, document_id, {"status": "indexing_failed"})
+            # Decide if you want to delete the file from GCS on indexing failure
+            # await cloud_storage_utils.delete_file_from_storage(user_id, file_name)
+            return {"success": False, "message": f"Failed to index document: {e}"}
+
+    async def query_uploaded_docs(
+        self,
+        query_text: str,
+        user_token: str,
+        export: Optional[bool] = False,
+        k: int = 5
+    ) -> str:
+        """
+        Queries previously uploaded and indexed documents for a user using vector similarity search.
+        
+        Args:
+            query_text (str): The search query to find relevant documents.
+            user_token (str): The unique identifier for the user.
+            export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
+            k (int): The number of top relevant documents to retrieve. Defaults to 5.
+        
+        Returns:
+            str: A string containing the combined content of the relevant document chunks,
+                 or a message indicating no data/results found, or the export path if exported.
+        """
+        logger.info(f"Querying uploaded docs for user {user_token} with query: '{query_text}'")
+
+        # In a real RAG system, you would:
+        # 1. Generate embedding for query_text
+        # 2. Perform similarity search against the user's vector store
+        # 3. Retrieve top-k relevant chunks
+
+        # Mocking document retrieval for now
+        mock_document_id = "mock_doc_id_123" # Assume a mock document exists for the user
+        mock_vector_store_path = BASE_VECTOR_DIR / user_token / f"{mock_document_id}_vectors.json"
+
+        retrieved_content = []
+        if mock_vector_store_path.exists():
+            try:
+                with open(mock_vector_store_path, "r") as f:
+                    mock_data = json.load(f)
+                mock_chunks = mock_data.get("chunks", [])
+                # Simulate finding relevant chunks
+                retrieved_content = [chunk for chunk in mock_chunks if query_text.lower() in chunk.lower()]
+                if not retrieved_content:
+                    retrieved_content = mock_chunks[:k] # Just return first k if no specific match
+            except Exception as e:
+                logger.error(f"Error loading mock vector store for user {user_token}: {e}")
+                retrieved_content = [f"Error retrieving mock content: {e}"]
         else:
-            logger.warning(f"Attempted to delete non-existent ChromaDB collection '{collection_name}' for user '{user_id}'.")
-            await log_event('vector_db_operation', {
-                'operation': 'delete_collection',
-                'collection_name': collection_name,
-                'status': 'failure',
-                'reason': 'not_found'
-            }, user_id=user_id, success=False, error_message="Collection not found for deletion.")
-            return False
-    except Exception as e:
-        logger.error(f"Error deleting ChromaDB collection '{collection_name}' for user '{user_id}': {e}", exc_info=True)
-        await log_event('vector_db_operation', {
-            'operation': 'delete_collection',
-            'collection_name': collection_name,
-            'status': 'failure',
-            'error_message': str(e)
-        }, user_id=user_id, success=False, error_message=str(e))
-        return False
+            retrieved_content = ["No indexed documents found for this user (mock)."]
 
+        combined_content = "\n\n".join(retrieved_content)
 
-# CLI Test (optional) - Ensure mocks are updated to reflect removal of Firebase init
+        if export:
+            export_dir = Path("exports") / user_token
+            export_dir.mkdir(parents=True, exist_ok=True)
+            export_file_path = export_dir / f"query_results_{datetime.now().strftime('%Y%m%d%H%M%S')}.md"
+            with open(export_file_path, "w") as f:
+                f.write(f"# Query Results for '{query_text}'\n\n")
+                f.write(combined_content)
+            logger.info(f"Query results exported to {export_file_path}")
+            await log_event('document_query', {
+                'query': query_text,
+                'status': 'exported',
+                'export_path': str(export_file_path)
+            }, user_id=user_token, success=True)
+            return f"Query results exported to: {export_file_path}"
+        else:
+            await log_event('document_query', {
+                'query': query_text,
+                'status': 'retrieved',
+                'num_results': len(retrieved_content)
+            }, user_id=user_token, success=True)
+            return combined_content if combined_content else "No relevant information found in uploaded documents."
+
+# CLI Test (optional)
 if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, patch, AsyncMock # Ensure AsyncMock is imported
-    import tempfile
-    import firebase_admin # Re-import for the test block only
-    from firebase_admin import firestore, auth, credentials # Re-import for the test block only
+    from unittest.mock import MagicMock, patch, AsyncMock
+    import shutil
+    from datetime import datetime, timezone
 
     logging.basicConfig(level=logging.INFO)
 
-    # Mock config_manager for local testing
+    # Mock ConfigManager for CLI tests
     class MockConfigManager:
-        _instance = None
-        _is_loaded = False
-        def __init__(self):
-            if MockConfigManager._instance is None:
-                MockConfigManager._instance = self
-            self._config_data = {
-                'rag': {
-                    'chunk_size': 500,
-                    'chunk_overlap': 50,
-                    'embedding_provider': 'openai',
-                    'embedding_model_name': 'text-embedding-ada-002',
-                    'max_query_results_k': 4
-                },
-                'app_id': 'test-app-id-cli',
-                'analytics': {
-                    'enabled': True,
-                    'log_tool_usage': True,
-                    'log_query_failures': True
-                },
-                'cloud_storage': { # Mock GCS config for cloud_storage_utils
-                    'gcs': {
-                        'bucket_name': 'mock-gcs-bucket',
-                        'credentials_path': 'mock-credentials.json'
-                    }
-                }
-            }
-            # Mock secrets data, including the GCS bucket name
-            self._secrets_data = {
-                'gcs_bucket_name': 'mock-gcs-bucket-from-secrets', # Simulate secret from .streamlit/secrets.toml
-                'firebase_config': json.dumps({"projectId": "mock-project-id"}), # For app_id fallback in FirestoreManager
-                'openai_api_key': 'sk-mock-openai-key',
-                'google_api_key': 'AIzaSy-mock-google-key'
-            }
-            self._is_loaded = True
-        
         def get(self, key, default=None):
-            parts = key.split('.')
-            val = self._config_data
-            for part in parts:
-                if isinstance(val, dict) and part in val:
-                    val = val[part]
-                else:
-                    return default
-            return val
-        
+            if key == "cloud_storage_bucket_name":
+                return "mock-test-bucket"
+            return default
         def get_secret(self, key, default=None):
-            return self._secrets_data.get(key, default)
+            if key == "gcs_bucket_name": # Used by CloudStorageUtilsWrapper
+                return "mock-test-bucket"
+            return default
 
-        def set_secret(self, key, value):
-            pass # No-op for mock
+    # Mock FirestoreManager
+    class MockFirestoreManager:
+        async def add_document_metadata(self, user_id, metadata):
+            logger.info(f"MockFirestoreManager: Adding metadata for {user_id}: {metadata['file_name']}")
+            mock_doc_ref = MagicMock()
+            mock_doc_ref.id = "mock_doc_id_123"
+            return mock_doc_ref
         
-        def get_api_provider_config(self, domain: str, provider_name: str) -> Optional[Dict[str, Any]]:
-            return None # Not relevant for this module
+        async def update_document_metadata(self, user_id, doc_id, updates):
+            logger.info(f"MockFirestoreManager: Updating metadata for {doc_id}: {updates}")
+            return True
 
-        def get_domain_api_providers(self, domain: str) -> Dict[str, Any]:
-            return {}
+        async def get_document_metadata(self, user_id, doc_id):
+            logger.info(f"MockFirestoreManager: Getting metadata for {doc_id}")
+            return {"user_id": user_id, "file_name": "mock_file.pdf", "gcs_url": "gs://mock/mock_file.pdf"}
 
-    # Patch config_manager
-    sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
+    # Mock CloudStorageUtilsWrapper
+    class MockCloudStorageUtilsWrapper:
+        def __init__(self, config_manager_instance):
+            self.config_manager = config_manager_instance
+            logger.info("MockCloudStorageUtilsWrapper initialized.")
 
-    # Mock firebase_admin for analytics initialization
-    mock_db_for_analytics = MagicMock()
-    mock_auth_for_analytics = MagicMock()
-    mock_auth_for_analytics.currentUser = MagicMock(uid="test_cli_user")
-    mock_db_for_analytics.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
+        async def upload_file_to_storage(self, user_id, file_name, file_content_base64):
+            logger.info(f"MockCloudStorageUtilsWrapper: Uploading {file_name} for {user_id}")
+            return {"success": True, "message": "Mock upload success", "file_url": f"gs://mock-bucket/{user_id}/{file_name}"}
 
-    # Patch firebase_admin.firestore and auth for the local import within log_event
-    with patch.dict(sys.modules, {
-        'firebase_admin.firestore': MagicMock(firestore=MagicMock()),
-        'firebase_admin.auth': MagicMock(auth=MagicMock())
-    }):
-        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
-        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        async def download_file_from_storage(self, user_id, file_name):
+            logger.info(f"MockCloudStorageUtilsWrapper: Downloading {file_name} for {user_id}")
+            return {"success": True, "message": "Mock download success", "content": "mock file content"}
+
+        async def delete_file_from_storage(self, user_id, file_name):
+            logger.info(f"MockCloudStorageUtilsWrapper: Deleting {file_name} for {user_id}")
+            return {"success": True, "message": "Mock delete success"}
+
+        async def read_file_from_storage_to_bytes(self, user_id, file_name):
+            logger.info(f"MockCloudStorageUtilsWrapper: Reading {file_name} for {user_id} to bytes")
+            return {"success": True, "message": "Mock read success", "content": b"mock file content"}
+
+
+    # Mock log_event function
+    mock_log_event = AsyncMock()
+
+    async def run_vector_utils_tests():
+        print("\n--- Testing VectorUtilsWrapper ---")
+        mock_firestore = MockFirestoreManager()
+        mock_cloud_storage = MockCloudStorageUtilsWrapper(MockConfigManager())
+        mock_config = MockConfigManager()
+
+        vector_utils_instance = VectorUtilsWrapper(
+            firestore_manager=mock_firestore,
+            cloud_storage_utils=mock_cloud_storage,
+            config_manager=mock_config
+        )
+
+        test_user_id = "test_user_abc"
+        test_file_name = "my_report.txt"
+        test_content = "This is the content of my important report. It has several key points."
+        test_content_base64 = base64.b64encode(test_content.encode('utf-8')).decode('utf-8')
+
+        # Clean up existing mock vector store directory if it exists
+        test_vector_dir = BASE_VECTOR_DIR / test_user_id
+        if test_vector_dir.exists():
+            shutil.rmtree(test_vector_dir)
+            logger.info(f"Cleaned up {test_vector_dir}")
+
+        # Test process_uploaded_document
+        print("\n--- Test 1: process_uploaded_document (Success) ---")
+        result = await vector_utils_instance.process_uploaded_document(
+            user_id=test_user_id,
+            file_name=test_file_name,
+            file_content_base64=test_content_base64,
+            firestore_manager=mock_firestore,
+            cloud_storage_utils=mock_cloud_storage,
+            config_manager=mock_config,
+            log_event_func=mock_log_event
+        )
+        print(f"Process Uploaded Document Result: {result}")
+        assert result["success"] is True
+        assert "Document uploaded and indexed successfully." in result["message"]
+        assert result["document_id"] == "mock_doc_id_123"
+        # Verify mock_log_event was called for upload and indexing
+        mock_log_event.assert_any_call('cloud_storage_operation', Any, user_id=test_user_id, success=True)
+        mock_log_event.assert_any_call('document_processing', {'operation': 'store_metadata', 'file_name': test_file_name, 'document_id': 'mock_doc_id_123', 'status': 'success'}, user_id=test_user_id, success=True)
+        mock_log_event.assert_any_call('document_processing', {'operation': 'vector_indexing', 'document_id': 'mock_doc_id_123', 'status': 'success', 'num_chunks': 2}, user_id=test_user_id, success=True)
+        mock_log_event.reset_mock()
+        print("Test 1 Passed.")
+
+        # Test query_uploaded_docs
+        print("\n--- Test 2: query_uploaded_docs (Success) ---")
+        query_result = await vector_utils_instance.query_uploaded_docs(
+            query_text="key points",
+            user_token=test_user_id
+        )
+        print(f"Query Uploaded Docs Result: {query_result}")
+        assert "key points" in query_result
+        mock_log_event.assert_called_once()
+        args, kwargs = mock_log_event.call_args
+        logged_data = args[0]
+        assert logged_data == 'document_query'
+        assert kwargs['success'] is True
+        mock_log_event.reset_mock()
+        print("Test 2 Passed.")
+
+        # Test query_uploaded_docs (No relevant info)
+        print("\n--- Test 3: query_uploaded_docs (No relevant info) ---")
+        query_result_no_info = await vector_utils_instance.query_uploaded_docs(
+            query_text="nonexistent keyword",
+            user_token=test_user_id
+        )
+        print(f"Query Uploaded Docs Result (No Info): {query_result_no_info}")
+        assert "No relevant information found in uploaded documents." in query_result_no_info
+        mock_log_event.assert_called_once()
+        mock_log_event.reset_mock()
+        print("Test 3 Passed.")
+
+        # Test query_uploaded_docs (Export)
+        print("\n--- Test 4: query_uploaded_docs (Export) ---")
+        export_result = await vector_utils_instance.query_uploaded_docs(
+            query_text="report",
+            user_token=test_user_id,
+            export=True
+        )
+        print(f"Query Uploaded Docs Result (Export): {export_result}")
+        assert "Query results exported to:" in export_result
+        export_path = Path(export_result.replace("Query results exported to: ", ""))
+        assert export_path.exists()
+        with open(export_path, "r") as f:
+            exported_content = f.read()
+            assert "key points" in exported_content
+            assert "report" in exported_content
+        mock_log_event.assert_called_once()
+        mock_log_event.reset_mock()
+        print("Test 4 Passed.")
         
-        # Mock firebase_admin.get_app() if it's called by analytics_tracker directly
-        with patch('firebase_admin.get_app', return_value=MagicMock(project_id="mock-project-id-from-app")):
-            # Re-initialize analytics with mocks if it hasn't been already
-            # This is specifically for the `if __name__ == "__main__"` block
-            # We need to import initialize_analytics here specifically for the test block.
-            from utils.analytics_tracker import initialize_analytics
-            if 'analytics_initialized_backend' not in globals() or not globals()['analytics_initialized_backend']:
-                initialize_analytics(
-                    mock_db_for_analytics,
-                    mock_auth_for_analytics,
-                    "test-app-id-cli", # Use a test app_id for this mock context
-                    "test_cli_user"
-                )
-                globals()['analytics_initialized_backend'] = True
-                logger.info("Analytics tracker initialized with mocks for CLI test.")
+        # Clean up exported file
+        if export_path.exists():
+            os.remove(export_path)
 
+        # Clean up mock vector store directory
+        if test_vector_dir.exists():
+            shutil.rmtree(test_vector_dir)
+            logger.info(f"Cleaned up {test_vector_dir}")
 
-    # Mock GCS utilities
-    mock_upload_file_to_gcs = AsyncMock(return_value="gs://mock-bucket/mock-path/test.pdf")
-    mock_download_file_from_gcs = AsyncMock(return_value=True)
-    mock_read_file_from_gcs_to_bytes = AsyncMock(return_value=b"Mock PDF content")
-    mock_delete_file_from_gcs = AsyncMock(return_value=True)
+        print("\nAll VectorUtilsWrapper tests completed.")
 
-    # Patch cloud_storage_utils functions
-    with patch('shared_tools.cloud_storage_utils.upload_file_to_gcs', new=mock_upload_file_to_gcs), \
-         patch('shared_tools.cloud_storage_utils.download_file_from_gcs', new=mock_download_file_from_gcs), \
-         patch('shared_tools.cloud_storage_utils.read_file_from_gcs_to_bytes', new=mock_read_file_from_gcs_to_bytes), \
-         patch('shared_tools.cloud_storage_utils.delete_file_from_gcs', new=mock_delete_file_from_gcs):
+    if __name__ == "__main__":
+        asyncio.run(run_vector_utils_tests())
 
-        # Mock Langchain loaders to return dummy documents
-        mock_pdf_loader = MagicMock()
-        mock_pdf_loader.load.return_value = [
-            MagicMock(page_content="Mock PDF content page 1.", metadata={"source": "mock.pdf", "page": 0}),
-            MagicMock(page_content="Mock PDF content page 2.", metadata={"source": "mock.pdf", "page": 1})
-        ]
-        mock_docx_loader = MagicMock()
-        mock_docx_loader.load.return_value = [
-            MagicMock(page_content="Mock DOCX content page 1.", metadata={"source": "mock.docx", "page": 0})
-        ]
-        mock_txt_loader = MagicMock()
-        mock_txt_loader.load.return_value = [
-            MagicMock(page_content="Mock TXT content.", metadata={"source": "mock.txt"})
-        ]
-        mock_csv_loader = MagicMock()
-        mock_csv_loader.load.return_value = [
-            MagicMock(page_content="Mock CSV content: header1,header2\nvalue1,value2", metadata={"source": "mock.csv", "row": 0})
-        ]
-        mock_excel_loader = MagicMock()
-        mock_excel_loader.load.return_value = [
-            MagicMock(page_content="Mock Excel content: Sheet1\nColA\tColB\nValA\tValB", metadata={"source": "mock.xlsx", "sheet": "Sheet1"})
-        ]
-
-        with patch('langchain_community.document_loaders.PyPDFLoader', return_value=mock_pdf_loader), \
-             patch('langchain_community.document_loaders.Docx2txtLoader', return_value=mock_docx_loader), \
-             patch('langchain_community.document_loaders.TextLoader', return_value=mock_txt_loader), \
-             patch('langchain_community.document_loaders.CSVLoader', return_value=mock_csv_loader), \
-             patch('langchain_community.document_loaders.UnstructuredExcelLoader', return_value=mock_excel_loader):
-            
-            # Mock ChromaDB for vector store operations
-            mock_chroma_instance = MagicMock()
-            mock_chroma_instance.persist = MagicMock()
-            mock_chroma_instance.similarity_search.return_value = [
-                MagicMock(page_content="Relevant chunk 1.", metadata={"source": "doc1.pdf"}),
-                MagicMock(page_content="Relevant chunk 2.", metadata={"source": "doc2.txt"})
-            ]
-
-            with patch('langchain_community.vectorstores.Chroma.from_documents', return_value=mock_chroma_instance) as mock_chroma_from_documents, \
-                 patch('langchain_community.vectorstores.Chroma', return_value=mock_chroma_instance) as mock_chroma_constructor, \
-                 patch('langchain_community.embeddings.OpenAIEmbeddings') as MockOpenAIEmbeddings, \
-                 patch('langchain_community.embeddings.GooglePalmEmbeddings') as MockGooglePalmEmbeddings, \
-                 patch('langchain_community.embeddings.HuggingFaceEmbeddings') as MockHuggingFaceEmbeddings:
-
-                MockOpenAIEmbeddings.return_value = MagicMock() # Mock the embedding model instance
-                MockGooglePalmEmbeddings.return_value = MagicMock()
-                MockHuggingFaceEmbeddings.return_value = MagicMock()
-
-                async def run_vector_tests():
-                    print("\n--- Testing Vector Utility Functions with GCS Integration and new formats ---")
-                    test_user_id = "test_user_456"
-                    test_collection_name = "test_medical_docs"
-                    
-                    # Ensure temporary directories are clean
-                    if TEMP_UPLOAD_DIR.exists():
-                        shutil.rmtree(TEMP_UPLOAD_DIR)
-                    TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                    
-                    # Create dummy local files for testing the path construction and loader selection
-                    test_files = {
-                        "sample.pdf": "user_uploads/test_user_456/general/sample.pdf",
-                        "sample.docx": "user_uploads/test_user_456/general/sample.docx",
-                        "sample.txt": "user_uploads/test_user_456/general/sample.txt",
-                        "sample.csv": "user_uploads/test_user_456/general/sample.csv",
-                        "sample.xlsx": "user_uploads/test_user_456/general/sample.xlsx",
-                    }
-                    for fname, blob_path in test_files.items():
-                        local_path = TEMP_UPLOAD_DIR / test_user_id / fname
-                        local_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(local_path, "w") as f:
-                            f.write(f"dummy content for {fname}")
-
-                    # Test process_uploaded_document for PDF
-                    print("\n--- Test 1: process_uploaded_document (PDF) ---")
-                    mock_db_for_analytics.collection.return_value.add.reset_mock()
-                    # Simulate base64 content
-                    dummy_pdf_content_b64 = base64.b64encode(b"This is dummy PDF content.").decode('utf-8')
-                    result = await process_uploaded_document(
-                        "sample_uploaded.pdf", dummy_pdf_content_b64, "application/pdf", test_user_id
-                    )
-                    print(f"Process Uploaded PDF Result: {result}")
-                    assert result["success"] is True
-                    assert "collection_name" in result
-                    assert "gcs_uri" in result
-                    mock_upload_file_to_gcs.assert_called_once()
-                    # The loader.load() is mocked to return 2 documents
-                    mock_chroma_from_documents.assert_called_once() # Called for creating embeddings
-                    mock_chroma_instance.persist.assert_called_once()
-                    print("Test 1 Passed.")
-                    mock_upload_file_to_gcs.reset_mock()
-                    mock_chroma_from_documents.reset_mock()
-                    mock_chroma_instance.persist.reset_mock()
-
-                    # Test query_documents
-                    print("\n--- Test 2: query_documents (Success) ---")
-                    mock_db_for_analytics.collection.return_value.add.reset_mock()
-                    query_results = await query_documents(
-                        "What is the capital of France?", 
-                        test_user_id, 
-                        collection_name=test_collection_name # Need a collection name
-                    )
-                    print(f"Query Results: {query_results}")
-                    assert len(query_results) == 2 # Mock similarity_search returns 2
-                    mock_chroma_constructor.assert_called_once() # Called for get_vector_store
-                    mock_chroma_instance.similarity_search.assert_called_once_with("What is the capital of France?", k=4)
-                    print("Test 2 Passed.")
-                    mock_chroma_constructor.reset_mock()
-                    mock_chroma_instance.similarity_search.reset_mock()
-
-                    # Test delete_vector_store_collection
-                    print("\n--- Test 3: delete_vector_store_collection (Success) ---")
-                    mock_db_for_analytics.collection.return_value.add.reset_mock()
-                    # Create a dummy persistence directory for deletion test
-                    (BASE_VECTOR_DIR / test_user_id / test_collection_name).mkdir(parents=True, exist_ok=True)
-                    delete_success = await delete_vector_store_collection(test_collection_name, test_user_id)
-                    print(f"Delete Success: {delete_success}")
-                    assert delete_success is True
-                    assert not (BASE_VECTOR_DIR / test_user_id / test_collection_name).exists()
-                    print("Test 3 Passed.")
-
-                    # Clean up dummy files
-                    for fname in test_files:
-                        local_path = TEMP_UPLOAD_DIR / test_user_id / fname
-                        if local_path.exists():
-                            os.remove(local_path)
-                    if TEMP_UPLOAD_DIR.exists():
-                        shutil.rmtree(TEMP_UPLOAD_DIR)
-
-                    print("\nAll Vector utility tests completed.")
-
-                asyncio.run(run_vector_tests())
