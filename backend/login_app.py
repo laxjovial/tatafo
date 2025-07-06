@@ -8,13 +8,13 @@ import logging
 import asyncio # For async operations in CLI test
 import sys # Import sys
 from pathlib import Path # Import Path
-from typing import Dict, Any, Optional # Import Optional here
+from typing import Dict, Any, Optional # <--- THIS IS THE CRUCIAL LINE
 
 # --- Add project root to sys.path ---
 # This allows imports like 'from config.config_manager import config_manager' to work
 # when running Streamlit apps from nested directories.
 current_file_path = Path(__file__).resolve()
-project_root = current_file_path.parents[1] # Go up two levels from register_app.py to the 'tatafo' root
+project_root = current_file_path.parents[1] # Go up two levels from login_app.py to the 'tatafo' root
 sys.path.insert(0, str(project_root))
 # --- End sys.path modification ---
 
@@ -141,7 +141,7 @@ def app():
 if __name__ == "__main__":
     # Mock requests.post for backend calls if running standalone without FastAPI
     import unittest.mock as mock
-    from typing import Optional # Import Optional for type hinting in mock
+    # Removed from here as it's now at the top of the file: from typing import Optional
     original_requests_post = requests.post
 
     def mock_requests_post(url, json, *args, **kwargs):
@@ -185,5 +185,4 @@ if __name__ == "__main__":
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
-
 
