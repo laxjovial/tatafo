@@ -33,115 +33,95 @@ from domain_tools.entertainment_tools import EntertainmentTools
 from domain_tools.weather_tools import WeatherTools
 from domain_tools.travel_tools import TravelTools
 from domain_tools.sports_tools import SportsTools
-from domain_tools.document_tools import DocumentTools # Import the DocumentTools class
+# NEW: Import DocumentTools
+from domain_tools.document_tools import DocumentTools
 
-# Initialize logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FastAPI app setup
+# --- Firebase Admin SDK Initialization ---
+# Ensure Firebase Admin SDK is initialized only once
+if not firebase_admin._apps:
+    try:
+        # Load Firebase credentials from environment variable
+        firebase_credentials_json = os.environ.get("FIREBASE_CREDENTIALS")
+        if not firebase_credentials_json:
+            raise ValueError("FIREBASE_CREDENTIALS environment variable not set.")
+        
+        cred = credentials.Certificate(json.loads(firebase_credentials_json))
+        firebase_app = firebase_admin.initialize_app(cred)
+        logger.info("Firebase Admin SDK initialized successfully.")
+    except Exception as e:
+        logger.error(f"Error initializing Firebase Admin SDK: {e}")
+        # Depending on criticality, you might want to exit or raise the exception
+        raise
+
+# Initialize Firestore Manager
+db_client = firestore.client(firebase_app) # Get the Firestore client instance
+auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
+
+firestore_manager = FirestoreManager()
+logger.info("FirestoreManager initialized.")
+
+# Initialize Analytics Tracker
+# You need to provide db, auth, app_id, and user_id to initialize_analytics
+# Assuming you have an 'app_id' in your config_manager or as an environment variable
+app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
+# For initial analytics setup, use a generic user ID as no end-user is authenticated yet
+user_id_for_analytics = "backend-service-user" 
+
+initialize_analytics(db_client, auth_client, app_id_for_analytics, user_id_for_analytics)
+logger.info("Analytics Tracker initialized.")
+
+# Initialize Cloud Storage Utils Wrapper
+cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
+logger.info("CloudStorageUtilsWrapper initialized.")
+
+# Initialize Vector Utils Wrapper
+# Pass the necessary managers to the VectorUtilsWrapper
+vector_utils = vector_utils_module.VectorUtilsWrapper(
+    firestore_manager=firestore_manager,
+    cloud_storage_utils=cloud_storage_utils,
+    config_manager=config_manager
+)
+logger.info("VectorUtilsWrapper initialized.")
+
+# Initialize UserManager with FirestoreManager and CloudStorageUtilsWrapper
+user_manager = UserManager(firestore_manager, cloud_storage_utils)
+logger.info("UserManager initialized.")
+
 app = FastAPI(
-    title="Tatafo Backend API",
-    description="Backend API for Tatafo Assistant, providing various domain-specific tools and user management.",
-    version="1.0.0",
+    title="Intelli-Agent Backend",
+    description="Backend for the Intelli-Agent, providing various domain-specific tools and user management.",
+    version="0.1.0",
 )
 
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],  # Adjust this to specific origins in production
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- Firebase Admin SDK Initialization ---
-# This should be initialized only once when the application starts
-firebase_app = None
-firestore_manager = None
-user_manager = None
-cloud_storage_utils = None
-vector_utils = None
-
-@app.on_event("startup")
-async def startup_event():
-    global firebase_app, firestore_manager, user_manager, cloud_storage_utils, vector_utils
-
-    # Load Firebase Admin SDK credentials from environment variable
-    firebase_admin_cert_json = os.environ.get("FIREBASE_ADMIN_CERT_JSON")
-    if not firebase_admin_cert_json:
-        logger.error("FIREBASE_ADMIN_CERT_JSON environment variable not set.")
-        raise ValueError("Firebase Admin SDK credentials not found.")
-
-    try:
-        cred = credentials.Certificate(json.loads(firebase_admin_cert_json))
-        firebase_app = firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin SDK initialized successfully.")
-
-        # Initialize Firestore Manager
-        db = firestore.client(firebase_app)
-        firestore_manager = FirestoreManager(db)
-        logger.info("FirestoreManager initialized.")
-
-        # Initialize Analytics Tracker with the Firestore DB instance
-        initialize_analytics(db, auth, config_manager.get("app_id", "default-backend-app-id"))
-        logger.info("Analytics Tracker initialized.")
-
-        # Initialize UserManager with FirestoreManager
-        user_manager = UserManager(firestore_manager)
-        logger.info("UserManager initialized.")
-
-        # Initialize CloudStorageUtilsWrapper
-        gcs_bucket_name = config_manager.get_secret("gcs_bucket_name")
-        if not gcs_bucket_name or gcs_bucket_name == "your-gcs-bucket-name-here":
-            logger.warning("GCS_BUCKET_NAME not set or is default. Cloud storage features may not work.")
-        cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtilsWrapper(gcs_bucket_name)
-        logger.info("CloudStorageUtilsWrapper initialized.")
-
-        # Initialize VectorUtilsWrapper
-        vector_utils = vector_utils_module.VectorUtilsWrapper(
-            firestore_manager=firestore_manager,
-            cloud_storage_utils=cloud_storage_utils,
-            config_manager=config_manager
-        )
-        logger.info("VectorUtilsWrapper initialized.")
-
-    except Exception as e:
-        logger.critical(f"Failed to initialize Firebase Admin SDK or related services: {e}")
-        raise
-
-# OAuth2PasswordBearer for token extraction
+# OAuth2PasswordBearer for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     """
-    Authenticates the user based on the Firebase ID token.
+    Authenticates the user using Firebase ID token.
     """
     try:
-        # Verify the ID token using the Firebase Admin SDK
-        # Ensure firebase_app is initialized before calling auth.verify_id_token
-        if not firebase_app:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Firebase app not initialized."
-            )
-        decoded_token = auth.verify_id_token(token, app=firebase_app)
-        # Add the user's tier and capabilities to the decoded token
-        user_id = decoded_token.get("uid")
-        if user_id and user_manager:
-            user_data = await user_manager.get_user_data(user_id)
-            if user_data:
-                decoded_token["tier"] = user_data.get("tier", "free")
-                decoded_token["roles"] = user_data.get("roles", ["user"])
-                decoded_token["capabilities"] = await user_manager.get_user_capabilities(user_id)
-            else:
-                # If user data not found, assign default free tier capabilities
-                logger.warning(f"User data not found for {user_id}, assigning default free tier capabilities.")
-                decoded_token["tier"] = "free"
-                decoded_token["roles"] = ["user"]
-                decoded_token["capabilities"] = await user_manager.get_user_capabilities(user_id, default_to_free=True)
-
-        return decoded_token
+        # Verify the Firebase ID token
+        decoded_token = auth_client.verify_id_token(token) # Use auth_client here
+        uid = decoded_token['uid']
+        user_record = await user_manager.get_user(uid) # Fetch user details including roles
+        if not user_record:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
+        
+        # Add UID to the user_record for easier access
+        user_record['uid'] = uid
+        return user_record
     except Exception as e:
         logger.error(f"Authentication failed: {e}")
         raise HTTPException(
@@ -150,111 +130,265 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)):
     """
-    Dependency to check if the current user has 'admin' role.
+    Dependency to check if the current user is an admin.
     """
     if "admin" not in current_user.get("roles", []):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Operation forbidden: Not an admin user."
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized. Admin access required.")
     return current_user
 
-# --- Initialize Domain Tools ---
-# These instances will be created once and reused.
-# Pass the necessary managers and dependencies to their constructors.
-finance_tools = FinanceTools(config_manager=config_manager)
-crypto_tools = CryptoTools(config_manager=config_manager)
-medical_tools = MedicalTools(config_manager=config_manager)
-news_tools = NewsTools(config_manager=config_manager)
-legal_tools = LegalTools(config_manager=config_manager)
-education_tools = EducationTools(config_manager=config_manager)
-entertainment_tools = EntertainmentTools(config_manager=config_manager)
-weather_tools = WeatherTools(config_manager=config_manager)
-travel_tools = TravelTools(config_manager=config_manager)
-sports_tools = SportsTools(config_manager=config_manager)
+# Initialize DocumentTools first, as it's a dependency for other domain tools
+document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
 
-# DocumentTools requires more dependencies
-document_tools = None # Initialize as None, set in startup
-@app.on_event("startup")
-async def init_document_tools():
-    global document_tools
-    # Ensure all required global variables are initialized
-    if not all([vector_utils, config_manager, firestore_manager, cloud_storage_utils, log_event]):
-        logger.error("Dependencies for DocumentTools not fully initialized at startup.")
-        # Depending on criticality, you might want to raise an exception here
-        # or handle it more gracefully if the app can function partially.
-        return
-
-    document_tools = DocumentTools(
-        vector_utils_wrapper=vector_utils,
+# Initialize domain tool instances, passing necessary dependencies
+# Each tool class receives the managers it needs, ensuring the order matches their __init__ signatures.
+domain_tool_instances = {
+    "finance_tools": FinanceTools(
+        config_manager=config_manager, # First argument as per FinanceTools.__init__
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "crypto_tools": CryptoTools(
+        config_manager=config_manager, # Assuming similar init signature for other tools
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "medical_tools": MedicalTools(
         config_manager=config_manager,
         firestore_manager=firestore_manager,
-        cloud_storage_utils=cloud_storage_utils,
-        log_event_func=log_event
-    )
-    logger.info("DocumentTools initialized.")
-
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "news_tools": NewsTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "legal_tools": LegalTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "education_tools": EducationTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "entertainment_tools": EntertainmentTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "weather_tools": WeatherTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "travel_tools": TravelTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "sports_tools": SportsTools(
+        config_manager=config_manager,
+        firestore_manager=firestore_manager,
+        log_event=log_event,
+        document_tools=document_tools_instance
+    ),
+    "document_tools": document_tools_instance, # Add the initialized instance itself
+}
 
 # --- API Endpoints ---
 
 @app.get("/")
 async def read_root():
-    return {"message": "Welcome to Tatafo Backend API!"}
+    return {"message": "Welcome to the Intelli-Agent Backend!"}
 
-# --- User Management Endpoints (Admin Only) ---
+@app.post("/register")
+async def register_user_endpoint(email: EmailStr, password: str, request: Request):
+    """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
+    try:
+        user = auth_client.create_user(email=email, password=password) # Use auth_client here
+        await user_manager.create_user_profile(user.uid, email)
+        logger.info(f"User registered: {user.uid} with email {email}")
+        await log_event('user_registered', {'email': email}, user_id=user.uid, success=True)
+        return {"message": "User registered successfully", "uid": user.uid}
+    except Exception as e:
+        logger.error(f"Registration failed for email {email}: {e}")
+        await log_event('user_registered', {'email': email, 'error': str(e)}, success=False)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8)
+@app.post("/login")
+async def login_user_endpoint(email: EmailStr, password: str, request: Request):
+    """
+    Generates a custom Firebase token for a user.
+    Note: In a real application, you'd typically use Firebase Client SDK for login
+    and receive an ID token, which you'd then verify on the backend.
+    This endpoint is for demonstration or specific backend-initiated authentication flows.
+    """
+    try:
+        # Authenticate user (e.g., using Firebase Admin SDK's ability to get user by email
+        # and then create a custom token, or verify credentials against a different system).
+        # For simplicity, this example assumes you'd have a way to verify password
+        # or that this is for generating a custom token for an already existing Firebase user.
+        user_record = auth_client.get_user_by_email(email) # Use auth_client here
+        custom_token = auth_client.create_custom_token(user_record.uid).decode('utf-8') # Use auth_client here
+        logger.info(f"Custom token generated for user: {user_record.uid}")
+        await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
+        return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
+    except Exception as e:
+        logger.error(f"Login failed for email {email}: {e}")
+        await log_event('user_logged_in', {'email': email, 'error': str(e)}, success=False)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+@app.get("/user/profile")
+async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Retrieves the profile of the current authenticated user."""
+    logger.info(f"User {current_user['uid']} requesting profile.")
+    return {"user": current_user}
+
+class UserProfileUpdate(BaseModel):
     display_name: Optional[str] = None
-    roles: Optional[List[str]] = ["user"]
-    tier: Optional[str] = "free"
+    phone_number: Optional[str] = None
+    photo_url: Optional[str] = None
+    # Add other updatable fields as needed
 
-class UserUpdate(BaseModel):
+@app.put("/user/profile")
+async def update_user_profile_endpoint(
+    update_data: UserProfileUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Updates the profile of the current authenticated user."""
+    uid = current_user['uid']
+    logger.info(f"User {uid} updating profile.")
+    update_dict = update_data.model_dump(exclude_unset=True) # Use model_dump to get only provided fields
+    
+    if not update_dict:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields provided for update.")
+
+    try:
+        await user_manager.update_user_profile(uid, update_dict)
+        logger.info(f"User {uid} profile updated successfully.")
+        await log_event('user_profile_updated', {'fields': list(update_dict.keys())}, user_id=uid, success=True)
+        return {"message": "Profile updated successfully"}
+    except Exception as e:
+        logger.error(f"Failed to update profile for user {uid}: {e}")
+        await log_event('user_profile_updated', {'error': str(e)}, user_id=uid, success=False)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@app.post("/upload-document")
+async def upload_document_endpoint(
+    file_name: str,
+    file_content_base64: str, # Base64 encoded content of the file
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Uploads a document for the current user, processes it, and stores its vectors.
+    """
+    user_id = current_user['uid']
+    logger.info(f"User {user_id} attempting to upload document: {file_name}")
+
+    if not get_user_tier_capability(user_id, 'document_upload_enabled', False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Document upload is not enabled for your current tier.")
+
+    try:
+        # Call the process_uploaded_document from vector_utils_module directly
+        # It now expects the managers as arguments
+        result = await vector_utils_module.process_uploaded_document(
+            user_id=user_id,
+            file_name=file_name,
+            file_content_base64=file_content_base64,
+            firestore_manager=firestore_manager,
+            cloud_storage_utils=cloud_storage_utils,
+            config_manager=config_manager,
+            log_event_func=log_event
+        )
+        if result["success"]:
+            return {"message": result["message"], "document_id": result.get("document_id")}
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
+    except Exception as e:
+        logger.error(f"Error uploading document for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e}")
+
+
+@app.post("/agent/chat")
+async def chat_with_agent_endpoint(
+    message: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Allows authenticated users to chat with the Intelli-Agent, leveraging available tools.
+    """
+    user_id = current_user['uid']
+    user_tier = current_user.get('tier', 'free')
+    user_roles = current_user.get('roles', [])
+    logger.info(f"Chat request from user {user_id} (Tier: {user_tier}, Roles: {user_roles}): {message}")
+
+    # Log the incoming chat request
+    await log_event('chat_request', {'message': message}, user_id=user_id, success=True)
+
+    # Placeholder for agent response logic
+    # In a real scenario, you would integrate your LLM agent here,
+    # passing the message, user_id, user_tier, and the domain_tool_instances.
+    # The agent would then decide which tool to use based on the message.
+
+    # Example of how to call a tool (for demonstration)
+    # This part would be replaced by your actual agent's tool calling logic
+    response_message = f"Hello {current_user.get('display_name', 'user')}! I received your message: '{message}'. " \
+                       "I'm currently under development, but I can tell you about some tools I have."
+
+    # Example: If the message contains "finance", use a finance tool
+    if "stock price" in message.lower():
+        try:
+            # Dynamically call the tool method
+            # This is a simplified example; your agent's logic would be more sophisticated
+            # For a real agent, the agent would parse the message to extract 'symbol'
+            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_token=user_id) # Corrected method name
+            response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
+        except Exception as e:
+            response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
+    
+    # NEW: Example of calling the document query tool
+    elif "my documents" in message.lower() or "uploaded files" in message.lower():
+        try:
+            document_tools = domain_tool_instances["document_tools"]
+            # This is a simplified example; your agent would extract the actual query
+            doc_query_result = await document_tools.document_query_uploaded_docs( # Corrected method name
+                query_text="summarize key points from my latest report", # Example query
+                user_token=user_id
+            )
+            response_message += f"\n\n(Example Tool Call: Document Query Result: {doc_query_result})"
+        except Exception as e:
+            response_message += f"\n\n(Example Tool Call Error: Could not query documents: {e})"
+
+
+    # Log the outgoing chat response
+    await log_event('chat_response', {'response': response_message}, user_id=user_id, success=True)
+    
+    return {"response": response_message}
+
+class UserRoleUpdate(BaseModel):
     new_tier: Optional[str] = None
     roles: Optional[List[str]] = None
 
-@app.post("/admin/users", status_code=status.HTTP_201_CREATED)
-async def create_user_endpoint(user_data: UserCreate, current_user: Dict[str, Any] = Depends(get_current_admin_user)):
-    """Creates a new user (admin only)."""
-    logger.info(f"Admin user {current_user['uid']} attempting to create user: {user_data.email}")
-    try:
-        user_record = await user_manager.create_user(
-            email=user_data.email,
-            password=user_data.password,
-            display_name=user_data.display_name,
-            roles=user_data.roles,
-            tier=user_data.tier
-        )
-        return {"message": "User created successfully", "uid": user_record.uid, "email": user_record.email}
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error creating user: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during user creation.")
-
-@app.get("/admin/users/{user_id}")
-async def get_user_endpoint(user_id: str, current_user: Dict[str, Any] = Depends(get_current_admin_user)):
-    """Retrieves user data by ID (admin only)."""
-    logger.info(f"Admin user {current_user['uid']} requesting user data for {user_id}")
-    user_data = await user_manager.get_user_data(user_id)
-    if user_data:
-        return user_data
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-
-@app.get("/admin/users")
-async def list_users_endpoint(current_user: Dict[str, Any] = Depends(get_current_admin_user)):
-    """Lists all users (admin only)."""
-    logger.info(f"Admin user {current_user['uid']} requesting list of all users.")
-    users = await user_manager.list_users()
-    return users
-
-@app.put("/admin/users/{user_id}")
-async def update_user_endpoint(user_id: str, update_data: UserUpdate, current_user: Dict[str, Any] = Depends(get_current_admin_user)):
-    """Updates user roles and/or tier (admin only)."""
-    logger.info(f"Admin user {current_user['uid']} updating user {user_id} with data: {update_data.dict()}")
+@app.put("/admin/users/{user_id}/roles-and-tier")
+async def update_user_roles_and_tier_endpoint(
+    user_id: str,
+    update_data: UserRoleUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_admin_user)
+):
+    """Updates a user's tier and roles (admin only)."""
+    logger.info(f"Admin user {current_user['uid']} updating roles and tier for user {user_id}.")
     result = await user_manager.update_user_roles_and_tier(user_id, update_data.new_tier, update_data.roles)
     if result["success"]:
         return {"success": True, "message": "User roles and tier updated successfully."}
@@ -283,207 +417,7 @@ async def get_analytics_events_endpoint(
             start_date=parsed_start_date,
             end_date=parsed_end_date
         )
-        return events
+        return {"success": True, "events": events}
     except Exception as e:
-        logger.error(f"Error retrieving analytics events: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to retrieve analytics events.")
-
-
-# --- Tool Endpoints (Accessed by authenticated users) ---
-
-@app.get("/tools")
-async def list_available_tools(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Lists all tools available to the current user based on their capabilities."""
-    available_tools = []
-    user_capabilities = current_user.get("capabilities", {})
-
-    # Helper to check if a capability is enabled
-    def is_enabled(capability_key):
-        return user_capabilities.get(capability_key, False)
-
-    # Finance Tools
-    if is_enabled("finance_tool_access"):
-        available_tools.extend([
-            {"name": "finance_get_stock_price", "description": "Get real-time stock price."},
-            {"name": "finance_get_company_overview", "description": "Get company overview."},
-            {"name": "finance_get_income_statement", "description": "Get company income statement."},
-            {"name": "finance_get_balance_sheet", "description": "Get company balance sheet."},
-            {"name": "finance_get_cash_flow", "description": "Get company cash flow."},
-            {"name": "finance_get_exchange_rate", "description": "Get exchange rate between two currencies."},
-        ])
-        if is_enabled("historical_data_access"):
-            available_tools.append({"name": "finance_get_historical_stock_data", "description": "Get historical stock data."})
-
-    # Crypto Tools
-    if is_enabled("crypto_tool_access"):
-        available_tools.extend([
-            {"name": "crypto_get_crypto_price", "description": "Get real-time cryptocurrency price."},
-            {"name": "crypto_get_trending_cryptos", "description": "Get a list of trending cryptocurrencies."},
-            {"name": "crypto_search_crypto_news", "description": "Search for cryptocurrency news."},
-            {"name": "crypto_summarize_document_by_path", "description": "Summarize a crypto-related document by path."},
-            {"name": "crypto_search_web", "description": "Search the web for crypto information."}
-        ])
-
-    # Medical Tools
-    if is_enabled("medical_tool_access"):
-        available_tools.extend([
-            {"name": "medical_search_condition", "description": "Search for information about a medical condition."},
-            {"name": "medical_search_drug", "description": "Search for information about a drug."},
-            {"name": "medical_search_symptom", "description": "Search for information about a medical symptom."},
-            {"name": "medical_summarize_document_by_path", "description": "Summarize a medical document by path."},
-            {"name": "medical_search_web", "description": "Search the web for medical information."}
-        ])
-
-    # News Tools
-    if is_enabled("news_tool_access"):
-        available_tools.extend([
-            {"name": "news_get_top_headlines", "description": "Get top news headlines."},
-            {"name": "news_search_news", "description": "Search for news articles by keyword."},
-            {"name": "news_get_news_by_category", "description": "Get news articles by category."},
-            {"name": "news_summarize_document_by_path", "description": "Summarize a news-related document by path."},
-            {"name": "news_search_web", "description": "Search the web for general news information."}
-        ])
-
-    # Legal Tools
-    if is_enabled("legal_tool_access"):
-        available_tools.extend([
-            {"name": "legal_search_case_law", "description": "Search for case law information."},
-            {"name": "legal_search_statute", "description": "Search for statute information."},
-            {"name": "legal_summarize_document_by_path", "description": "Summarize a legal document by path."},
-            {"name": "legal_search_web", "description": "Search the web for general legal information."}
-        ])
-
-    # Education Tools
-    if is_enabled("education_tool_access"):
-        available_tools.extend([
-            {"name": "education_search_course", "description": "Search for educational courses."},
-            {"name": "education_search_institution", "description": "Search for educational institutions."},
-            {"name": "education_summarize_document_by_path", "description": "Summarize an educational document by path."},
-            {"name": "education_search_web", "description": "Search the web for general education information."}
-        ])
-
-    # Entertainment Tools
-    if is_enabled("entertainment_tool_access"):
-        available_tools.extend([
-            {"name": "entertainment_search_movie", "description": "Search for movie information."},
-            {"name": "entertainment_search_tv_show", "description": "Search for TV show information."},
-            {"name": "entertainment_summarize_document_by_path", "description": "Summarize an entertainment-related document by path."},
-            {"name": "entertainment_search_web", "description": "Search the web for general entertainment information."}
-        ])
-
-    # Weather Tools
-    if is_enabled("weather_tool_access"):
-        available_tools.extend([
-            {"name": "weather_get_current_weather", "description": "Get current weather conditions for a location."},
-            {"name": "weather_get_forecast", "description": "Get weather forecast for a location."},
-            {"name": "weather_summarize_document_by_path", "description": "Summarize a weather-related document by path."},
-            {"name": "weather_search_web", "description": "Search the web for general weather information."}
-        ])
-
-    # Travel Tools
-    if is_enabled("travel_tool_access"):
-        available_tools.extend([
-            {"name": "travel_search_flight", "description": "Search for flight information."},
-            {"name": "travel_search_hotel", "description": "Search for hotel information."},
-            {"name": "travel_summarize_document_by_path", "description": "Summarize a travel-related document by path."},
-            {"name": "travel_search_web", "description": "Search the web for general travel information."}
-        ])
-
-    # Sports Tools
-    if is_enabled("sports_tool_access"):
-        available_tools.extend([
-            {"name": "sports_get_latest_scores", "description": "Get latest sports scores for a league/sport."},
-            {"name": "sports_get_team_info", "description": "Get information about a sports team."},
-            {"name": "sports_get_player_stats", "description": "Get statistics for a sports player."},
-            {"name": "sports_summarize_document_by_path", "description": "Summarize a sports-related document by path."},
-            {"name": "sports_search_web", "description": "Search the web for general sports information."}
-        ])
-
-    # Document Tools
-    if is_enabled("document_query_enabled"):
-        available_tools.append({"name": "document_query_uploaded_docs", "description": "Query previously uploaded and indexed documents."})
-    if is_enabled("document_upload_enabled"):
-        available_tools.append({"name": "document_process_uploaded_document", "description": "Upload and process a document for indexing."})
-    if is_enabled("summarization_enabled"): # This is a general capability, but document_summarize_document_by_path uses it
-         # Only add if document_tools is initialized, as it's a method of that class
-        if document_tools:
-            available_tools.append({"name": "document_summarize_document_by_path", "description": "Summarize a document by its file path."})
-    if is_enabled("web_search_enabled"): # General web search, but document_search_web uses it
-        if document_tools:
-            available_tools.append({"name": "document_search_web", "description": "Search the web for document-related information."})
-
-
-    return {"available_tools": available_tools}
-
-
-@app.post("/tools/{tool_name}")
-async def use_tool(tool_name: str, request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """
-    Generic endpoint to use any available tool.
-    The tool's arguments are passed in the request body as JSON.
-    """
-    user_token = current_user.get("uid", "default")
-    request_data = await request.json()
-    logger.info(f"User {user_token} attempting to use tool: {tool_name} with params: {request_data}")
-
-    # Add user_token to request_data for RBAC checks within tools
-    request_data['user_token'] = user_token
-
-    try:
-        # Dynamically call the tool based on tool_name
-        # This requires careful mapping and security considerations
-        tool_function = None
-        tool_instance = None
-
-        # Mapping tool_name to actual function and instance
-        if tool_name.startswith("finance_"):
-            tool_instance = finance_tools
-        elif tool_name.startswith("crypto_"):
-            tool_instance = crypto_tools
-        elif tool_name.startswith("medical_"):
-            tool_instance = medical_tools
-        elif tool_name.startswith("news_"):
-            tool_instance = news_tools
-        elif tool_name.startswith("legal_"):
-            tool_instance = legal_tools
-        elif tool_name.startswith("education_"):
-            tool_instance = education_tools
-        elif tool_name.startswith("entertainment_"):
-            tool_instance = entertainment_tools
-        elif tool_name.startswith("weather_"):
-            tool_instance = weather_tools
-        elif tool_name.startswith("travel_"):
-            tool_instance = travel_tools
-        elif tool_name.startswith("sports_"):
-            tool_instance = sports_tools
-        elif tool_name.startswith("document_"):
-            tool_instance = document_tools
-        
-        if tool_instance:
-            tool_function = getattr(tool_instance, tool_name, None)
-
-        if tool_function:
-            # Check if the user has the capability to use this specific tool
-            # This is a redundant check if the list_available_tools is accurate,
-            # but adds an extra layer of security.
-            # A more robust solution would map tool_name to its required capability.
-            # For now, we rely on the in-tool RBAC checks.
-
-            result = await tool_function(**request_data)
-            return {"tool_name": tool_name, "result": result}
-        else:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tool '{tool_name}' not found or not accessible.")
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error executing tool '{tool_name}': {e}", exc_info=True)
-        # Log the error with analytics
-        await log_event(
-            user_id=user_token,
-            event_type="tool_execution_error",
-            event_details={"tool_name": tool_name, "error": str(e), "params": request_data},
-            success=False
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error executing tool: {e}")
-
+        logger.error(f"Error retrieving analytics events: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
