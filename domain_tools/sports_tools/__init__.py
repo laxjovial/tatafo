@@ -7,8 +7,10 @@ from typing import Optional, Dict, Any
 from .sports_tool import (
     get_sports_scores,
     get_team_info,
-    search_player_stats, # Note: This function was cut off in the provided content, assuming it exists.
-    sports_search_web # Assuming this is also part of the sports_tool.py
+    search_player_stats,
+    sports_search_web, # Assuming this is also part of the sports_tool.py
+    sports_query_uploaded_docs, # Added
+    sports_summarize_document_by_path # Added
 )
 
 logger = logging.getLogger(__name__)
@@ -19,16 +21,18 @@ class SportsTools:
     This class acts as a wrapper to group related tool functions and
     provides a consistent interface for the main application.
     """
-    def __init__(self, config_manager: Any, log_event: Any):
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any): # Added document_tools
         """
         Initializes the SportsTools with necessary dependencies.
 
         Args:
             config_manager (Any): The configuration manager instance.
             log_event (Any): The analytics logging function.
+            document_tools (Any): The DocumentTools instance for document querying. # Added
         """
         self.config_manager = config_manager
         self.log_event = log_event
+        self.document_tools = document_tools # Stored
         logger.info("SportsTools initialized.")
 
     # Expose individual tool functions as methods of this class
@@ -59,3 +63,21 @@ class SportsTools:
         """
         return await sports_search_web(query=query, user_token=user_token, max_chars=max_chars)
 
+    async def sports_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+        """
+        Queries previously uploaded and indexed sports documents for a user.
+        """
+        # This now calls the DocumentTools instance
+        return await self.document_tools.query_uploaded_docs(
+            query_text=query,
+            user_token=user_token,
+            collection_name="sports", # Specific collection for sports documents
+            export=export,
+            k=k
+        )
+
+    async def sports_summarize_document_by_path(self, file_path_str: str) -> str:
+        """
+        Summarizes a document related to sports (e.g., game analysis, athlete biographies) located at the given file path.
+        """
+        return await sports_summarize_document_by_path(file_path_str=file_path_str) # Call the function from sports_tool.py
