@@ -19,6 +19,7 @@ google-cloud-storage
 # Langchain for LLM orchestration, RAG, etc.
 langchain
 langchain-community
+langchain_community
 langchain-core
 langchain-text-splitters
 chromadb # For ChromaDB vector store
@@ -46,3 +47,8 @@ toml # NEW: For directly parsing secrets.toml in non-Streamlit contexts
 pytest
 pytest-asyncio
 unittest-mock # For mocking in tests (if not already part of standard lib)
+firebase-admin
+tiktoken
+toml
+streamlit
+fastapi
