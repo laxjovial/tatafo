@@ -6,11 +6,13 @@ import json
 import os
 import logging
 import asyncio # For async operations in CLI test
-
-import sys
-from pathlib import Path
+import sys # Import sys
+from pathlib import Path # Import Path
+from typing import Dict, Any, Optional # Import Optional here
 
 # --- Add project root to sys.path ---
+# This allows imports like 'from config.config_manager import config_manager' to work
+# when running Streamlit apps from nested directories.
 current_file_path = Path(__file__).resolve()
 project_root = current_file_path.parents[1] # Go up two levels from register_app.py to the 'tatafo' root
 sys.path.insert(0, str(project_root))
@@ -42,7 +44,6 @@ async def frontend_log_event(event_type: str, details: dict, user_id: str = "una
         }
         # Assuming an analytics endpoint exists on your backend
         # You might need to add a dedicated endpoint in main.py for frontend analytics
-        # e.g., @app.post("/analytics/frontend-event")
         response = requests.post(f"{FASTAPI_BASE_URL}/admin/analytics/events", json=payload)
         response.raise_for_status()
         logger.info(f"Frontend Analytics Logged: {event_type} for user {user_id}")
@@ -184,4 +185,5 @@ if __name__ == "__main__":
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
+
 
