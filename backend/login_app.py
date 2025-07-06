@@ -8,7 +8,7 @@ import logging
 import asyncio # For async operations in CLI test
 import sys # Import sys
 from pathlib import Path # Import Path
-from typing import Dict, Any, Optional # <--- THIS IS THE CRUCIAL LINE
+from typing import Dict, Any, Optional # <-- Ensure Optional is imported here
 
 # --- Add project root to sys.path ---
 # This allows imports like 'from config.config_manager import config_manager' to work
@@ -134,14 +134,20 @@ def app():
                 }, user_id=email.replace('.', '_') if email else 'N/A', success=False, error_message=error_message))
 
     st.markdown("---")
-    st.markdown("Don't have an account? [Register here](/register)")
-    st.markdown("Forgot your password? [Reset here](/forgot_password)")
+    # Changed markdown links to Streamlit buttons for internal navigation
+    if st.button("Don't have an account? Register here"):
+        st.session_state.current_page = "Register"
+        st.rerun()
+    if st.button("Forgot your password? Reset here"):
+        st.session_state.current_page = "ForgotPassword" # Assuming a ForgotPassword page
+        st.rerun()
+
 
 # Example of how to run this app standalone for testing
 if __name__ == "__main__":
     # Mock requests.post for backend calls if running standalone without FastAPI
     import unittest.mock as mock
-    # Removed from here as it's now at the top of the file: from typing import Optional
+    # No need to import Optional here, it's at the top of the file
     original_requests_post = requests.post
 
     def mock_requests_post(url, json, *args, **kwargs):
@@ -185,4 +191,5 @@ if __name__ == "__main__":
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
+
 
