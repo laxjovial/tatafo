@@ -7,84 +7,38 @@ import os
 import logging
 import asyncio # For async operations in CLI test
 
-# Import config_manager to access Firebase configuration
-from config.config_manager import config_manager
-# Import analytics_tracker for logging events
-from utils.analytics_tracker import log_event, initialize_analytics
-
-# Import Firebase Admin SDK components for backend initialization (if needed for context)
-import firebase_admin
-from firebase_admin import credentials, auth, firestore
+# Import config_manager (if needed for frontend config like backend URL, though we'll hardcode for now)
+from config.config_manager import config_manager # Keep for potential future use or if other configs are needed
 
 logger = logging.getLogger(__name__)
 
-# --- Firebase Admin SDK Initialization (for backend context) ---
-# Ensure Firebase Admin SDK is initialized only once for the Streamlit backend
-if not firebase_admin._apps:
-    try:
-        firebase_config_str = config_manager.get_secret("firebase_config")
-        if not firebase_config_str:
-            raise ValueError("Firebase configuration not found in secrets.")
-        
-        firebase_config = json.loads(firebase_config_str)
-        
-        if os.environ.get("FIREBASE_ADMIN_CERT"):
-            cred = credentials.Certificate(json.loads(os.environ.get("FIREBASE_ADMIN_CERT")))
-        else:
-            st.warning("FIREBASE_ADMIN_CERT environment variable not found. Firebase Admin SDK functionality may be limited.")
-            # Create a dummy credential object just to allow initialization for local testing
-            cred = credentials.Certificate({
-                "type": "service_account",
-                "project_id": firebase_config.get("projectId", "mock-project-id"),
-                "private_key_id": "mock-key-id",
-                "private_key": "-----BEGIN PRIVATE KEY-----\nMOCK_PRIVATE_KEY\n-----END PRIVATE KEY-----\n",
-                "client_email": "mock-client@mock-project-id.iam.gserviceaccount.com",
-                "client_id": "mock-client-id",
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/mock-client%40{firebase_config.get('projectId', 'mock-project-id')}.iam.gserviceaccount.com",
-                "universe_domain": "googleapis.com"
-            })
-
-        firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin SDK initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error initializing Firebase Admin SDK: {e}")
-        st.error(f"Error initializing Firebase services: {e}")
-
-# Initialize analytics_tracker for Streamlit backend context
-if 'analytics_initialized_backend' not in st.session_state:
-    # Use actual Firebase Admin SDK db/auth instances if available, otherwise mocks
-    if firebase_admin._apps:
-        try:
-            db_instance = firestore.client()
-            auth_instance = auth
-            app_id_for_analytics = config_manager.get("app_id", firebase_config.get("projectId", "default-streamlit-app-id"))
-            initialize_analytics(db_instance, auth_instance, app_id_for_analytics, "backend_system_user")
-            st.session_state.analytics_initialized_backend = True
-            logger.info("Analytics tracker initialized for Streamlit backend context with live Firebase.")
-        except Exception as e:
-            logger.error(f"Failed to initialize analytics with live Firebase Admin SDK: {e}")
-            # Fallback to mock if live initialization fails
-            mock_db = type('FirestoreMock', (object,), {'collection': lambda s, path: type('CollectionMock', (object,), {'add': lambda s, data: None})()})()
-            mock_auth = type('AuthMock', (object,), {'currentUser': type('CurrentUserMock', (object,), {'uid': None})()})()
-            app_id_for_analytics = config_manager.get("app_id", "default-streamlit-app-id")
-            initialize_analytics(mock_db, mock_auth, app_id_for_analytics, "backend_system_user")
-            st.session_state.analytics_initialized_backend = True
-            logger.warning("Analytics tracker initialized with mock Firebase for Streamlit backend context.")
-    else:
-        # If Firebase Admin SDK itself failed to initialize, use mocks for analytics
-        mock_db = type('FirestoreMock', (object,), {'collection': lambda s, path: type('CollectionMock', (object,), {'add': lambda s, data: None})()})()
-        mock_auth = type('AuthMock', (object,), {'currentUser': type('CurrentUserMock', (object,), {'uid': None})()})()
-        app_id_for_analytics = config_manager.get("app_id", "default-streamlit-app-id")
-        initialize_analytics(mock_db, mock_auth, app_id_for_analytics, "backend_system_user")
-        st.session_state.analytics_initialized_backend = True
-        logger.warning("Analytics tracker initialized with mock Firebase for Streamlit backend context (Admin SDK not available).")
-
-
 # --- Configuration for FastAPI Backend ---
-FASTAPI_BASE_URL = "http://localhost:8000" # Assuming FastAPI runs on port 8000
+# IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
+# Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/"
+FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev" # Use your actual Codespace URL here!
+
+# --- Frontend-specific Analytics Logging (sends to FastAPI backend) ---
+async def frontend_log_event(event_type: str, details: dict, user_id: str = "unauthenticated", success: bool = True, error_message: Optional[str] = None):
+    """
+    Sends analytics event to the FastAPI backend.
+    This replaces direct Firebase Admin SDK logging from the frontend.
+    """
+    try:
+        payload = {
+            "event_type": event_type,
+            "details": details,
+            "user_id": user_id,
+            "success": success,
+            "error_message": error_message
+        }
+        # Assuming an analytics endpoint exists on your backend
+        # You might need to add a dedicated endpoint in main.py for frontend analytics
+        # e.g., @app.post("/analytics/frontend-event")
+        response = requests.post(f"{FASTAPI_BASE_URL}/admin/analytics/events", json=payload)
+        response.raise_for_status()
+        logger.info(f"Frontend Analytics Logged: {event_type} for user {user_id}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send analytics event to backend: {e}")
 
 def login_user_backend(email: str, password: str) -> Dict[str, Any]:
     """Sends login request to the backend and returns the response."""
@@ -94,15 +48,34 @@ def login_user_backend(email: str, password: str) -> Dict[str, Any]:
             "password": password
         }
         headers = {"Content-Type": "application/json"}
-        response = requests.post(f"{FASTAPI_BASE_URL}/auth/login", json=payload, headers=headers)
-        response.raise_for_status()
+        # Corrected endpoint: /login as defined in main.py
+        response = requests.post(f"{FASTAPI_BASE_URL}/login", json=payload, headers=headers)
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         return response.json()
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error during login: {e.response.status_code} - {e.response.text}", exc_info=True)
+        # Parse error message from backend if available
+        try:
+            error_detail = e.response.json().get("detail", str(e))
+        except json.JSONDecodeError:
+            error_detail = e.response.text
+        return {"success": False, "message": f"Login failed: {error_detail}"}
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error to backend: {e}", exc_info=True)
+        return {"success": False, "message": f"Could not connect to the backend server. Please ensure it is running: {e}"}
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error logging in user via backend: {e}", exc_info=True)
-        return {"success": False, "message": f"Communication error with backend: {e}"}
+        logger.error(f"An unexpected request error occurred during login: {e}", exc_info=True)
+        return {"success": False, "message": f"An unexpected error occurred: {e}"}
 
 def app():
     st.title("Login")
+
+    # Log page view for analytics
+    asyncio.run(frontend_log_event('page_view', {
+        'page_name': 'Login',
+        'status': 'accessed'
+    }, user_id=st.session_state.get('user_id_from_backend', 'unauthenticated'), success=True))
+
 
     email = st.text_input("Email", key="login_email")
     password = st.text_input("Password", type="password", key="login_password")
@@ -110,30 +83,31 @@ def app():
     if st.button("Login"):
         if not email or not password:
             st.error("Please enter both email and password.")
-            asyncio.run(log_event('user_login', {
-                'email': email,
-                'status': 'failure',
-                'reason': 'missing_credentials'
-            }, user_id=email.replace('.', '_') if email else 'N/A', success=False))
+            asyncio.run(frontend_log_event('ui_interaction', {
+                'component': 'LoginButton',
+                'action': 'Click',
+                'details': {'email': email, 'status': 'failure', 'reason': 'missing_credentials'},
+            }, user_id=email.replace('.', '_') if email else 'N/A', success=False, error_message="Missing credentials"))
             return
 
         with st.spinner("Logging in..."):
             response = login_user_backend(email, password)
 
-            if response.get("success"):
+            if response.get("message") == "Login successful": # Check for specific success message
                 st.success("Logged in successfully!")
                 st.session_state['user_email'] = email
                 st.session_state['logged_in'] = True
-                st.session_state['user_token'] = response.get('id_token') # Store ID token
-                st.session_state['user_id_from_backend'] = response.get('user_id') # Store Firebase UID
+                # Backend returns 'custom_token' and 'uid'
+                st.session_state['user_token'] = response.get('custom_token') # Store custom token
+                st.session_state['user_id_from_backend'] = response.get('uid') # Store Firebase UID
                 
                 # Log successful login with actual user_id from backend
-                asyncio.run(log_event('user_login', {
+                asyncio.run(frontend_log_event('user_login', {
                     'email': email,
                     'status': 'success',
                     'method': 'email_password',
-                    'user_uid': response.get('user_id')
-                }, user_id=response.get('user_id'), success=True))
+                    'user_uid': response.get('uid')
+                }, user_id=response.get('uid'), success=True))
                 
                 # Redirect to a default page after login (e.g., AI Assistant)
                 if 'current_page' in st.session_state:
@@ -142,7 +116,7 @@ def app():
             else:
                 error_message = response.get("message", "An unknown error occurred.")
                 st.error(f"Login failed: {error_message}")
-                asyncio.run(log_event('user_login', {
+                asyncio.run(frontend_log_event('user_login', {
                     'email': email,
                     'status': 'failure',
                     'method': 'email_password',
@@ -157,10 +131,11 @@ def app():
 if __name__ == "__main__":
     # Mock requests.post for backend calls if running standalone without FastAPI
     import unittest.mock as mock
+    from typing import Optional # Import Optional for type hinting in mock
     original_requests_post = requests.post
 
     def mock_requests_post(url, json, *args, **kwargs):
-        if f"{FASTAPI_BASE_URL}/auth/login" in url:
+        if f"{FASTAPI_BASE_URL}/login" in url: # Corrected mock URL
             email = json.get("email")
             password = json.get("password")
 
@@ -168,38 +143,36 @@ if __name__ == "__main__":
                 mock_response = mock.Mock()
                 mock_response.status_code = 200
                 mock_response.json.return_value = {
-                    "success": True,
-                    "message": "Login successful.",
-                    "id_token": "mock_id_token_123",
-                    "user_id": "mock_firebase_uid_test"
+                    "message": "Login successful", # Changed to match backend
+                    "custom_token": "mock_custom_token_123", # Changed to match backend
+                    "uid": "mock_firebase_uid_test" # Changed to match backend
                 }
                 mock_response.raise_for_status = lambda: None
                 return mock_response
             elif email == "locked@example.com":
                 mock_response = mock.Mock()
                 mock_response.status_code = 403
-                mock_response.json.return_value = {"success": False, "message": "Account locked or disabled."}
-                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("403 Forbidden: Account locked")
+                mock_response.json.return_value = {"detail": "Account locked or disabled."} # Changed to match FastAPI error format
+                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("403 Forbidden: Account locked", response=mock_response)
                 return mock_response
             else:
                 mock_response = mock.Mock()
                 mock_response.status_code = 401
-                mock_response.json.return_value = {"success": False, "message": "Invalid credentials."}
-                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("401 Unauthorized: Invalid credentials")
+                mock_response.json.return_value = {"detail": "Invalid credentials."} # Changed to match FastAPI error format
+                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("401 Unauthorized: Invalid credentials", response=mock_response)
                 return mock_response
         return original_requests_post(url, json, *args, **kwargs)
 
     requests.post = mock_requests_post
     
-    # Initialize analytics for the test run if not already done
-    if 'analytics_initialized_backend' not in st.session_state:
-        # Mock Firebase Admin SDK for analytics initialization in test context
-        mock_db_for_analytics = type('FirestoreMock', (object,), {'collection': lambda s, path: type('CollectionMock', (object,), {'add': lambda s, data: asyncio.sleep(0.01)})()})()
-        mock_auth_for_analytics = type('AuthMock', (object,), {'currentUser': type('CurrentUserMock', (object,), {'uid': "test_cli_user"})()})()
-        initialize_analytics(mock_db_for_analytics, mock_auth_for_analytics, "test-app-id-cli", "test_cli_user")
-        st.session_state.analytics_initialized_backend = True
+    # Initialize Streamlit session state for standalone testing
+    if 'user_id_from_backend' not in st.session_state:
+        st.session_state.user_id_from_backend = 'unauthenticated_test_user'
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "Login"
 
     app()
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
+
