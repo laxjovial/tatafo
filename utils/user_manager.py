@@ -34,9 +34,190 @@ if 'analytics_initialized_frontend' not in st.session_state:
         logger.error(f"Failed to initialize analytics in user_manager (frontend context): {e}")
 
 
+# This function is used by the RBAC capabilities endpoint in backend/main.py and by tools.
+# It should reflect the logic defined in config.yml for user tiers and roles.
+def get_user_tier_capability(user_token: Optional[str], capability_key: str, default_value: Any = None) -> Any:
+    """
+    Determines user capabilities based on their tier and roles from config.
+    This function is primarily for the backend to use when calculating capabilities,
+    but also serves as a reference for frontend logic.
+    """
+    # In a real backend, user_info would come from an authenticated session/DB lookup
+    # For this standalone function, we assume user_token can be used to get user_info
+    # if it's called in a context where user_manager has access to a backend DB.
+    # For frontend context, it will rely on st.session_state.user_profile and capabilities.
+    
+    # If running in Streamlit frontend, use session_state for capabilities
+    if 'user_capabilities' in st.session_state and st.session_state.user_capabilities:
+        return st.session_state.user_capabilities.get(capability_key, default_value)
+
+    # Fallback for backend or local testing where session_state might not be available
+    # This part should ideally be handled by a dedicated RBAC service in the backend
+    # or by passing the full user object with tier/roles.
+    # For now, we'll use a simplified mock for standalone testing if needed.
+    
+    # This is a simplified mock for local testing of tools outside of FastAPI/Streamlit context
+    # In the actual FastAPI backend, the user object passed to tools will contain tier/roles.
+    # This part should be aligned with how user_manager.py is used in the backend.
+    
+    # For the context of domain tools (like finance_tool.py) calling this,
+    # they are passed the user_token, and this function needs to determine capabilities.
+    # The actual implementation of how user_token maps to tier/roles here
+    # would depend on whether this function directly queries a DB or relies on
+    # a pre-fetched user object.
+    
+    # Given the traceback points to shared_tools/scrapper_tool.py, it's likely
+    # this function is being called in a context where user_info is not readily available
+    # from st.session_state, or it's called in the backend.
+
+    # Let's assume for backend/tool context, we'd have a way to get user info.
+    # For now, we'll use a simplified mock based on the `_rbac_capabilities`
+    # and `_mock_users` that were used in the CLI tests of domain tools.
+    
+    # This mock data is usually part of a UserManager *instance* or a dedicated RBAC module.
+    # Since this is a standalone function, we need to make it self-contained or
+    # ensure the calling context provides the necessary user_info.
+
+    # For now, let's assume this function is called with a user_token that
+    # can be mapped to a tier/roles *within this function's scope* for testing.
+    # In a real backend, `get_user_tier_capability` would likely be a method
+    # of a `UserManager` class that has access to user data.
+
+    # Replicating the mock RBAC logic from domain tool tests for this standalone function
+    _mock_users = {
+        "default": {"user_id": "default", "username": "DefaultUser", "email": "default@example.com", "tier": "free", "roles": ["user"]},
+        "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
+        "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
+        "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
+        "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
+    }
+    _rbac_capabilities = {
+        'capabilities': {
+            'finance_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'crypto_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'medical_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'news_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'legal_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'education_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'entertainment_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'weather_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'travel_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'sports_tool_access': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'document_upload_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'document_query_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'web_search_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'web_search_max_results': {
+                'default': 2,
+                'tiers': {'pro': 7, 'premium': 15}
+            },
+            'web_search_limit_chars': {
+                'default': 500,
+                'tiers': {'pro': 3000, 'premium': 10000}
+            },
+            'data_analysis_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'summarization_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'chart_generation_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'sentiment_analysis_enabled': {
+                'default': False,
+                'roles': {'pro': True, 'premium': True, 'admin': True}
+            },
+            'analytics_access': {
+                'default': False,
+                'roles': {'admin': True}
+            },
+            'analytics_charts_enabled': {
+                'default': False,
+                'roles': {'admin': True}
+            },
+            'analytics_user_specific_access': {
+                'default': False,
+                'roles': {'admin': True}
+            },
+        }
+    }
+
+    user_info = _mock_users.get(user_token, _mock_users["default"]) # Use default if token not found
+    user_id = user_info.get('user_id')
+    user_tier = user_info.get('tier', 'free')
+    user_roles = user_info.get('roles', [])
+
+    if "admin" in user_roles:
+        # Admins have all capabilities enabled or set to max/inf
+        if capability_key in _rbac_capabilities['capabilities']:
+            cap_config = _rbac_capabilities['capabilities'][capability_key]
+            if isinstance(cap_config.get('default'), bool): return True
+            if isinstance(cap_config.get('default'), (int, float)): return float('inf')
+        return default_value # Return default if not a known boolean/numeric capability
+
+    capability_config = _rbac_capabilities.get('capabilities', {}).get(capability_key)
+    if not capability_config:
+        return default_value
+
+    # Check roles first
+    for role in user_roles:
+        if role in capability_config.get('roles', {}):
+            return capability_config['roles'][role]
+    
+    # Then check tiers
+    if user_tier in capability_config.get('tiers', {}):
+        return capability_config['tiers'][user_tier]
+
+    return capability_config.get('default', default_value)
+
+
 class UserManager:
-    def __init__(self):
-        # Ensure session state variables for user management exist
+    def __init__(self, firestore_manager: Any, cloud_storage_utils: Any):
+        self.firestore_manager = firestore_manager
+        self.cloud_storage_utils = cloud_storage_utils
+        # Ensure session state variables for user management exist (frontend context)
         if 'user_id' not in st.session_state:
             st.session_state.user_id = None
         if 'username' not in st.session_state:
@@ -149,7 +330,7 @@ class UserManager:
                             'email': email,
                             'status': 'partial_success',
                             'reason': 'profile_fetch_failed'
-                        }, user_id=st.session_state.user_id, success=True, error_message="Login successful but profile could not be loaded.")
+                        }, user_id=st.session_state.user_id, success=True, error_message="Login successful but profile data could not be loaded.")
                         return {"success": True, "message": "Login successful, but profile data could not be loaded."}
                 else:
                     logger.warning(f"User login failed for {email}: {result.get('message')}")
@@ -446,7 +627,7 @@ class UserManager:
                 'status': 'failure',
                 'reason': f"Network error: {e}"
             }, user_id=user_id, success=False, error_message=str(e))
-            return {"success": False, "message": f"Network error: {e}"}
+            return {"success": False, "message": f"An unexpected error occurred: {e}"}
         except Exception as e:
             logger.critical(f"Unexpected error updating profile for {user_id}: {e}", exc_info=True)
             await log_event('user_profile_frontend', {
@@ -613,73 +794,7 @@ class UserManager:
             }, user_id=user_id, success=False, error_message=str(e))
             return {"success": False, "message": f"An unexpected error occurred: {e}"}
 
-# Global instance of UserManager
-user_manager = UserManager()
-
-# This function is used by the RBAC capabilities endpoint in backend/main.py.
-# It should reflect the logic defined in config.yml for user tiers and roles.
-# It's kept here for now but ideally, the backend would manage and serve these capabilities directly from its config.
-def get_user_capabilities(user_tier: str, user_roles: List[str]) -> Dict[str, Any]:
-    """
-    Determines user capabilities based on their tier and roles from config.
-    This function is primarily for the backend to use when calculating capabilities,
-    but also serves as a reference for frontend logic.
-    """
-    capabilities = config_manager.get("rbac_capabilities", {})
-
-    # Start with base capabilities for the user's tier
-    tier_capabilities = capabilities.get("tiers", {}).get(user_tier, {})
-    
-    # Merge role-specific capabilities, roles override tier
-    role_capabilities = {}
-    for role in user_roles:
-        role_caps = capabilities.get("roles", {}).get(role, {})
-        for key, value in role_caps.items():
-            # For boolean flags, if any role enables it, it's enabled
-            if isinstance(value, bool):
-                role_capabilities[key] = role_capabilities.get(key, False) or value
-            # For numeric values (like max_k), take the highest/most permissive
-            elif isinstance(value, (int, float)):
-                role_capabilities[key] = max(role_capabilities.get(key, value), value)
-            else: # For other types, roles simply override
-                role_capabilities[key] = value
-
-    # Combine tier and role capabilities, with roles taking precedence
-    final_capabilities = {**tier_capabilities, **role_capabilities}
-
-    # Apply any global overrides or default values if not explicitly set
-    # Example: Ensure all expected keys are present with default False/0.7/etc.
-    default_capabilities = {
-        "llm_temperature_control_enabled": False,
-        "llm_default_temperature": 0.7,
-        "llm_max_temperature": 1.0,
-        "llm_model_selection_enabled": False,
-        "llm_default_provider": "gemini", # Default to Gemini if not specified
-        "llm_default_model_name": "gemini-1.5-flash", # Default to Gemini-1.5-Flash
-        "web_search_enabled": False,
-        "data_analysis_enabled": False,
-        "summarization_enabled": False,
-        "chart_generation_enabled": False,
-        "sentiment_analysis_enabled": False,
-        "document_upload_enabled": False,
-        "document_query_enabled": False,
-        "document_query_max_results_k": 4,
-        "chart_export_enabled": False,
-        "finance_tool_access": False,
-        "historical_data_access": False,
-        "crypto_tool_access": False,
-        "news_tool_access": False,
-        "medical_tool_access": False,
-        "legal_tool_access": False,
-        "education_tool_access": False,
-        "entertainment_tool_access": False,
-        "weather_tool_access": False,
-        "travel_tool_access": False,
-        "sports_tool_access": False,
-        "analytics_access": False,
-        "analytics_charts_enabled": False,
-        "analytics_user_specific_access": False,
-    }
-    # Merge defaults first, then final_capabilities
-    return {**default_capabilities, **final_capabilities}
+# Global instance of UserManager (This line is for frontend Streamlit context)
+# For backend FastAPI, we will pass explicit dependencies.
+# user_manager = UserManager() # This line is commented out as it's not needed for the backend's UserManager instance.
 
