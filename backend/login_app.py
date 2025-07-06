@@ -7,6 +7,15 @@ import os
 import logging
 import asyncio # For async operations in CLI test
 
+import sys
+from pathlib import Path
+
+# --- Add project root to sys.path ---
+current_file_path = Path(__file__).resolve()
+project_root = current_file_path.parents[1] # Go up two levels from register_app.py to the 'tatafo' root
+sys.path.insert(0, str(project_root))
+# --- End sys.path modification ---
+
 # Import config_manager (if needed for frontend config like backend URL, though we'll hardcode for now)
 from config.config_manager import config_manager # Keep for potential future use or if other configs are needed
 
