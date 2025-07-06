@@ -8,7 +8,8 @@ from .news_tool import (
     get_top_headlines,
     search_news_articles,
     news_search_web,
-    news_query_uploaded_docs # Note: This function was cut off in the provided content, assuming it exists.
+    news_query_uploaded_docs,
+    news_summarize_document_by_path # Added
 )
 
 logger = logging.getLogger(__name__)
@@ -19,16 +20,18 @@ class NewsTools:
     This class acts as a wrapper to group related tool functions and
     provides a consistent interface for the main application.
     """
-    def __init__(self, config_manager: Any, log_event: Any):
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any): # Added document_tools
         """
         Initializes the NewsTools with necessary dependencies.
 
         Args:
             config_manager (Any): The configuration manager instance.
             log_event (Any): The analytics logging function.
+            document_tools (Any): The DocumentTools instance for document querying. # Added
         """
         self.config_manager = config_manager
         self.log_event = log_event
+        self.document_tools = document_tools # Stored
         logger.info("NewsTools initialized.")
 
     # Expose individual tool functions as methods of this class
@@ -57,6 +60,18 @@ class NewsTools:
         """
         Queries previously uploaded and indexed news documents for a user.
         """
-        return await news_query_uploaded_docs(query=query, user_token=user_token, export=export, k=k)
+        # This now calls the DocumentTools instance
+        return await self.document_tools.query_uploaded_docs(
+            query_text=query,
+            user_token=user_token,
+            collection_name="news", # Specific collection for news documents
+            export=export,
+            k=k
+        )
 
+    async def news_summarize_document_by_path(self, file_path_str: str) -> str:
+        """
+        Summarizes a document related to news or current events located at the given file path.
+        """
+        return await news_summarize_document_by_path(file_path_str=file_path_str) # Call the function from news_tool.py
 
