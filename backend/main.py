@@ -9,7 +9,7 @@ import json
 import os
 import asyncio
 import firebase_admin
-from firebase_admin import credentials, auth, firestore
+from firebase_admin import credentials, auth, firestore # Import auth directly
 from pydantic import BaseModel, EmailStr, Field # Import Field for validation
 from datetime import datetime, timezone
 
@@ -57,7 +57,8 @@ if not firebase_admin._apps:
 
 # Initialize Firestore Manager
 db_client = firestore.client(firebase_app) # Get the Firestore client instance
-auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
+# Removed: auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
+# The 'auth' module itself provides the necessary functions after firebase_admin.initialize_app
 
 firestore_manager = FirestoreManager()
 logger.info("FirestoreManager initialized.")
@@ -69,7 +70,8 @@ app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
 # For initial analytics setup, use a generic user ID as no end-user is authenticated yet
 user_id_for_analytics = "backend-service-user" 
 
-initialize_analytics(db_client, auth_client, app_id_for_analytics, user_id_for_analytics)
+# Pass the auth module directly to initialize_analytics
+initialize_analytics(db_client, auth, app_id_for_analytics, user_id_for_analytics)
 logger.info("Analytics Tracker initialized.")
 
 # Initialize Cloud Storage Utils Wrapper
@@ -112,8 +114,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     Authenticates the user using Firebase ID token.
     """
     try:
-        # Verify the Firebase ID token
-        decoded_token = auth_client.verify_id_token(token) # Use auth_client here
+        # Verify the Firebase ID token using the auth module directly
+        decoded_token = auth.verify_id_token(token)
         uid = decoded_token['uid']
         user_record = await user_manager.get_user(uid) # Fetch user details including roles
         if not user_record:
@@ -145,13 +147,13 @@ document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_s
 # Each tool class receives the managers it needs, ensuring the order matches their __init__ signatures.
 domain_tool_instances = {
     "finance_tools": FinanceTools(
-        config_manager=config_manager, # First argument as per FinanceTools.__init__
+        config_manager=config_manager,
         firestore_manager=firestore_manager,
         log_event=log_event,
         document_tools=document_tools_instance
     ),
     "crypto_tools": CryptoTools(
-        config_manager=config_manager, # Assuming similar init signature for other tools
+        config_manager=config_manager,
         firestore_manager=firestore_manager,
         log_event=log_event,
         document_tools=document_tools_instance
@@ -217,7 +219,8 @@ async def read_root():
 async def register_user_endpoint(email: EmailStr, password: str, request: Request):
     """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
     try:
-        user = auth_client.create_user(email=email, password=password) # Use auth_client here
+        # Use the auth module directly to create a user
+        user = auth.create_user(email=email, password=password)
         await user_manager.create_user_profile(user.uid, email)
         logger.info(f"User registered: {user.uid} with email {email}")
         await log_event('user_registered', {'email': email}, user_id=user.uid, success=True)
@@ -236,12 +239,9 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
     This endpoint is for demonstration or specific backend-initiated authentication flows.
     """
     try:
-        # Authenticate user (e.g., using Firebase Admin SDK's ability to get user by email
-        # and then create a custom token, or verify credentials against a different system).
-        # For simplicity, this example assumes you'd have a way to verify password
-        # or that this is for generating a custom token for an already existing Firebase user.
-        user_record = auth_client.get_user_by_email(email) # Use auth_client here
-        custom_token = auth_client.create_custom_token(user_record.uid).decode('utf-8') # Use auth_client here
+        # Use the auth module directly to get user by email and create custom token
+        user_record = auth.get_user_by_email(email)
+        custom_token = auth.create_custom_token(user_record.uid).decode('utf-8')
         logger.info(f"Custom token generated for user: {user_record.uid}")
         await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
         return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
@@ -353,7 +353,7 @@ async def chat_with_agent_endpoint(
             # Dynamically call the tool method
             # This is a simplified example; your agent's logic would be more sophisticated
             # For a real agent, the agent would parse the message to extract 'symbol'
-            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_token=user_id) # Corrected method name
+            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_token=user_id)
             response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
         except Exception as e:
             response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
@@ -363,7 +363,7 @@ async def chat_with_agent_endpoint(
         try:
             document_tools = domain_tool_instances["document_tools"]
             # This is a simplified example; your agent would extract the actual query
-            doc_query_result = await document_tools.document_query_uploaded_docs( # Corrected method name
+            doc_query_result = await document_tools.document_query_uploaded_docs(
                 query_text="summarize key points from my latest report", # Example query
                 user_token=user_id
             )
