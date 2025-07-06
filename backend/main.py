@@ -129,21 +129,23 @@ async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_curr
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized. Admin access required.")
     return current_user
 
+# Initialize DocumentTools first, as it's a dependency for other domain tools
+document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
+
 # Initialize domain tool instances, passing necessary dependencies
-# Each tool class receives the managers it needs.
+# Each tool class receives the managers it needs, including document_tools_instance.
 domain_tool_instances = {
-    "finance_tools": FinanceTools(firestore_manager, config_manager, log_event),
-    "crypto_tools": CryptoTools(firestore_manager, config_manager, log_event),
-    "medical_tools": MedicalTools(firestore_manager, config_manager, log_event),
-    "news_tools": NewsTools(firestore_manager, config_manager, log_event),
-    "legal_tools": LegalTools(firestore_manager, config_manager, log_event),
-    "education_tools": EducationTools(firestore_manager, config_manager, log_event),
-    "entertainment_tools": EntertainmentTools(firestore_manager, config_manager, log_event),
-    "weather_tools": WeatherTools(firestore_manager, config_manager, log_event),
-    "travel_tools": TravelTools(firestore_manager, config_manager, log_event),
-    "sports_tools": SportsTools(firestore_manager, config_manager, log_event),
-    # NEW: Initialize DocumentTools and pass all required dependencies
-    "document_tools": DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event),
+    "finance_tools": FinanceTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "crypto_tools": CryptoTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "medical_tools": MedicalTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "news_tools": NewsTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "legal_tools": LegalTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "education_tools": EducationTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "entertainment_tools": EntertainmentTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "weather_tools": WeatherTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "travel_tools": TravelTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "sports_tools": SportsTools(firestore_manager, config_manager, log_event, document_tools_instance),
+    "document_tools": document_tools_instance, # Add the initialized instance itself
 }
 
 # --- API Endpoints ---
@@ -291,11 +293,8 @@ async def chat_with_agent_endpoint(
         try:
             # Dynamically call the tool method
             # This is a simplified example; your agent's logic would be more sophisticated
-            finance_tools = domain_tool_instances["finance_tools"]
-            # Assuming get_stock_price takes a symbol and user_token
-            # This part needs to be carefully designed based on your agent's output
             # For a real agent, the agent would parse the message to extract 'symbol'
-            stock_price = await finance_tools.get_stock_price(symbol="GOOG", user_token=user_id)
+            stock_price = await domain_tool_instances["finance_tools"].get_stock_price(symbol="GOOG", user_token=user_id)
             response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
         except Exception as e:
             response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
@@ -362,4 +361,3 @@ async def get_analytics_events_endpoint(
     except Exception as e:
         logger.error(f"Error retrieving analytics events: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
