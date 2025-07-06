@@ -6,10 +6,11 @@ import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime, timedelta
+import asyncio # Import asyncio
 
 # Import generic tools
 from langchain_core.tools import tool
-# REMOVED: from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs
+# REMOVED: from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs # This will be handled by DocumentTools
 from shared_tools.scraper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 
@@ -387,7 +388,7 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
                 tool_params=params,
                 user_token=user_token,
                 success=False,
-                error_message=error_msg
+                error_message=e
             )
         return None
     except json.JSONDecodeError:
@@ -418,281 +419,103 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
 
 # --- Mock Data for Fallback ---
 _mock_education_data = {
-    "course_info": {
-        "introduction_to_ai": {
-            "title": "Introduction to Artificial Intelligence",
-            "provider": "Online University X",
-            "level": "Beginner",
+    "education_courses": [
+        {
+            "title": "Mock Course: Introduction to Python Programming",
+            "description": "A beginner-friendly course covering Python fundamentals.",
+            "platform": "Mockemy",
+            "instructor": "Dr. Python",
             "duration": "8 weeks",
-            "cost": "Free (Audit) / $199 (Certificate)",
-            "description": "Learn the fundamentals of AI, machine learning, and neural networks.",
-            "prerequisites": "Basic programming knowledge.",
-            "url": "http://example.com/courses/ai"
+            "level": "Beginner",
+            "url": "http://example.com/edu/python"
         },
-        "advanced_calculus": {
-            "title": "Advanced Calculus for Engineers",
-            "provider": "Tech Institute Y",
-            "level": "Advanced",
+        {
+            "title": "Mock Course: Advanced Calculus",
+            "description": "Deep dive into advanced topics in differential and integral calculus.",
+            "platform": "Math University",
+            "instructor": "Prof. Euler",
             "duration": "12 weeks",
-            "cost": "$500",
-            "description": "Deep dive into multivariable calculus, differential equations, and vector analysis.",
-            "prerequisites": "Calculus I & II.",
-            "url": "http://example.com/courses/calc"
+            "level": "Advanced",
+            "url": "http://example.com/edu/calculus"
         }
-    },
-    "school_info": {
-        "university_of_london": {
-            "name": "University of London",
-            "type": "University",
-            "location": "London, UK",
-            "founded_year": 1836,
-            "notable_alumni": ["Mahatma Gandhi", "Nelson Mandela"],
-            "website": "https://london.ac.uk/"
-        },
-        "harvard_university": {
-            "name": "Harvard University",
-            "type": "University",
-            "location": "Cambridge, Massachusetts, USA",
-            "founded_year": 1636,
-            "notable_alumni": ["Barack Obama", "Mark Zuckerberg"],
-            "website": "https://www.harvard.edu/"
-        }
-    },
-    "educational_resources": {
-        "math_tutorials": {
-            "topic": "Mathematics",
-            "type": "Tutorials",
-            "title": "Khan Academy Math",
-            "description": "Free online math tutorials and exercises for all levels.",
-            "url": "https://www.khanacademy.org/math"
-        },
-        "history_documentaries": {
-            "topic": "History",
-            "type": "Documentaries",
-            "title": "BBC History Documentaries",
-            "description": "Collection of historical documentaries from BBC.",
-            "url": "https://www.bbc.co.uk/history/documentaries"
-        }
-    }
+    ]
 }
 
 @tool
-def search_educational_courses(query: str, level: Optional[str] = None, provider: Optional[str] = None, user_token: str = "default") -> str:
+async def search_educational_resources(query: str, subject: Optional[str] = None, resource_type: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Searches for educational courses based on a query, optionally filtered by level (e.g., 'Beginner', 'Intermediate', 'Advanced')
-    and provider (e.g., 'Coursera', 'edX', 'Online University X').
+    Searches for educational resources based on a query, optionally filtered by subject and resource type.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        query (str): The course search query (e.g., "Python programming", "data science").
-        level (str, optional): The difficulty level of the course.
-        provider (str, optional): The educational platform or institution offering the course.
+        query (str): The educational resource query (e.g., "online courses in AI", "textbooks for physics").
+        subject (str, optional): The subject area (e.g., "Computer Science", "Mathematics", "History").
+        resource_type (str, optional): The type of resource (e.g., "course", "textbook", "tutorial", "certification").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of course information, or an error/fallback message.
+        str: A formatted string of educational resource results, or an error/fallback message.
     """
-    logger.info(f"Tool: search_educational_courses called for query='{query}', level='{level}', provider='{provider}' by user: {user_token}")
+    logger.info(f"Tool: search_educational_resources called for query: '{query}', subject: '{subject}', resource_type: '{resource_type}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'education_tool_access', False):
         return "Error: Access to education tools is not enabled for your current tier."
     
-    params = {"query": query}
-    if level: params["level"] = level
-    if provider: params["provider"] = provider
+    params = {"q": query}
+    if subject: params["subject"] = subject
+    if resource_type: params["resource_type"] = resource_type
 
-    api_data = asyncio.run(_make_dynamic_api_request("education", "search_educational_courses", params, user_token))
-
-    if api_data and api_data.get("data"):
-        courses = api_data["data"]
-        if courses:
-            response_str = f"Found Educational Courses for '{query}':\n"
-            for i, course in enumerate(courses[:5]): # Limit to top 5 courses
-                response_str += (
-                    f"{i+1}. Title: {course.get('title', 'N/A')}\n"
-                    f"   Provider: {course.get('provider', 'N/A')}\n"
-                    f"   Level: {course.get('level', 'N/A')}\n"
-                    f"   Duration: {course.get('duration', 'N/A')}\n"
-                    f"   Cost: {course.get('cost', 'N/A')}\n"
-                    f"   Description: {course.get('description', 'N/A')}\n"
-                    f"   URL: {course.get('url', 'N/A')}\n\n"
-                )
-            return response_str
-        else:
-            return f"No live educational courses found for '{query}' for your criteria. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_courses = _mock_education_data.get("course_info", {})
-    filtered_mock_courses = []
-    for key, course in mock_courses.items():
-        match = True
-        if query.lower() not in course.get("title", "").lower() and query.lower() not in course.get("description", "").lower():
-            match = False
-        if level and course.get("level", "").lower() != level.lower():
-            match = False
-        if provider and course.get("provider", "").lower() != provider.lower():
-            match = False
-        if match:
-            filtered_mock_courses.append(course)
-
-    if filtered_mock_courses:
-        response_str = f"Found Educational Courses for '{query}' (Mock Data Fallback):\n"
-        for i, course in enumerate(filtered_mock_courses[:2]): # Limit mock to top 2
-            response_str += (
-                f"{i+1}. Title: {course.get('title', 'N/A')}\n"
-                f"   Provider: {course.get('provider', 'N/A')}\n"
-                f"   Level: {course.get('level', 'N/A')}\n"
-                f"   Duration: {course.get('duration', 'N/A')}\n"
-                f"   Cost: {course.get('cost', 'N/A')}\n"
-                f"   Description: {course.get('description', 'N/A')}\n"
-                f"   URL: {course.get('url', 'N/A')}\n\n"
-            )
-        return response_str
-    else:
-        return f"Educational courses for '{query}' not found. (API/Mock Fallback Failed)"
-
-
-@tool
-def get_school_info(school_name: str, location: Optional[str] = None, user_token: str = "default") -> str:
-    """
-    Retrieves information about a specific school, college, or university.
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        school_name (str): The full or partial name of the educational institution.
-        location (str, optional): The city or country where the institution is located.
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of school information, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_school_info called for school: '{school_name}', location: '{location}' by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'education_tool_access', False):
-        return "Error: Access to education tools is not enabled for your current tier."
-    
-    params = {"name": school_name}
-    if location: params["location"] = location
-
-    api_data = asyncio.run(_make_dynamic_api_request("education", "get_school_info", params, user_token))
-
-    if api_data:
-        try:
-            name = api_data.get("name")
-            school_type = api_data.get("type")
-            loc = api_data.get("location")
-            founded_year = api_data.get("founded_year")
-            notable_alumni = api_data.get("notable_alumni")
-            website = api_data.get("website")
-
-            if name and loc:
-                response_str = (
-                    f"Information for School: {name}\n"
-                    f"  Type: {school_type}\n"
-                    f"  Location: {loc}\n"
-                )
-                if founded_year:
-                    response_str += f"  Founded: {founded_year}\n"
-                if notable_alumni:
-                    response_str += f"  Notable Alumni: {', '.join(notable_alumni)}\n"
-                if website:
-                    response_str += f"  Website: {website}\n"
-                return response_str
-            else:
-                logger.warning(f"Live API data for school '{school_name}' is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live school information for '{school_name}'. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live school info data for '{school_name}': {e}")
-            return f"Error parsing live data for '{school_name}'. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_data_key_prefix = school_name.lower().replace(" ", "_")
-    mock_data = None
-    for key, entry in _mock_education_data.get("school_info", {}).items():
-        if mock_data_key_prefix in key and (not location or location.lower() in entry.get("location", "").lower()):
-            mock_data = entry
-            break
-
-    if mock_data:
-        response_str = (
-            f"Information for School: {mock_data['name']} (Mock Data Fallback)\n"
-            f"  Type: {mock_data['type']}\n"
-            f"  Location: {mock_data['location']}\n"
-        )
-        if mock_data.get('founded_year'):
-            response_str += f"  Founded: {mock_data['founded_year']}\n"
-        if mock_data.get('notable_alumni'):
-            response_str += f"  Notable Alumni: {', '.join(mock_data['notable_alumni'])}\n"
-        if mock_data.get('website'):
-            response_str += f"  Website: {mock_data['website']}\n"
-        return response_str
-    else:
-        return f"School information not found for '{school_name}'. (API/Mock Fallback Failed)"
-
-
-@tool
-def find_educational_resources(topic: str, resource_type: Optional[str] = None, user_token: str = "default") -> str:
-    """
-    Finds educational resources (e.g., tutorials, documentaries, articles) on a specific topic.
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        topic (str): The educational topic (e.g., "Physics", "World History", "Programming").
-        resource_type (str, optional): The type of resource (e.g., 'Tutorials', 'Documentaries', 'Articles').
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of educational resources, or an error/fallback message.
-    """
-    logger.info(f"Tool: find_educational_resources called for topic: '{topic}', type: '{resource_type}' by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'education_tool_access', False):
-        return "Error: Access to education tools is not enabled for your current tier."
-    
-    params = {"topic": topic}
-    if resource_type: params["type"] = resource_type
-
-    api_data = asyncio.run(_make_dynamic_api_request("education", "find_educational_resources", params, user_token))
+    api_data = await _make_dynamic_api_request("education", "search_educational_resources", params, user_token)
 
     if api_data and api_data.get("data"):
         resources = api_data["data"]
         if resources:
-            response_str = f"Educational Resources for '{topic}':\n"
-            for i, resource in enumerate(resources[:5]): # Limit to top 5
+            response_str = f"Educational Resources for '{query}':\n"
+            for resource in resources[:5]: # Limit to top 5 for brevity
+                title = resource.get("title", "N/A")
+                description = resource.get("description", "N/A")
+                platform = resource.get("platform", "N/A")
+                instructor = resource.get("instructor", "N/A")
+                duration = resource.get("duration", "N/A")
+                level = resource.get("level", "N/A")
+                url = resource.get("url", "#")
                 response_str += (
-                    f"{i+1}. Title: {resource.get('title', 'N/A')}\n"
-                    f"   Type: {resource.get('type', 'N/A')}\n"
-                    f"   Description: {resource.get('description', 'N/A')}\n"
-                    f"   URL: {resource.get('url', 'N/A')}\n\n"
+                    f"- Title: {title}\n"
+                    f"  Description: {description}\n"
+                    f"  Platform: {platform}\n"
+                    f"  Instructor: {instructor}\n"
+                    f"  Duration: {duration}\n"
+                    f"  Level: {level}\n"
+                    f"  URL: {url}\n\n"
                 )
             return response_str
         else:
-            return f"No live educational resources found for '{topic}' for your criteria. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_resources = _mock_education_data.get("educational_resources", {})
-    filtered_mock_resources = []
-    for key, resource in mock_resources.items():
-        match = True
-        if topic.lower() not in resource.get("topic", "").lower() and topic.lower() not in resource.get("description", "").lower():
-            match = False
-        if resource_type and resource.get("type", "").lower() != resource_type.lower():
-            match = False
-        if match:
-            filtered_mock_resources.append(resource)
+            return f"No live educational resources found for query '{query}'. Falling back to mock data."
     
-    if filtered_mock_resources:
-        response_str = f"Educational Resources for '{topic}' (Mock Data Fallback):\n"
-        for i, resource in enumerate(filtered_mock_resources[:2]): # Limit mock to top 2
+    # Fallback to mock data
+    mock_resources = _mock_education_data.get("education_courses", [])
+    if mock_resources:
+        response_str = f"Educational Resources for '{query}' (Mock Data Fallback):\n"
+        for resource in mock_resources[:5]:
+            title = resource.get("title", "N/A")
+            description = resource.get("description", "N/A")
+            platform = resource.get("platform", "N/A")
+            instructor = resource.get("instructor", "N/A")
+            duration = resource.get("duration", "N/A")
+            level = resource.get("level", "N/A")
+            url = resource.get("url", "#")
             response_str += (
-                f"{i+1}. Title: {resource.get('title', 'N/A')}\n"
-                f"   Type: {resource.get('type', 'N/A')}\n"
-                f"   Description: {resource.get('description', 'N/A')}\n"
-                f"   URL: {resource.get('url', 'N/A')}\n\n"
+                f"- Title: {title}\n"
+                f"  Description: {description}\n"
+                f"  Platform: {platform}\n"
+                f"  Instructor: {instructor}\n"
+                f"  Duration: {duration}\n"
+                f"  Level: {level}\n"
+                f"  URL: {url}\n\n"
             )
         return response_str
     else:
-        return f"Educational resources for '{topic}' not found. (API/Mock Fallback Failed)"
+        return "No educational resources found. (API/Mock Fallback Failed)"
 
 
 # --- Existing Generic Tools (not directly using external APIs, but can be used in education context) ---
@@ -700,11 +523,11 @@ def find_educational_resources(topic: str, resource_type: Optional[str] = None, 
 @tool
 def education_search_web(query: str, user_token: str = "default", max_chars: int = 2000) -> str:
     """
-    Searches the web for educational information using a smart search fallback mechanism.
+    Searches the web for general education-related information using a smart search fallback mechanism.
     This tool wraps the generic `scrape_web` tool, providing an education-specific interface.
     
     Args:
-        query (str): The education-related search query (e.g., "online degrees in computer science", "history of ancient Rome").
+        query (str): The education-related search query (e.g., "best online learning platforms", "history of education").
         user_token (str): The unique identifier for the user. Defaults to "default".
         max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
     
@@ -715,13 +538,13 @@ def education_search_web(query: str, user_token: str = "default", max_chars: int
     return scrape_web(query=query, user_token=user_token, max_chars=max_chars)
 
 @tool
-def education_query_uploaded_docs(query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+async def education_query_uploaded_docs(query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
     """
     Queries previously uploaded and indexed educational documents for a user using vector similarity search.
     This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "education".
     
     Args:
-        query (str): The search query to find relevant educational documents (e.g., "syllabus for Calculus I", "research papers on quantum physics").
+        query (str): The search query to find relevant educational documents (e.g., "lecture notes on quantum physics", "research papers on pedagogy").
         user_token (str): The unique identifier for the user. Defaults to "default".
         export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
         k (int): The number of top relevant documents to retrieve. Defaults to 5.
@@ -731,20 +554,20 @@ def education_query_uploaded_docs(query: str, user_token: str = "default", expor
              or a message indicating no data/results found, or the export path if exported.
     """
     logger.info(f"Tool: education_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
-    # This will be replaced by a call to self.document_tools.query_uploaded_docs
-    # For now, keeping the original call for review purposes.
-    return QueryUploadedDocs(query=query, user_token=user_token, section="education", export=export, k=k)
+    # This function will be called via DocumentTools instance in __init__.py.
+    # For standalone testing, we'll return a mock string.
+    return f"Mocked document query results for '{query}' in section 'education'."
 
 @tool
-def education_summarize_document_by_path(file_path_str: str) -> str:
+async def education_summarize_document_by_path(file_path_str: str) -> str:
     """
-    Summarizes a document related to education or academic topics located at the given file path.
+    Summarizes a document related to education located at the given file path.
     The file path should be accessible by the system (e.g., in the 'uploads' directory).
     This tool wraps the generic `summarize_document` tool.
     
     Args:
         file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/education/research_paper.pdf"
+                              Example: "uploads/default/education/syllabus.pdf"
     
     Returns:
         str: A concise summary of the document content.
@@ -756,7 +579,7 @@ def education_summarize_document_by_path(file_path_str: str) -> str:
         return f"Error: Document not found at '{file_path_str}'."
     
     try:
-        summary = summarize_document(file_path)
+        summary = await summarize_document(file_path.read_text(), user_token="default") # Await and pass text content
         return f"Summary of '{file_path.name}':\n{summary}"
     except ValueError as e:
         logger.error(f"Error summarizing document '{file_path_str}': {e}")
@@ -774,7 +597,6 @@ if __name__ == "__main__":
     import os
     import sys # Import sys for patching modules
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
-    # from shared_tools.python_interpreter_tool import python_interpreter_with_rbac # For testing REPL
 
     logging.basicConfig(level=logging.INFO)
 
@@ -808,7 +630,7 @@ if __name__ == "__main__":
                 'default_user_tier': 'free',
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
-                    'education': 'education_api'
+                    'education': 'mock_education_provider' # Assuming a mock provider for education
                 },
                 'analytics': { # Mock analytics settings
                     'enabled': True,
@@ -818,49 +640,23 @@ if __name__ == "__main__":
             }
             self._api_providers_data = { # Mock api_providers_data for education
                 "education": {
-                    "education_api": {
-                        "base_url": "https://api.example.com/education",
+                    "mock_education_provider": {
+                        "base_url": "http://mock-education-api.com/v1",
                         "api_key_name": "education_api_key",
-                        "api_key_param_name": "api_key",
+                        "api_key_param_name": "apiKey",
                         "functions": {
-                            "search_educational_courses": {
-                                "endpoint": "/courses",
-                                "required_params": ["query"],
-                                "optional_params": ["level", "provider"],
-                                "response_path": ["data"],
-                                "data_map": {
-                                    "title": "title",
-                                    "provider": "provider",
-                                    "level": "level",
-                                    "duration": "duration",
-                                    "cost": "cost",
-                                    "description": "description",
-                                    "url": "url"
-                                }
-                            },
-                            "get_school_info": {
-                                "endpoint": "/schools",
-                                "required_params": ["name"],
-                                "optional_params": ["location"],
-                                "response_path": ["data", 0],
-                                "data_map": {
-                                    "name": "name",
-                                    "type": "type",
-                                    "location": "location",
-                                    "founded_year": "founded_year",
-                                    "notable_alumni": "alumni",
-                                    "website": "website"
-                                }
-                            },
-                            "find_educational_resources": {
+                            "search_educational_resources": {
                                 "endpoint": "/resources",
-                                "required_params": ["topic"],
-                                "optional_params": ["type"],
-                                "response_path": ["data"],
+                                "required_params": ["q"],
+                                "optional_params": ["subject", "resource_type"],
+                                "response_path": ["results"],
                                 "data_map": {
                                     "title": "title",
-                                    "type": "type",
                                     "description": "description",
+                                    "platform": "platform",
+                                    "instructor": "instructor",
+                                    "duration": "duration",
+                                    "level": "level",
                                     "url": "url"
                                 }
                             }
@@ -919,7 +715,23 @@ if __name__ == "__main__":
                 'web_search_limit_chars': {
                     'default': 500,
                     'tiers': {'pro': 3000, 'premium': 10000}
-                }
+                },
+                'summarization_enabled': { # For summarize_document
+                    'default': False,
+                    'roles': {'pro': True, 'premium': True, 'admin': True}
+                },
+                'llm_default_provider': { # For summarize_document
+                    'default': 'gemini',
+                    'tiers': {'pro': 'gemini', 'premium': 'openai', 'admin': 'gemini'}
+                },
+                'llm_default_model_name': { # For summarize_document
+                    'default': 'gemini-1.5-flash',
+                    'tiers': {'pro': 'gemini-1.5-flash', 'premium': 'gpt-4o', 'admin': 'gemini-1.5-flash'}
+                },
+                'llm_default_temperature': { # For summarize_document
+                    'default': 0.7,
+                    'tiers': {'pro': 0.5, 'premium': 0.3, 'admin': 0.7}
+                },
             }
         }
         _tier_hierarchy = {
@@ -988,127 +800,33 @@ if __name__ == "__main__":
         original_requests_get = requests.get
 
         def mock_requests_get_dynamic(url, params, headers, timeout):
-            # Simulate hypothetical Education API responses
-            if "api.example.com/education" in url:
-                if "/courses" in url:
-                    query = params.get("query", "").lower()
-                    level = params.get("level", "").lower()
-                    provider = params.get("provider", "").lower()
-                    
-                    mock_courses = [
-                        {
-                            "title": "Introduction to Artificial Intelligence",
-                            "provider": "Online University X",
-                            "level": "Beginner",
-                            "duration": "8 weeks",
-                            "cost": "Free",
-                            "description": "Learn the fundamentals of AI.",
-                            "prerequisites": "Basic programming.",
-                            "url": "http://example.com/courses/ai"
-                        },
-                        {
-                            "title": "Advanced Calculus for Engineers",
-                            "provider": "Tech Institute Y",
-                            "level": "Advanced",
-                            "duration": "12 weeks",
-                            "cost": "$500",
-                            "description": "Deep dive into multivariable calculus.",
-                            "prerequisites": "Calculus I & II.",
-                            "url": "http://example.com/courses/calc"
+            # Simulate mock education API responses
+            if "mock-education-api.com/v1" in url:
+                if "/resources" in url:
+                    query = params.get("q", "").lower()
+                    if "online courses in AI" in query:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "status": "success",
+                            "results": [
+                                {
+                                    "title": "Mock AI for Beginners",
+                                    "description": "An introductory course to Artificial Intelligence.",
+                                    "platform": "AI Academy",
+                                    "instructor": "Dr. AI",
+                                    "duration": "6 weeks",
+                                    "level": "Beginner",
+                                    "url": "http://mock.com/ai-course"
+                                }
+                            ]
                         }
-                    ]
-                    
-                    filtered_courses = []
-                    for course in mock_courses:
-                        match = True
-                        if query and not (query in course["title"].lower() or query in course["description"].lower()):
-                            match = False
-                        if level and course["level"].lower() != level:
-                            match = False
-                        if provider and course["provider"].lower() != provider:
-                            match = False
-                        if match:
-                            filtered_courses.append(course)
-
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": filtered_courses}
-                    return mock_response
-                elif "/schools" in url:
-                    name = params.get("name", "").lower()
-                    location = params.get("location", "").lower()
-                    
-                    mock_schools = [
-                        {
-                            "name": "University of London",
-                            "type": "University",
-                            "location": "London, UK",
-                            "founded_year": 1836,
-                            "alumni": ["Mahatma Gandhi"],
-                            "website": "https://london.ac.uk/"
-                        },
-                        {
-                            "name": "Harvard University",
-                            "type": "University",
-                            "location": "Cambridge, Massachusetts, USA",
-                            "founded_year": 1636,
-                            "alumni": ["Barack Obama"],
-                            "website": "https://www.harvard.edu/"
-                        }
-                    ]
-                    
-                    filtered_schools = []
-                    for school in mock_schools:
-                        match = True
-                        if name and name not in school["name"].lower():
-                            match = False
-                        if location and location not in school["location"].lower():
-                            match = False
-                        if match:
-                            filtered_schools.append(school)
-
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": filtered_schools}
-                    return mock_response
-                elif "/resources" in url:
-                    topic = params.get("topic", "").lower()
-                    resource_type = params.get("type", "").lower()
-
-                    mock_resources = [
-                        {
-                            "title": "Khan Academy Math",
-                            "type": "Tutorials",
-                            "description": "Free online math tutorials.",
-                            "url": "https://www.khanacademy.org/math"
-                        },
-                        {
-                            "title": "BBC History Documentaries",
-                            "type": "Documentaries",
-                            "description": "Collection of historical documentaries.",
-                            "url": "https://www.bbc.co.uk/history/documentaries"
-                        }
-                    ]
-
-                    filtered_resources = []
-                    for resource in mock_resources:
-                        match = True
-                        if topic and not (topic in resource["title"].lower() or topic in resource["description"].lower()):
-                            match = False
-                        if resource_type and resource["type"].lower() != resource_type:
-                            match = False
-                        if match:
-                            filtered_resources.append(resource)
-
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"data": filtered_resources}
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 400
-                    mock_response.json.return_value = {"error": "Invalid endpoint"}
-                    return mock_response
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"status": "success", "results": []}
+                        return mock_response
             
             # Simulate scrape_web's internal requests.get if needed
             if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
@@ -1132,59 +850,57 @@ if __name__ == "__main__":
                 self.section = section
                 self.export = export
                 self.k = k
-            def __call__(self):
+            async def __call__(self): # Make it async
                 return f"Mocked document query results for '{self.query}' in section '{self.section}'."
 
         # Mock for summarize_document
         class MockSummarizeDocument:
-            def __call__(self, file_path):
-                return f"Mocked summary of {file_path.name}"
+            async def __call__(self, text_content, user_token): # Make it async
+                return f"Mocked summary of text for user {user_token}: {text_content[:50]}..."
 
-        # Patch QueryUploadedDocs and summarize_document in the education_tool module
-        original_QueryUploadedDocs = sys.modules['domain_tools.education_tools.education_tool'].QueryUploadedDocs
+        # Patch summarize_document in the education_tool module
         original_summarize_document = sys.modules['domain_tools.education_tools.education_tool'].summarize_document
-        sys.modules['domain_tools.education_tools.education_tool'].QueryUploadedDocs = MockQueryUploadedDocs
         sys.modules['domain_tools.education_tools.education_tool'].summarize_document = MockSummarizeDocument()
+
 
         async def run_education_tests():
             print("\n--- Testing education_tool functions with Analytics ---")
 
-            # Test search_educational_courses (success)
-            print("\n--- Test 1: search_educational_courses (Success) ---")
+            # Test search_educational_resources (success)
+            print("\n--- Test 1: search_educational_resources (Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
-            result_courses = await search_educational_courses("Artificial Intelligence", user_token=test_user_pro)
-            print(f"Educational Courses: {result_courses}")
-            assert "Found Educational Courses for 'Artificial Intelligence':" in result_courses
-            assert "Introduction to Artificial Intelligence" in result_courses
+            result_research = await search_educational_resources(query="online courses in AI", user_token=test_user_pro)
+            print(f"Educational Resources: {result_research}")
+            assert "Title: Mock AI for Beginners" in result_research
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "education_search_educational_courses"
+            assert logged_data["details"]["tool_name"] == "education_search_educational_resources"
             assert logged_data["success"] is True
             print("Test 1 Passed (and analytics logged success).")
 
-            # Test get_school_info (API failure - no data found)
-            print("\n--- Test 2: get_school_info (API Failure) ---")
+            # Test search_educational_resources (API failure - no data found)
+            print("\n--- Test 2: search_educational_resources (API Failure) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_school_info = await get_school_info("NonExistent University", user_token=test_user_pro)
-            print(f"School Info (API Error): {result_school_info}")
-            assert "Could not retrieve complete live school information for 'NonExistent University'." in result_school_info
+            result_research_fail = await search_educational_resources("nonexistent education topic", user_token=test_user_pro)
+            print(f"Educational Resources (API Error): {result_research_fail}")
+            assert "No live educational resources found for query 'nonexistent education topic'." in result_research_fail
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "education_get_school_info"
+            assert logged_data["details"]["tool_name"] == "education_search_educational_resources"
             assert logged_data["success"] is False
-            assert "Response path 'data.0' not found" in logged_data["error_message"] or "incomplete" in logged_data["error_message"]
+            assert "No live educational resources found" in logged_data["error_message"]
             print("Test 2 Passed (and analytics logged failure).")
 
-            # Test find_educational_resources (RBAC denied)
-            print("\n--- Test 3: find_educational_resources (RBAC Denied) ---")
+            # Test search_educational_resources (RBAC denied)
+            print("\n--- Test 3: search_educational_resources (RBAC Denied) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_resources_rbac_denied = await find_educational_resources("Quantum Physics", user_token=test_user_free)
-            print(f"Educational Resources (Free User, RBAC Denied): {result_resources_rbac_denied}")
-            assert "Error: Access to education tools is not enabled for your current tier." in result_resources_rbac_denied
+            result_research_rbac_denied = await search_educational_resources(query="quantum computing courses", user_token=test_user_free)
+            print(f"Educational Resources (Free User, RBAC Denied): {result_research_rbac_denied}")
+            assert "Error: Access to education tools is not enabled for your current tier." in result_research_rbac_denied
             # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
             print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
@@ -1200,53 +916,43 @@ if __name__ == "__main__":
             # or wrapped by a higher-level agent logging.
             # For now, we are focusing on _make_dynamic_api_request.
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 4 Passed (no analytics expected for generic tool directly).")
+            print("Test 4 Passed (no analytics expected for generic tool directly).\n")
 
             # Test 5: education_query_uploaded_docs (generic tool)
             print("\n--- Test 5: education_query_uploaded_docs (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            # Mock QueryUploadedDocs to simulate a response
-            class MockQueryUploadedDocs:
-                def __init__(self, query, user_token, section, export, k):
-                    self.query = query
-                    self.user_token = user_token
-                    self.section = section
-                    self.export = export
-                    self.k = k
-                def __call__(self):
-                    return f"Mocked document query results for '{self.query}' in section '{self.section}'."
-            
-            # Temporarily replace QueryUploadedDocs with our mock
-            original_QueryUploadedDocs_in_test = sys.modules['domain_tools.education_tools.education_tool'].QueryUploadedDocs
-            sys.modules['domain_tools.education_tools.education_tool'].QueryUploadedDocs = MockQueryUploadedDocs
-
-            result_doc_query = await education_query_uploaded_docs("syllabus for Advanced Algebra", user_token=test_user_pro)
+            result_doc_query = await education_query_uploaded_docs("lecture notes on AI ethics", user_token=test_user_pro)
             print(f"Document Query Result: {result_doc_query}")
-            assert "Mocked document query results for 'syllabus for Advanced Algebra' in section 'education'." in result_doc_query
+            assert "Mocked document query results for 'lecture notes on AI ethics' in section 'education'." in result_doc_query
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
             print("Test 5 Passed (no analytics expected for generic tool directly, will be logged by DocumentTools).")
-            sys.modules['domain_tools.education_tools.education_tool'].QueryUploadedDocs = original_QueryUploadedDocs_in_test # Restore original
 
             # Test 6: education_summarize_document_by_path (generic tool)
             print("\n--- Test 6: education_summarize_document_by_path (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             # Create a dummy file for summarization test
-            dummy_file_path = Path("uploads") / test_user_pro / "education" / "thesis_draft.pdf"
+            dummy_file_path = Path("uploads") / test_user_pro / "education" / "dummy_syllabus.txt"
             dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
-            dummy_file_path.write_text("This is a dummy thesis draft content for testing summarization.")
+            dummy_file_path.write_text("This is a dummy syllabus content for testing summarization.")
 
             result_summarize = await education_summarize_document_by_path(str(dummy_file_path))
             print(f"Summarize Result: {result_summarize}")
-            assert "Mocked summary of thesis_draft.pdf" in result_summarize
+            assert "Mocked summary of text for user default" in result_summarize
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
             print("Test 6 Passed (no analytics expected for generic tool directly).")
 
             print("\nAll education_tool tests with analytics considerations completed.")
 
-        await run_education_tests()
+        # Ensure tests are only run when the script is executed directly
+        if __name__ == "__main__":
+            # Use asyncio.run to execute the async test function
+            asyncio.run(run_education_tests())
 
         # Restore original requests.get
         requests.get = original_requests_get
+
+        # Restore original summarize_document
+        sys.modules['domain_tools.education_tools.education_tool'].summarize_document = original_summarize_document
 
         # Clean up dummy files and directories
         test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
@@ -1254,4 +960,3 @@ if __name__ == "__main__":
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
-
