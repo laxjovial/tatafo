@@ -143,67 +143,57 @@ async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_curr
 document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
 
 # Initialize domain tool instances, passing necessary dependencies
-# Each tool class receives the managers it needs, ensuring the order matches their __init__ signatures.
-# Assuming the __init__ signature for these tools is:
-# __init__(self, config_manager, firestore_manager, log_event, document_tools)
+# Based on the CryptoTools __init__ signature, it expects:
+# __init__(self, config_manager, log_event, document_tools)
+# We will assume this pattern for other tools as well unless specified otherwise.
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "crypto_tools": CryptoTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "medical_tools": MedicalTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "news_tools": NewsTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "legal_tools": LegalTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "education_tools": EducationTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "entertainment_tools": EntertainmentTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "weather_tools": WeatherTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "travel_tools": TravelTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
     "sports_tools": SportsTools(
         config_manager, # Positional argument
-        firestore_manager, # Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
@@ -252,7 +242,7 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 @app.get("/user/profile")
-async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(oauth2_scheme)): # Changed to oauth2_scheme
+async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Retrieves the profile of the current authenticated user."""
     logger.info(f"User {current_user['uid']} requesting profile.")
     return {"user": current_user}
