@@ -428,7 +428,6 @@ if __name__ == "__main__":
     sys.modules['shared_tools.scraper_tool'].scrape_web = MockScrapeWeb()
 
     async def run_document_tools_tests():
-        print("\n--- Testing DocumentTools ---")
         test_user_pro = "test_user_pro"
         test_user_free = "test_user_free"
 
@@ -453,201 +452,204 @@ if __name__ == "__main__":
             log_event_func=mock_log_event_for_dt
         )
 
-        # Test 1: document_query_uploaded_docs (Success for Pro User)
-        print("\n--- Test 1: document_query_uploaded_docs (Success) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        result_query = await document_tools.document_query_uploaded_docs(
-            query="test document",
-            user_token=test_user_pro,
-            k=5
-        )
-        print(f"Query Result: {result_query}")
-        assert "Mocked document query result for 'test document' (k=5)." in result_query
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_query_uploaded_docs",
-            tool_params={"query": "test document", "export": False, "k": 5},
-            user_token=test_user_pro,
-            success=True
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 1 Passed.")
+        try:
+            print("\n--- Testing DocumentTools ---")
 
-        # Test 2: document_query_uploaded_docs (RBAC Denied for Free User)
-        print("\n--- Test 2: document_query_uploaded_docs (RBAC Denied) ---")
-        result_query_rbac_denied = await document_tools.document_query_uploaded_docs(
-            query="sensitive data",
-            user_token=test_user_free,
-            k=5
-        )
-        print(f"Query Result (RBAC Denied): {result_query_rbac_denied}")
-        assert "Error: Access to document query tools is not enabled for your current tier." in result_query_rbac_denied
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_query_uploaded_docs",
-            tool_params={"query": "sensitive data", "export": False, "k": 5},
-            user_token=test_user_free,
-            success=False,
-            error_message="Error: Access to document query tools is not enabled for your current tier."
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 2 Passed.")
+            # Test 1: document_query_uploaded_docs (Success for Pro User)
+            print("\n--- Test 1: document_query_uploaded_docs (Success) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            result_query = await document_tools.document_query_uploaded_docs(
+                query="test document",
+                user_token=test_user_pro,
+                k=5
+            )
+            print(f"Query Result: {result_query}")
+            assert "Mocked document query result for 'test document' (k=5)." in result_query
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_query_uploaded_docs",
+                tool_params={"query": "test document", "export": False, "k": 5},
+                user_token=test_user_pro,
+                success=True
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 1 Passed.")
 
-        # Test 3: document_query_uploaded_docs (k limit by tier)
-        print("\n--- Test 3: document_query_uploaded_docs (k limit) ---")
-        result_query_k_limit = await document_tools.document_query_uploaded_docs(
-            query="another document",
-            user_token=test_user_pro,
-            k=15 # Pro tier limit is 10
-        )
-        print(f"Query Result (k limit): {result_query_k_limit}")
-        assert "Mocked document query for 'another document' (k=10)." in result_query_k_limit # Should be 10, not 15
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_query_uploaded_docs",
-            tool_params={"query": "another document", "export": False, "k": 10}, # Logged k should be 10
-            user_token=test_user_pro,
-            success=True
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 3 Passed.")
+            # Test 2: document_query_uploaded_docs (RBAC Denied for Free User)
+            print("\n--- Test 2: document_query_uploaded_docs (RBAC Denied) ---")
+            result_query_rbac_denied = await document_tools.document_query_uploaded_docs(
+                query="sensitive data",
+                user_token=test_user_free,
+                k=5
+            )
+            print(f"Query Result (RBAC Denied): {result_query_rbac_denied}")
+            assert "Error: Access to document query tools is not enabled for your current tier." in result_query_rbac_denied
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_query_uploaded_docs",
+                tool_params={"query": "sensitive data", "export": False, "k": 5},
+                user_token=test_user_free,
+                success=False,
+                error_message="Error: Access to document query tools is not enabled for your current tier."
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 2 Passed.")
 
-        # Test 4: document_process_uploaded_document (Success)
-        print("\n--- Test 4: document_process_uploaded_document (Success) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        test_file_name = "report.pdf"
-        test_file_content_base64 = base64.b64encode(b"This is a dummy PDF content.").decode('utf-8')
-        result_upload = await document_tools.document_process_uploaded_document(
-            file_name=test_file_name,
-            file_content_base64=test_file_content_base64,
-            user_token=test_user_pro
-        )
-        print(f"Upload Result: {result_upload}")
-        assert "Document 'report.pdf' uploaded and indexed successfully with ID: mock_doc_1." in result_upload
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_process_uploaded_document",
-            tool_params={"file_name": test_file_name},
-            user_token=test_user_pro,
-            success=True
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 4 Passed.")
+            # Test 3: document_query_uploaded_docs (k limit by tier)
+            print("\n--- Test 3: document_query_uploaded_docs (k limit) ---")
+            result_query_k_limit = await document_tools.document_query_uploaded_docs(
+                query="another document",
+                user_token=test_user_pro,
+                k=15 # Pro tier limit is 10
+            )
+            print(f"Query Result (k limit): {result_query_k_limit}")
+            assert "Mocked document query for 'another document' (k=10)." in result_query_k_limit # Should be 10, not 15
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_query_uploaded_docs",
+                tool_params={"query": "another document", "export": False, "k": 10}, # Logged k should be 10
+                user_token=test_user_pro,
+                success=True
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 3 Passed.")
 
-        # Test 5: document_process_uploaded_document (RBAC Denied)
-        print("\n--- Test 5: document_process_uploaded_document (RBAC Denied) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        result_upload_rbac_denied = await document_tools.document_process_uploaded_document(
-            file_name="secret.docx",
-            file_content_base64=base64.b64encode(b"Secret content.").decode('utf-8'),
-            user_token=test_user_free
-        )
-        print(f"Upload Result (RBAC Denied): {result_upload_rbac_denied}")
-        assert "Error: Access to document upload tools is not enabled for your current tier." in result_upload_rbac_denied
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_process_uploaded_document",
-            tool_params={"file_name": "secret.docx"},
-            user_token=test_user_free,
-            success=False,
-            error_message="Error: Access to document upload tools is not enabled for your current tier."
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 5 Passed.")
+            # Test 4: document_process_uploaded_document (Success)
+            print("\n--- Test 4: document_process_uploaded_document (Success) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            test_file_name = "report.pdf"
+            test_file_content_base64 = base64.b64encode(b"This is a dummy PDF content.").decode('utf-8')
+            result_upload = await document_tools.document_process_uploaded_document(
+                file_name=test_file_name,
+                file_content_base64=test_file_content_base64,
+                user_token=test_user_pro
+            )
+            print(f"Upload Result: {result_upload}")
+            assert "Document 'report.pdf' uploaded and indexed successfully with ID: mock_doc_1." in result_upload
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_process_uploaded_document",
+                tool_params={"file_name": test_file_name},
+                user_token=test_user_pro,
+                success=True
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 4 Passed.")
 
-        # Test 6: document_summarize_document_by_path (Success)
-        print("\n--- Test 6: document_summarize_document_by_path (Success) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        # Create a dummy file for summarization test
-        dummy_file_path = Path("uploads") / test_user_pro / "document" / "test_report.txt"
-        dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
-        dummy_file_path.write_text("This is a dummy test report content for summarization.")
+            # Test 5: document_process_uploaded_document (RBAC Denied)
+            print("\n--- Test 5: document_process_uploaded_document (RBAC Denied) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            result_upload_rbac_denied = await document_tools.document_process_uploaded_document(
+                file_name="secret.docx",
+                file_content_base64=base64.b64encode(b"Secret content.").decode('utf-8'),
+                user_token=test_user_free
+            )
+            print(f"Upload Result (RBAC Denied): {result_upload_rbac_denied}")
+            assert "Error: Access to document upload tools is not enabled for your current tier." in result_upload_rbac_denied
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_process_uploaded_document",
+                tool_params={"file_name": "secret.docx"},
+                user_token=test_user_free,
+                success=False,
+                error_message="Error: Access to document upload tools is not enabled for your current tier."
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 5 Passed.")
 
-        result_summarize = await document_tools.document_summarize_document_by_path(
-            file_path_str=str(dummy_file_path),
-            user_token=test_user_pro
-        )
-        print(f"Summarize Result: {result_summarize}")
-        assert "Mocked summary of test_report.txt" in result_summarize
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_summarize_document_by_path",
-            tool_params={"file_path_str": str(dummy_file_path)},
-            user_token=test_user_pro,
-            success=True
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 6 Passed.")
-        if dummy_file_path.exists():
-            os.remove(dummy_file_path) # Clean up dummy file
+            # Test 6: document_summarize_document_by_path (Success)
+            print("\n--- Test 6: document_summarize_document_by_path (Success) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            # Create a dummy file for summarization test
+            dummy_file_path = Path("uploads") / test_user_pro / "document" / "test_report.txt"
+            dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
+            dummy_file_path.write_text("This is a dummy test report content for summarization.")
 
-        # Test 7: document_summarize_document_by_path (RBAC Denied)
-        print("\n--- Test 7: document_summarize_document_by_path (RBAC Denied) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        result_summarize_rbac_denied = await document_tools.document_summarize_document_by_path(
-            file_path_str="uploads/test_user_free/document/secret_doc.pdf",
-            user_token=test_user_free
-        )
-        print(f"Summarize Result (RBAC Denied): {result_summarize_rbac_denied}")
-        assert "Error: Access to document summarization tools is not enabled for your current tier." in result_summarize_rbac_denied
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_summarize_document_by_path",
-            tool_params={"file_path_str": "uploads/test_user_free/document/secret_doc.pdf"},
-            user_token=test_user_free,
-            success=False,
-            error_message="Error: Access to document summarization tools is not enabled for your current tier."
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 7 Passed.")
+            result_summarize = await document_tools.document_summarize_document_by_path(
+                file_path_str=str(dummy_file_path),
+                user_token=test_user_pro
+            )
+            print(f"Summarize Result: {result_summarize}")
+            assert "Mocked summary of test_report.txt" in result_summarize
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_summarize_document_by_path",
+                tool_params={"file_path_str": str(dummy_file_path)},
+                user_token=test_user_pro,
+                success=True
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 6 Passed.")
+            if dummy_file_path.exists():
+                os.remove(dummy_file_path) # Clean up dummy file
 
-        # Test 8: document_search_web (Success)
-        print("\n--- Test 8: document_search_web (Success) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        result_web_search = await document_tools.document_search_web(
-            query="web search success",
-            user_token=test_user_pro,
-            max_chars=500
-        )
-        print(f"Web Search Result: {result_web_search}")
-        assert "Search results for 'web search success': This is a mocked web page content up to 500 characters." in result_web_search
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_search_web",
-            tool_params={"query": "web search success", "max_chars": 500},
-            user_token=test_user_pro,
-            success=True
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 8 Passed.")
+            # Test 7: document_summarize_document_by_path (RBAC Denied)
+            print("\n--- Test 7: document_summarize_document_by_path (RBAC Denied) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            result_summarize_rbac_denied = await document_tools.document_summarize_document_by_path(
+                file_path_str="uploads/test_user_free/document/secret_doc.pdf",
+                user_token=test_user_free
+            )
+            print(f"Summarize Result (RBAC Denied): {result_summarize_rbac_denied}")
+            assert "Error: Access to document summarization tools is not enabled for your current tier." in result_summarize_rbac_denied
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_summarize_document_by_path",
+                tool_params={"file_path_str": "uploads/test_user_free/document/secret_doc.pdf"},
+                user_token=test_user_free,
+                success=False,
+                error_message="Error: Access to document summarization tools is not enabled for your current tier."
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 7 Passed.")
 
-        # Test 9: document_search_web (RBAC Denied)
-        print("\n--- Test 9: document_search_web (RBAC Denied) ---")
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        result_web_search_rbac_denied = await document_tools.document_search_web(
-            query="public records",
-            user_token=test_user_free,
-            max_chars=500
-        )
-        print(f"Web Search Result (RBAC Denied): {result_web_search_rbac_denied}")
-        assert "Error: Access to web search tools is not enabled for your current tier." in result_web_search_rbac_denied
-        mock_analytics_tracker_log_tool_usage.assert_called_once_with(
-            tool_name="document_search_web",
-            tool_params={"query": "public records", "max_chars": 500},
-            user_token=test_user_free,
-            success=False,
-            error_message="Error: Access to web search tools is not enabled for your current tier."
-        )
-        mock_analytics_tracker_log_tool_usage.reset_mock()
-        print("Test 9 Passed.")
+            # Test 8: document_search_web (Success)
+            print("\n--- Test 8: document_search_web (Success) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            result_web_search = await document_tools.document_search_web(
+                query="web search success",
+                user_token=test_user_pro,
+                max_chars=500
+            )
+            print(f"Web Search Result: {result_web_search}")
+            assert "Search results for 'web search success': This is a mocked web page content up to 500 characters." in result_web_search
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_search_web",
+                tool_params={"query": "web search success", "max_chars": 500},
+                user_token=test_user_pro,
+                success=True
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 8 Passed.")
 
-        print("\nAll DocumentTools tests completed.")
+            # Test 9: document_search_web (RBAC Denied)
+            print("\n--- Test 9: document_search_web (RBAC Denied) ---")
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            result_web_search_rbac_denied = await document_tools.document_search_web(
+                query="public records",
+                user_token=test_user_free,
+                max_chars=500
+            )
+            print(f"Web Search Result (RBAC Denied): {result_web_search_rbac_denied}")
+            assert "Error: Access to web search tools is not enabled for your current tier." in result_web_search_rbac_denied
+            mock_analytics_tracker_log_tool_usage.assert_called_once_with(
+                tool_name="document_search_web",
+                tool_params={"query": "public records", "max_chars": 500},
+                user_token=test_user_free,
+                success=False,
+                error_message="Error: Access to web search tools is not enabled for your current tier."
+            )
+            mock_analytics_tracker_log_tool_usage.reset_mock()
+            print("Test 9 Passed.")
 
-    finally:
-        # Restore original imports
-        sys.modules['utils.user_manager'].get_user_tier_capability = original_get_user_tier_capability
-        sys.modules['config.config_manager'].config_manager = original_config_manager_instance
-        analytics_tracker.log_tool_usage = original_analytics_tracker_log_tool_usage
-        sys.modules['shared_tools.doc_summarizer'].summarize_document = original_summarize_document
-        sys.modules['shared_tools.scraper_tool'].scrape_web = original_scrape_web
+            print("\nAll DocumentTools tests completed.")
 
-        # Clean up dummy directories if they were created by tests
-        test_user_pro_uploads_dir = Path("uploads") / "test_user_pro"
-        if test_user_pro_uploads_dir.exists():
-            shutil.rmtree(test_user_pro_uploads_dir, ignore_errors=True)
-            logger.info(f"Cleaned up {test_user_pro_uploads_dir}")
+        finally:
+            # Restore original imports
+            sys.modules['utils.user_manager'].get_user_tier_capability = original_get_user_tier_capability
+            sys.modules['config.config_manager'].config_manager = original_config_manager_instance
+            analytics_tracker.log_tool_usage = original_analytics_tracker_log_tool_usage
+            sys.modules['shared_tools.doc_summarizer'].summarize_document = original_summarize_document
+            sys.modules['shared_tools.scraper_tool'].scrape_web = original_scrape_web
+
+            # Clean up dummy directories if they were created by tests
+            test_user_pro_uploads_dir = Path("uploads") / test_user_pro
+            if test_user_pro_uploads_dir.exists():
+                shutil.rmtree(test_user_pro_uploads_dir, ignore_errors=True)
+                logger.info(f"Cleaned up {test_user_pro_uploads_dir}")
 
     if __name__ == "__main__":
         asyncio.run(run_document_tools_tests())
