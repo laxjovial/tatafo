@@ -7,7 +7,10 @@ from typing import Optional, Dict, Any
 from .travel_tool import (
     search_flights,
     search_hotels,
-    get_destination_info
+    get_destination_info,
+    travel_search_web, # Added
+    travel_query_uploaded_docs, # Added
+    travel_summarize_document_by_path # Added
 )
 
 logger = logging.getLogger(__name__)
@@ -18,16 +21,18 @@ class TravelTools:
     This class acts as a wrapper to group related tool functions and
     provides a consistent interface for the main application.
     """
-    def __init__(self, config_manager: Any, log_event: Any):
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any): # Added document_tools
         """
         Initializes the TravelTools with necessary dependencies.
 
         Args:
             config_manager (Any): The configuration manager instance.
             log_event (Any): The analytics logging function.
+            document_tools (Any): The DocumentTools instance for document querying. # Added
         """
         self.config_manager = config_manager
         self.log_event = log_event
+        self.document_tools = document_tools # Stored
         logger.info("TravelTools initialized.")
 
     # Expose individual tool functions as methods of this class
@@ -52,3 +57,27 @@ class TravelTools:
         """
         return await get_destination_info(city=city, user_token=user_token)
 
+    async def travel_search_web(self, query: str, user_token: str = "default", max_chars: int = 2000) -> str:
+        """
+        Searches the web for general travel information using a smart search fallback mechanism.
+        """
+        return await travel_search_web(query=query, user_token=user_token, max_chars=max_chars)
+
+    async def travel_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+        """
+        Queries previously uploaded and indexed travel documents for a user.
+        """
+        # This now calls the DocumentTools instance
+        return await self.document_tools.query_uploaded_docs(
+            query_text=query,
+            user_token=user_token,
+            collection_name="travel", # Specific collection for travel documents
+            export=export,
+            k=k
+        )
+
+    async def travel_summarize_document_by_path(self, file_path_str: str) -> str:
+        """
+        Summarizes a document related to travel (e.g., travel guides, visa applications) located at the given file path.
+        """
+        return await travel_summarize_document_by_path(file_path_str=file_path_str) # Call the function from travel_tool.py
