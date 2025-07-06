@@ -20,7 +20,7 @@ from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import module
 import shared_tools.vector_utils as vector_utils_module # Import module
 from utils.date_parser import parse_date_to_yyyymmdd # Corrected import: changed from parse_date_string
-from utils.user_manager import UserManager
+from utils.user_manager import UserManager, get_user_tier_capability # Explicitly import get_user_tier_capability
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -73,6 +73,7 @@ initialize_analytics(db_client, auth_client, app_id_for_analytics, user_id_for_a
 logger.info("Analytics Tracker initialized.")
 
 # Initialize Cloud Storage Utils Wrapper
+# CORRECTED: Instantiate the CloudStorageUtilsWrapper class
 cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
 logger.info("CloudStorageUtilsWrapper initialized.")
 
@@ -258,7 +259,7 @@ async def upload_document_endpoint(
             file_name=file_name,
             file_content_base64=file_content_base64,
             firestore_manager=firestore_manager,
-            cloud_storage_utils=cloud_storage_utils,
+            cloud_storage_utils=cloud_storage_utils, # Pass the instantiated object
             config_manager=config_manager,
             log_event_func=log_event
         )
