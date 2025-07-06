@@ -10,7 +10,7 @@ import asyncio # Import asyncio
 
 # Import generic tools
 from langchain_core.tools import tool
-from shared_tools.scraper_tool import scrape_web
+from shared_tools.scrapper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 
 # Import config_manager to access API configurations and secrets
