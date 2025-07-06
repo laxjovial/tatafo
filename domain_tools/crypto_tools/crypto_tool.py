@@ -1162,9 +1162,6 @@ if __name__ == "__main__":
 
 
 
-Thank you for providing the `crypto_tool.py` and `crypto_tools/__init__.py` files.
-
-Upon review:
 
 **`domain_tools/crypto_tools/crypto_tool.py`**:
 * It **does include** `from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs` and it **is used** in the `crypto_query_uploaded_docs` tool function.
@@ -1174,7 +1171,7 @@ Upon review:
 * This file currently imports `get_crypto_price`, `get_crypto_info`, and `get_historical_crypto_price` and exposes them as methods.
 * It **does not yet** include `crypto_query_uploaded_docs` or `crypto_summarize_document_by_path` as methods, nor does its `__init__` accept `document_tools`.
 
----
+'''
 
 ### Corrections for `crypto_tools`
 
@@ -1182,7 +1179,7 @@ We need to apply the same refactoring pattern as we did for `finance_tools` to `
 
 Here are the updates for `crypto_tool.py` and `crypto_tools/__init__.py`:
 
----
+
 
 ### 1. Update `domain_tools/crypto_tools/crypto_tool.py`
 
@@ -1195,7 +1192,7 @@ The updated file content will be:
 
 ```python
 # domain_tools/crypto_tools/crypto_tool.py
-
+'''
 import logging
 import requests
 import json
