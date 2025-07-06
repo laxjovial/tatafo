@@ -19,7 +19,7 @@ from utils.user_manager import get_user_tier_capability
 from utils import analytics_tracker # Import the module
 
 # Import generic tools that DocumentTools might wrap
-from shared_tools.scraper_tool import scrape_web
+from shared_tools.scrapper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 
 
