@@ -6,7 +6,7 @@ import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime, timedelta
-import asyncio # Import asyncio
+import asyncio
 
 # Import generic tools
 from langchain_core.tools import tool
@@ -41,238 +41,199 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
             return None
     return current
 
-async def _make_dynamic_api_request( # Made async to await analytics_tracker.log_tool_usage
-    domain: str,
-    function_name: str,
-    params: Dict[str, Any],
-    user_token: str
-) -> Optional[Dict[str, Any]]:
+class FinanceTools:
     """
-    Makes an API request to the dynamically configured provider for a given domain and function.
-    Handles API key retrieval, request construction, and basic error handling.
-    Returns parsed JSON data or None on failure (triggering mock fallback).
-    Logs tool usage analytics.
+    A collection of tools for finance-related operations, including stock prices,
+    historical data, company overviews, and forex exchange rates.
+    It integrates with external APIs and provides fallback mechanisms.
     """
-    # Check if analytics is enabled for logging tool usage
-    log_tool_usage_enabled = config_manager.get("analytics.log_tool_usage", False)
+    def __init__(self, config_manager, firestore_manager, log_event, document_tools):
+        self.config_manager = config_manager
+        self.firestore_manager = firestore_manager
+        self.log_event = log_event
+        self.document_tools = document_tools # For finance_query_uploaded_docs and finance_summarize_document_by_path
 
-    # Get the default active API provider for the domain from data/config.yml
-    active_provider_name = config_manager.get(f"api_defaults.{domain}")
-    if not active_provider_name:
-        logger.error(f"No default API provider configured for domain '{domain}'.")
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=f"No default API provider configured for domain '{domain}'."
-            )
-        return None
+        # --- Mock Data for Fallback ---
+        self._mock_finance_data = {
+            "stock_prices": {
+                "GOOG": {"symbol": "GOOG", "price": 170.00, "currency": "USD", "timestamp": datetime.now().isoformat()},
+                "AAPL": {"symbol": "AAPL", "price": 180.50, "currency": "USD", "timestamp": datetime.now().isoformat()},
+            },
+            "historical_data": {
+                "GOOG": [
+                    {"date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"), "open": 165.00, "high": 168.00, "low": 164.00, "close": 167.50, "volume": 1000000},
+                    {"date": (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d"), "open": 167.00, "high": 170.00, "low": 166.00, "close": 169.50, "volume": 1200000},
+                ]
+            },
+            "company_overview": {
+                "GOOG": {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc.",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Internet Content & Information",
+                    "description": "Alphabet Inc. is an American multinational technology conglomerate holding company.",
+                    "market_cap": "2.2 Trillion USD"
+                }
+            },
+            "forex_rates": {
+                "USD_EUR": {"from_currency": "USD", "to_currency": "EUR", "rate": 0.92, "timestamp": datetime.now().isoformat()},
+                "EUR_GBP": {"from_currency": "EUR", "to_currency": "GBP", "rate": 0.85, "timestamp": datetime.now().isoformat()},
+            }
+        }
 
-    # Get the full configuration for the active provider from api_providers.yml
-    provider_config = config_manager.get_api_provider_config(domain, active_provider_name)
-    if not provider_config:
-        logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
-            )
-        return None
+    async def _make_dynamic_api_request(
+        self, # Added self
+        domain: str,
+        function_name: str,
+        params: Dict[str, Any],
+        user_token: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Makes an API request to the dynamically configured provider for a given domain and function.
+        Handles API key retrieval, request construction, and basic error handling.
+        Returns parsed JSON data or None on failure (triggering mock fallback).
+        Logs tool usage analytics.
+        """
+        # Check if analytics is enabled for logging tool usage
+        log_tool_usage_enabled = self.config_manager.get("analytics.log_tool_usage", False)
 
-    base_url = provider_config.get("base_url")
-    api_key_name = provider_config.get("api_key_name")
-    api_key = config_manager.get_secret(api_key_name) if api_key_name else None
+        # Get the default active API provider for the domain from data/config.yml
+        active_provider_name = self.config_manager.get(f"api_defaults.{domain}")
+        if not active_provider_name:
+            logger.error(f"No default API provider configured for domain '{domain}'.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage( # Use analytics_tracker directly
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"No default API provider configured for domain '{domain}'."
+                )
+            return None
 
-    # Special handling for Amadeus which uses client_id and client_secret for token
-    if active_provider_name == "amadeus":
-        api_secret_name = provider_config.get("api_secret_name")
-        api_secret = config_manager.get_secret(api_secret_name) if api_secret_name else None
-        token_endpoint = provider_config.get("token_endpoint")
-
-        if not api_key or not api_secret or not token_endpoint:
-            logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
+        # Get the full configuration for the active provider from api_providers.yml
+        provider_config = self.config_manager.get_api_provider_config(domain, active_provider_name)
+        if not provider_config:
+            logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
             if log_tool_usage_enabled:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
                     user_token=user_token,
                     success=False,
-                    error_message="Amadeus API credentials or token endpoint missing."
+                    error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
                 )
             return None
-        
-        # Get Amadeus access token (simplified for demonstration)
-        try:
-            token_response = requests.post(
-                token_endpoint,
-                data={'grant_type': 'client_credentials', 'client_id': api_key, 'client_secret': api_secret},
-                timeout=5
-            )
-            token_response.raise_for_status()
-            access_token = token_response.json().get('access_token')
-            if not access_token:
-                logger.error("Failed to get Amadeus access token.")
+
+        base_url = provider_config.get("base_url")
+        api_key_name = provider_config.get("api_key_name")
+        api_key = self.config_manager.get_secret(api_key_name) if api_key_name else None
+
+        # Special handling for Amadeus which uses client_id and client_secret for token
+        if active_provider_name == "amadeus":
+            api_secret_name = provider_config.get("api_secret_name")
+            api_secret = self.config_manager.get_secret(api_secret_name) if api_secret_name else None
+            token_endpoint = provider_config.get("token_endpoint")
+
+            if not api_key or not api_secret or not token_endpoint:
+                logger.warning(f"Amadeus API credentials (client_id/secret) or token_endpoint missing. Cannot make live Amadeus call.")
                 if log_tool_usage_enabled:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
                         user_token=user_token,
                         success=False,
-                        error_message="Failed to get Amadeus access token."
+                        error_message="Amadeus API credentials or token endpoint missing."
                     )
                 return None
-            headers = {"Authorization": f"Bearer {access_token}"}
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error getting Amadeus access token: {e}")
-            if log_tool_usage_enabled:
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_token=user_token,
-                    success=False,
-                    error_message=f"Error getting Amadeus access token: {e}"
+            
+            # Get Amadeus access token (simplified for demonstration)
+            try:
+                token_response = requests.post(
+                    token_endpoint,
+                    data={'grant_type': 'client_credentials', 'client_id': api_key, 'client_secret': api_secret},
+                    timeout=5
                 )
-            return None
-    else:
-        headers = {} # No special headers by default
-
-    if not base_url:
-        logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=f"Base URL not configured for '{active_provider_name}'."
-            )
-        return None
-
-    function_details = provider_config.get("functions", {}).get(function_name)
-    if not function_details:
-        logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
-            )
-        return None
-
-    endpoint = function_details.get("endpoint")
-    function_param = function_details.get("function_param") # For Alpha Vantage style 'function' param
-    path_params = function_details.get("path_params", []) # For ExchangeRate-API style path params
-
-    if not endpoint and not function_param:
-        logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=f"Endpoint or function_param missing for '{function_name}'."
-            )
-        return None
-
-    # Construct URL
-    full_url = f"{base_url}{endpoint}" if endpoint else base_url
-
-    # Add path parameters to URL if specified
-    for p_param in path_params:
-        if p_param in params:
-            value = str(params.pop(p_param))
-            full_url = full_url.replace(f"{{{p_param}}}", value)
+                token_response.raise_for_status()
+                access_token = token_response.json().get('access_token')
+                if not access_token:
+                    logger.error("Failed to get Amadeus access token.")
+                    if log_tool_usage_enabled:
+                        await analytics_tracker.log_tool_usage(
+                            tool_name=f"{domain}_{function_name}",
+                            tool_params=params,
+                            user_token=user_token,
+                            success=False,
+                            error_message="Failed to get Amadeus access token."
+                        )
+                    return None
+                headers = {"Authorization": f"Bearer {access_token}"}
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error getting Amadeus access token: {e}")
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=f"Error getting Amadeus access token: {e}"
+                    )
+                return None
         else:
-            error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
-            logger.warning(error_msg)
+            headers = {} # No special headers by default
+
+        if not base_url:
+            logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
             if log_tool_usage_enabled:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
                     user_token=user_token,
                     success=False,
-                    error_message=error_msg
-                )
-            return None # Cannot construct URL without required path params
-
-    # Construct query parameters
-    query_params = {}
-    if function_param:
-        query_params["function"] = function_param # Alpha Vantage specific
-
-    # Add API key if it's a query param (not in path or header)
-    if api_key_name and active_provider_name not in ["amadeus", "exchangerate_api"]: # Amadeus handled by headers, ExchangeRate by path
-        param_name_in_url = provider_config.get("api_key_param_name", api_key_name.replace("_api_key", ""))
-        if api_key: # Only add if key exists
-            query_params[param_name_in_url] = api_key 
-    elif active_provider_name == "exchangerate_api" and api_key:
-        pass # Key is a path parameter, already handled above
-
-    for param_key in function_details.get("required_params", []) + function_details.get("optional_params", []):
-        if param_key in params:
-            query_params[param_key] = params[param_key]
-        elif param_key in function_details.get("required_params", []):
-            error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
-            logger.warning(error_msg)
-            if log_tool_usage_enabled:
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_token=user_token,
-                    success=False,
-                    error_message=error_msg
-                )
-            return None # Missing required param, cannot proceed
-
-    try:
-        logger.info(f"Making API call to: {full_url} with params: {query_params}")
-        response = requests.get(full_url, params=query_params, headers=headers, timeout=config_manager.get("web_scraping.timeout_seconds", 15))
-        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
-        raw_data = response.json()
-        
-        # Check for API-specific error messages in the response body
-        api_error_message = None
-        if "Error Message" in raw_data: # Alpha Vantage specific
-            api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
-        elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
-            api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
-        elif raw_data.get("status") == "error": # NewsAPI specific
-            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
-        elif raw_data.get("Error"): # OMDBAPI specific
-            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
-        elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
-            api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
-        elif raw_data.get("result") == "error": # ExchangeRate-API error
-            api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
-
-        if api_error_message:
-            logger.error(api_error_message)
-            if log_tool_usage_enabled:
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_token=user_token,
-                    success=False,
-                    error_message=api_error_message
+                    error_message=f"Base URL not configured for '{active_provider_name}'."
                 )
             return None
 
+        function_details = provider_config.get("functions", {}).get(function_name)
+        if not function_details:
+            logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
+                )
+            return None
 
-        # Extract data based on response_path
-        data_to_map = raw_data
-        response_path = function_details.get("response_path")
-        if response_path:
-            data_to_map = _get_nested_value(raw_data, response_path)
-            if data_to_map is None:
-                error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
+        endpoint = function_details.get("endpoint")
+        function_param = function_details.get("function_param") # For Alpha Vantage style 'function' param
+        path_params = function_details.get("path_params", []) # For ExchangeRate-API style path params
+
+        if not endpoint and not function_param:
+            logger.error(f"Neither 'endpoint' nor 'function_param' defined for function '{function_name}'.")
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=f"Endpoint or function_param missing for '{function_name}'."
+                )
+            return None
+
+        # Construct URL
+        full_url = f"{base_url}{endpoint}" if endpoint else base_url
+
+        # Add path parameters to URL if specified
+        for p_param in path_params:
+            if p_param in params:
+                value = str(params.pop(p_param))
+                full_url = full_url.replace(f"{{{p_param}}}", value)
+            else:
+                error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
                 logger.warning(error_msg)
                 if log_tool_usage_enabled:
                     await analytics_tracker.log_tool_usage(
@@ -282,61 +243,78 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
                         success=False,
                         error_message=error_msg
                     )
+                return None # Cannot construct URL without required path params
+
+        # Construct query parameters
+        query_params = {}
+        if function_param:
+            query_params["function"] = function_param # Alpha Vantage specific
+
+        # Add API key if it's a query param (not in path or header)
+        if api_key_name and active_provider_name not in ["amadeus", "exchangerate_api"]: # Amadeus handled by headers, ExchangeRate by path
+            param_name_in_url = provider_config.get("api_key_param_name", api_key_name.replace("_api_key", ""))
+            if api_key: # Only add if key exists
+                query_params[param_name_in_url] = api_key 
+        elif active_provider_name == "exchangerate_api" and api_key:
+            pass # Key is a path parameter, already handled above
+
+        for param_key in function_details.get("required_params", []) + function_details.get("optional_params", []):
+            if param_key in params:
+                query_params[param_key] = params[param_key]
+            elif param_key in function_details.get("required_params", []):
+                error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
+                logger.warning(error_msg)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=error_msg
+                    )
+                return None # Missing required param, cannot proceed
+
+        try:
+            logger.info(f"Making API call to: {full_url} with params: {query_params}")
+            response = requests.get(full_url, params=query_params, headers=headers, timeout=self.config_manager.get("web_scraping.timeout_seconds", 15))
+            response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+            raw_data = response.json()
+            
+            # Check for API-specific error messages in the response body
+            api_error_message = None
+            if "Error Message" in raw_data: # Alpha Vantage specific
+                api_error_message = f"API Error from {active_provider_name}: {raw_data['Error Message']}"
+            elif "Note" in raw_data and "Thank you for using Alpha Vantage!" in raw_data["Note"]: # Alpha Vantage rate limit
+                api_error_message = f"API rate limit hit for {active_provider_name}: {raw_data['Note']}"
+            elif raw_data.get("status") == "error": # NewsAPI specific
+                api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
+            elif raw_data.get("Error"): # OMDBAPI specific
+                api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error')}"
+            elif raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error
+                api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
+            elif raw_data.get("result") == "error": # ExchangeRate-API error
+                api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+
+            if api_error_message:
+                logger.error(api_error_message)
+                if log_tool_usage_enabled:
+                    await analytics_tracker.log_tool_usage(
+                        tool_name=f"{domain}_{function_name}",
+                        tool_params=params,
+                        user_token=user_token,
+                        success=False,
+                        error_message=api_error_message
+                    )
                 return None
 
-        # Apply data mapping
-        mapped_data = {}
-        data_map = function_details.get("data_map", {})
-        if isinstance(data_to_map, list): # For lists of items (e.g., news articles, historical data)
-            mapped_data_list = []
-            for item in data_to_map:
-                mapped_item = {}
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list): # Handle nested paths in data_map
-                        mapped_item[mapped_key] = _get_nested_value(item, original_key_path)
-                    elif '.' in str(original_key_path): # Handle dot-separated paths in data_map
-                        mapped_item[mapped_key] = _get_nested_value(item, original_key_path.split('.'))
-                    else: # Direct key or list index
-                        if isinstance(original_key_path, int) and isinstance(item, list):
-                            try: mapped_item[mapped_key] = item[original_key_path]
-                            except IndexError: mapped_item[mapped_key] = None
-                        else:
-                            mapped_item[mapped_key] = item.get(original_key_path)
-                mapped_data_list.append(mapped_item)
-            final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
-        elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
-            # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
-            processed_data = {}
-            for date_key, values in data_to_map.items():
-                mapped_values = {}
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list):
-                        mapped_values[mapped_key] = _get_nested_value(values, original_key_path)
-                    elif '.' in str(original_key_path):
-                        mapped_values[mapped_key] = _get_nested_value(values, original_key_path.split('.'))
-                    else:
-                        mapped_values[mapped_key] = values.get(original_key_path)
-                processed_data[date_key] = mapped_values
-            final_result = {"data": processed_data}
-        else: # For single object responses
-            # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
-            if function_name == "get_crypto_price" and active_provider_name == "coingecko":
-                # params will contain 'ids' and 'vs_currencies'
-                crypto_id = params.get("ids", "").lower()
-                currency = params.get("vs_currencies", "").lower()
-                if crypto_id in raw_data and currency in raw_data[crypto_id]:
-                    mapped_data["price"] = raw_data[crypto_id][currency]
-                    if f"{currency}_market_cap" in raw_data[crypto_id]:
-                        mapped_data["market_cap"] = raw_data[crypto_id][f"{currency}_market_cap"]
-                    if f"{currency}_24hr_vol" in raw_data[crypto_id]:
-                        mapped_data["vol_24hr"] = raw_data[crypto_id][f"{currency}_24hr_vol"]
-                    if f"{currency}_24hr_change" in raw_data[crypto_id]:
-                        mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
-                    if "last_updated_at" in raw_data[crypto_id]:
-                        mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
-                    final_result = mapped_data
-                else:
-                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+
+            # Extract data based on response_path
+            data_to_map = raw_data
+            response_path = function_details.get("response_path")
+            if response_path:
+                data_to_map = _get_nested_value(raw_data, response_path)
+                if data_to_map is None:
+                    error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
                     logger.warning(error_msg)
                     if log_tool_usage_enabled:
                         await analytics_tracker.log_tool_usage(
@@ -347,381 +325,406 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
                             error_message=error_msg
                         )
                     return None
-            
-            for mapped_key, original_key_path in data_map.items():
-                if isinstance(original_key_path, list):
-                    mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
-                elif '.' in str(original_key_path):
-                    mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
+
+            # Apply data mapping
+            mapped_data = {}
+            data_map = function_details.get("data_map", {})
+            if isinstance(data_to_map, list): # For lists of items (e.g., news articles, historical data)
+                mapped_data_list = []
+                for item in data_to_map:
+                    mapped_item = {}
+                    for mapped_key, original_key_path in data_map.items():
+                        if isinstance(original_key_path, list): # Handle nested paths in data_map
+                            mapped_item[mapped_key] = _get_nested_value(item, original_key_path)
+                        elif '.' in str(original_key_path): # Handle dot-separated paths in data_map
+                            mapped_item[mapped_key] = _get_nested_value(item, original_key_path.split('.'))
+                        else: # Direct key or list index
+                            if isinstance(original_key_path, int) and isinstance(item, list):
+                                try: mapped_item[mapped_key] = item[original_key_path]
+                                except IndexError: mapped_item[mapped_key] = None
+                            else:
+                                mapped_item[mapped_key] = item.get(original_key_path)
+                    mapped_data_list.append(mapped_item)
+                final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
+            elif isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
+                # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
+                processed_data = {}
+                for date_key, values in data_to_map.items():
+                    mapped_values = {}
+                    for mapped_key, original_key_path in data_map.items():
+                        if isinstance(original_key_path, list):
+                            mapped_values[mapped_key] = _get_nested_value(values, original_key_path)
+                        elif '.' in str(original_key_path):
+                            mapped_values[mapped_key] = _get_nested_value(values, original_key_path.split('.'))
+                        else:
+                            mapped_values[mapped_key] = values.get(original_key_path)
+                    processed_data[date_key] = mapped_values
+                final_result = {"data": processed_data}
+            else: # For single object responses
+                # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
+                if function_name == "get_crypto_price" and active_provider_name == "coingecko":
+                    # params will contain 'ids' and 'vs_currencies'
+                    crypto_id = params.get("ids", "").lower()
+                    currency = params.get("vs_currencies", "").lower()
+                    if crypto_id in raw_data and currency in raw_data[crypto_id]:
+                        mapped_data["price"] = raw_data[crypto_id][currency]
+                        if f"{currency}_market_cap" in raw_data[crypto_id]:
+                            mapped_data["market_cap"] = raw_data[crypto_id][f"{currency}_market_cap"]
+                        if f"{currency}_24hr_vol" in raw_data[crypto_id]:
+                            mapped_data["vol_24hr"] = raw_data[crypto_id][f"{currency}_24hr_vol"]
+                        if f"{currency}_24hr_change" in raw_data[crypto_id]:
+                            mapped_data["change_24hr"] = raw_data[crypto_id][f"{currency}_24hr_change"]
+                        if "last_updated_at" in raw_data[crypto_id]:
+                            mapped_data["last_updated"] = raw_data[crypto_id]["last_updated_at"]
+                        final_result = mapped_data
+                    else:
+                        error_msg = f"CoinGecko simple price response unexpected for {crypto_id}/{currency}: {raw_data}"
+                        logger.warning(error_msg)
+                        if log_tool_usage_enabled:
+                            await analytics_tracker.log_tool_usage(
+                                tool_name=f"{domain}_{function_name}",
+                                tool_params=params,
+                                user_token=user_token,
+                                success=False,
+                                error_message=error_msg
+                            )
+                        return None
+                
+                for mapped_key, original_key_path in data_map.items():
+                    if isinstance(original_key_path, list):
+                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
+                    elif '.' in str(original_key_path):
+                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
+                    else:
+                        mapped_data[mapped_key] = data_to_map.get(original_key_path)
+                final_result = mapped_data
+
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=True
+                )
+            return final_result
+
+        except requests.exceptions.Timeout:
+            error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
+            logger.error(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
+            return None
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
+            logger.error(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=e
+                )
+            return None
+        except json.JSONDecodeError:
+            error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
+            logger.error(error_msg)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
+            return None
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            if log_tool_usage_enabled:
+                await analytics_tracker.log_tool_usage(
+                    tool_name=f"{domain}_{function_name}",
+                    tool_params=params,
+                    user_token=user_token,
+                    success=False,
+                    error_message=error_msg
+                )
+            return None
+
+    @tool
+    async def finance_get_stock_price(self, symbol: str, user_token: str = "default") -> str:
+        """
+        Retrieves the current stock price for a given stock symbol.
+        Falls back to mock data if API key is missing or API call fails.
+
+        Args:
+            symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
+            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+        Returns:
+            str: A formatted string of the stock price, or an error/fallback message.
+        """
+        logger.info(f"Tool: finance_get_stock_price called for symbol: '{symbol}' by user: {user_token}")
+
+        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+            return "Error: Access to finance tools is not enabled for your current tier."
+        
+        params = {"symbol": symbol}
+        api_data = await self._make_dynamic_api_request("finance", "get_stock_price", params, user_token)
+
+        if api_data:
+            try:
+                price = api_data.get("price")
+                currency = api_data.get("currency")
+                timestamp = api_data.get("timestamp")
+                if price and currency:
+                    return f"The current price of {symbol} is {price} {currency} (as of {timestamp})."
                 else:
-                    mapped_data[mapped_key] = data_to_map.get(original_key_path)
-            final_result = mapped_data
+                    logger.warning(f"Live API data for {symbol} price is incomplete. Raw: {api_data}")
+                    return f"Could not retrieve complete live stock price for {symbol}. Falling back to mock data."
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error parsing live stock price data for {symbol}: {e}")
+                return f"Error parsing live data for {symbol}. Falling back to mock data."
 
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=True
-            )
-        return final_result
+        # Fallback to mock data
+        mock_price = self._mock_finance_data.get("stock_prices", {}).get(symbol.upper())
+        if mock_price:
+            return f"The current price of {mock_price['symbol']} is {mock_price['price']} {mock_price['currency']} (Mock Data Fallback, as of {mock_price['timestamp']})."
+        else:
+            return f"Stock price for {symbol} not found. (API/Mock Fallback Failed)"
 
-    except requests.exceptions.Timeout:
-        error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
-        logger.error(error_msg)
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=error_msg
-            )
-        return None
-    except requests.exceptions.RequestException as e:
-        error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
-        logger.error(error_msg)
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=e
-            )
-        return None
-    except json.JSONDecodeError:
-        error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
-        logger.error(error_msg)
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=error_msg
-            )
-        return None
-    except Exception as e:
-        error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
-        logger.error(error_msg, exc_info=True)
-        if log_tool_usage_enabled:
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_token=user_token,
-                success=False,
-                error_message=error_msg
-            )
-        return None
+    @tool
+    async def finance_get_historical_stock_prices(self, symbol: str, user_token: str = "default") -> str:
+        """
+        Retrieves historical daily stock prices for a given stock symbol.
+        Falls back to mock data if API key is missing or API call fails.
 
+        Args:
+            symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
+            user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
-# --- Mock Data for Fallback ---
-_mock_finance_data = {
-    "stock_prices": {
-        "GOOG": {"symbol": "GOOG", "price": 170.00, "currency": "USD", "timestamp": datetime.now().isoformat()},
-        "AAPL": {"symbol": "AAPL", "price": 180.50, "currency": "USD", "timestamp": datetime.now().isoformat()},
-    },
-    "historical_data": {
-        "GOOG": [
-            {"date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"), "open": 165.00, "high": 168.00, "low": 164.00, "close": 167.50, "volume": 1000000},
-            {"date": (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d"), "open": 167.00, "high": 170.00, "low": 166.00, "close": 169.50, "volume": 1200000},
-        ]
-    },
-    "company_overview": {
-        "GOOG": {
-            "symbol": "GOOG",
-            "name": "Alphabet Inc.",
-            "exchange": "NASDAQ",
-            "sector": "Technology",
-            "industry": "Internet Content & Information",
-            "description": "Alphabet Inc. is an American multinational technology conglomerate holding company.",
-            "market_cap": "2.2 Trillion USD"
-        }
-    },
-    "forex_rates": {
-        "USD_EUR": {"from_currency": "USD", "to_currency": "EUR", "rate": 0.92, "timestamp": datetime.now().isoformat()},
-        "EUR_GBP": {"from_currency": "EUR", "to_currency": "GBP", "rate": 0.85, "timestamp": datetime.now().isoformat()},
-    }
-}
+        Returns:
+            str: A formatted string of historical stock prices, or an error/fallback message.
+        """
+        logger.info(f"Tool: finance_get_historical_stock_prices called for symbol: '{symbol}' by user: {user_token}")
 
-@tool
-async def get_stock_price(symbol: str, user_token: str = "default") -> str:
-    """
-    Retrieves the current stock price for a given stock symbol.
-    Falls back to mock data if API key is missing or API call fails.
+        if not get_user_tier_capability(user_token, 'historical_data_access', False):
+            return "Error: Access to historical data is not enabled for your current tier."
+        
+        params = {"symbol": symbol}
+        api_data = await self._make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_token)
 
-    Args:
-        symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of the stock price, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_stock_price called for symbol: '{symbol}' by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'finance_tool_access', False):
-        return "Error: Access to finance tools is not enabled for your current tier."
-    
-    params = {"symbol": symbol}
-    api_data = await _make_dynamic_api_request("finance", "get_stock_price", params, user_token)
-
-    if api_data:
-        try:
-            price = api_data.get("price")
-            currency = api_data.get("currency")
-            timestamp = api_data.get("timestamp")
-            if price and currency:
-                return f"The current price of {symbol} is {price} {currency} (as of {timestamp})."
+        if api_data and api_data.get("data"):
+            historical_prices = api_data["data"]
+            if historical_prices:
+                response_str = f"Historical Prices for {symbol}:\n"
+                # Sort by date (assuming YYYY-MM-DD format) and take most recent 5
+                sorted_prices = sorted(historical_prices.items(), key=lambda item: item[0], reverse=True)[:5]
+                for date, data in sorted_prices:
+                    response_str += (
+                        f"  Date: {date}\n"
+                        f"    Open: {data.get('open', 'N/A')}\n"
+                        f"    High: {data.get('high', 'N/A')}\n"
+                        f"    Low: {data.get('low', 'N/A')}\n"
+                        f"    Close: {data.get('close', 'N/A')}\n"
+                        f"    Volume: {data.get('volume', 'N/A')}\n"
+                    )
+                return response_str
             else:
-                logger.warning(f"Live API data for {symbol} price is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live stock price for {symbol}. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live stock price data for {symbol}: {e}")
-            return f"Error parsing live data for {symbol}. Falling back to mock data."
+                return f"No live historical prices found for {symbol}. Falling back to mock data."
 
-    # Fallback to mock data
-    mock_price = _mock_finance_data.get("stock_prices", {}).get(symbol.upper())
-    if mock_price:
-        return f"The current price of {mock_price['symbol']} is {mock_price['price']} {mock_price['currency']} (Mock Data Fallback, as of {mock_price['timestamp']})."
-    else:
-        return f"Stock price for {symbol} not found. (API/Mock Fallback Failed)"
-
-@tool
-async def get_historical_stock_prices(symbol: str, user_token: str = "default") -> str:
-    """
-    Retrieves historical daily stock prices for a given stock symbol.
-    Falls back to mock data if API key is missing or API call fails.
-
-    Args:
-        symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of historical stock prices, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_historical_stock_prices called for symbol: '{symbol}' by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'historical_data_access', False):
-        return "Error: Access to historical data is not enabled for your current tier."
-    
-    params = {"symbol": symbol}
-    api_data = await _make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_token)
-
-    if api_data and api_data.get("data"):
-        historical_prices = api_data["data"]
-        if historical_prices:
-            response_str = f"Historical Prices for {symbol}:\n"
-            # Sort by date (assuming YYYY-MM-DD format) and take most recent 5
-            sorted_prices = sorted(historical_prices.items(), key=lambda item: item[0], reverse=True)[:5]
-            for date, data in sorted_prices:
+        # Fallback to mock data
+        mock_historical_data = self._mock_finance_data.get("historical_data", {}).get(symbol.upper())
+        if mock_historical_data:
+            response_str = f"Historical Prices for {symbol} (Mock Data Fallback):\n"
+            for data in mock_historical_data:
                 response_str += (
-                    f"  Date: {date}\n"
-                    f"    Open: {data.get('open', 'N/A')}\n"
-                    f"    High: {data.get('high', 'N/A')}\n"
-                    f"    Low: {data.get('low', 'N/A')}\n"
-                    f"    Close: {data.get('close', 'N/A')}\n"
-                    f"    Volume: {data.get('volume', 'N/A')}\n"
+                    f"  Date: {data['date']}\n"
+                    f"    Open: {data['open']}\n"
+                    f"    High: {data['high']}\n"
+                    f"    Low: {data['low']}\n"
+                    f"    Close: {data['close']}\n"
+                    f"    Volume: {data['volume']}\n"
                 )
             return response_str
         else:
-            return f"No live historical prices found for {symbol}. Falling back to mock data."
+            return f"Historical stock prices for {symbol} not found. (API/Mock Fallback Failed)"
 
-    # Fallback to mock data
-    mock_historical_data = _mock_finance_data.get("historical_data", {}).get(symbol.upper())
-    if mock_historical_data:
-        response_str = f"Historical Prices for {symbol} (Mock Data Fallback):\n"
-        for data in mock_historical_data:
-            response_str += (
-                f"  Date: {data['date']}\n"
-                f"    Open: {data['open']}\n"
-                f"    High: {data['high']}\n"
-                f"    Low: {data['low']}\n"
-                f"    Close: {data['close']}\n"
-                f"    Volume: {data['volume']}\n"
+    @tool
+    async def finance_get_company_overview(self, symbol: str, user_token: str = "default") -> str:
+        """
+        Retrieves a company's overview, including its description, sector, and market capitalization.
+        Falls back to mock data if API key is missing or API call fails.
+
+        Args:
+            symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
+            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+
+        Returns:
+            str: A formatted string of company overview information, or an error/fallback message.
+        """
+        logger.info(f"Tool: finance_get_company_overview called for symbol: '{symbol}' by user: {user_token}")
+
+        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+            return "Error: Access to finance tools is not enabled for your current tier."
+        
+        params = {"symbol": symbol}
+        api_data = await self._make_dynamic_api_request("finance", "get_company_overview", params, user_token)
+
+        if api_data:
+            try:
+                name = api_data.get("name")
+                sector = api_data.get("sector")
+                industry = api_data.get("industry")
+                description = api_data.get("description")
+                market_cap = api_data.get("market_cap")
+
+                if name and description:
+                    return (
+                        f"Company Overview for {name} ({symbol}):\n"
+                        f"  Sector: {sector}\n"
+                        f"  Industry: {industry}\n"
+                        f"  Market Cap: {market_cap}\n"
+                        f"  Description: {description}"
+                    )
+                else:
+                    logger.warning(f"Live API data for {symbol} overview is incomplete. Raw: {api_data}")
+                    return f"Could not retrieve complete live company overview for {symbol}. Falling back to mock data."
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error parsing live company overview data for {symbol}: {e}")
+                return f"Error parsing live data for {symbol}. Falling back to mock data."
+
+        # Fallback to mock data
+        mock_overview = self._mock_finance_data.get("company_overview", {}).get(symbol.upper())
+        if mock_overview:
+            return (
+                f"Company Overview for {mock_overview['name']} ({mock_overview['symbol']}) (Mock Data Fallback):\n"
+                f"  Sector: {mock_overview['sector']}\n"
+                f"  Industry: {mock_overview['industry']}\n"
+                f"  Market Cap: {mock_overview['market_cap']}\n"
+                f"  Description: {mock_overview['description']}"
             )
-        return response_str
-    else:
-        return f"Historical stock prices for {symbol} not found. (API/Mock Fallback Failed)"
+        else:
+            return f"Company overview for {symbol} not found. (API/Mock Fallback Failed)"
 
-@tool
-async def get_company_overview(symbol: str, user_token: str = "default") -> str:
-    """
-    Retrieves a company's overview, including its description, sector, and market capitalization.
-    Falls back to mock data if API key is missing or API call fails.
+    @tool
+    async def finance_get_forex_exchange_rate(self, from_currency: str, to_currency: str, user_token: str = "default") -> str:
+        """
+        Retrieves the current exchange rate between two currencies.
+        Falls back to mock data if API key is missing or API call fails.
 
-    Args:
-        symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+        Args:
+            from_currency (str): The currency to convert from (e.g., "USD", "EUR").
+            to_currency (str): The currency to convert to (e.g., "JPY", "GBP").
+            user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
-    Returns:
-        str: A formatted string of company overview information, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_company_overview called for symbol: '{symbol}' by user: {user_token}")
+        Returns:
+            str: A formatted string of the exchange rate, or an error/fallback message.
+        """
+        logger.info(f"Tool: finance_get_forex_exchange_rate called for {from_currency} to {to_currency} by user: {user_token}")
 
-    if not get_user_tier_capability(user_token, 'finance_tool_access', False):
-        return "Error: Access to finance tools is not enabled for your current tier."
-    
-    params = {"symbol": symbol}
-    api_data = await _make_dynamic_api_request("finance", "get_company_overview", params, user_token)
+        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+            return "Error: Access to finance tools is not enabled for your current tier."
+        
+        params = {"from_currency": from_currency, "to_currency": to_currency}
+        api_data = await self._make_dynamic_api_request("finance", "get_forex_exchange_rate", params, user_token)
 
-    if api_data:
-        try:
-            name = api_data.get("name")
-            sector = api_data.get("sector")
-            industry = api_data.get("industry")
-            description = api_data.get("description")
-            market_cap = api_data.get("market_cap")
+        if api_data:
+            try:
+                rate = api_data.get("rate")
+                timestamp = api_data.get("timestamp")
+                if rate:
+                    return f"The current exchange rate from {from_currency} to {to_currency} is {rate} (as of {timestamp})."
+                else:
+                    logger.warning(f"Live API data for {from_currency} to {to_currency} exchange rate is incomplete. Raw: {api_data}")
+                    return f"Could not retrieve complete live exchange rate for {from_currency} to {to_currency}. Falling back to mock data."
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error parsing live forex data for {from_currency} to {to_currency}: {e}")
+                return f"Error parsing live data for {from_currency} to {to_currency}. Falling back to mock data."
 
-            if name and description:
-                return (
-                    f"Company Overview for {name} ({symbol}):\n"
-                    f"  Sector: {sector}\n"
-                    f"  Industry: {industry}\n"
-                    f"  Market Cap: {market_cap}\n"
-                    f"  Description: {description}"
-                )
-            else:
-                logger.warning(f"Live API data for {symbol} overview is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live company overview for {symbol}. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live company overview data for {symbol}: {e}")
-            return f"Error parsing live data for {symbol}. Falling back to mock data."
+        # Fallback to mock data
+        mock_rate_key = f"{from_currency.upper()}_{to_currency.upper()}"
+        mock_rate = self._mock_finance_data.get("forex_rates", {}).get(mock_rate_key)
+        if mock_rate:
+            return f"The current exchange rate from {mock_rate['from_currency']} to {mock_rate['to_currency']} is {mock_rate['rate']} (Mock Data Fallback, as of {mock_rate['timestamp']})."
+        else:
+            return f"Exchange rate for {from_currency} to {to_currency} not found. (API/Mock Fallback Failed)"
 
-    # Fallback to mock data
-    mock_overview = _mock_finance_data.get("company_overview", {}).get(symbol.upper())
-    if mock_overview:
-        return (
-            f"Company Overview for {mock_overview['name']} ({mock_overview['symbol']}) (Mock Data Fallback):\n"
-            f"  Sector: {mock_overview['sector']}\n"
-            f"  Industry: {mock_overview['industry']}\n"
-            f"  Market Cap: {mock_overview['market_cap']}\n"
-            f"  Description: {mock_overview['description']}"
+
+    # --- Existing Generic Tools (now methods of FinanceTools) ---
+
+    @tool
+    def finance_search_web(self, query: str, user_token: str = "default", max_chars: int = 2000) -> str:
+        """
+        Searches the web for finance-related information using a smart search fallback mechanism.
+        This tool wraps the generic `scrape_web` tool, providing a finance-specific interface.
+        
+        Args:
+            query (str): The finance-related search query (e.g., "latest stock market news", "explain cryptocurrency taxation").
+            user_token (str): The unique identifier for the user. Defaults to "default".
+            max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
+        
+        Returns:
+            str: A string containing relevant information from the web.
+        """
+        logger.info(f"Tool: finance_search_web called with query: '{query}' for user: '{user_token}'")
+        return scrape_web(query=query, user_token=user_token, max_chars=max_chars)
+
+    @tool
+    async def finance_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+        """
+        Queries previously uploaded and indexed finance documents for a user using vector similarity search.
+        This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "finance".
+        
+        Args:
+            query (str): The search query to find relevant finance documents (e.g., "my investment portfolio details", "tax documents for 2023").
+            user_token (str): The unique identifier for the user. Defaults to "default".
+            export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
+            k (int): The number of top relevant documents to retrieve. Defaults to 5.
+        
+        Returns:
+            str: A string containing the combined content of the relevant document chunks,
+                 or a message indicating no data/results found, or the export path if exported.
+        """
+        logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
+        if not self.document_tools:
+            return "Error: Document tools are not initialized. Cannot query uploaded documents."
+        
+        # Call the actual query_uploaded_docs from the DocumentTools instance
+        return await self.document_tools.document_query_uploaded_docs(
+            query=query,
+            user_token=user_token,
+            section="finance", # Specify the section for finance documents
+            export=export,
+            k=k
         )
-    else:
-        return f"Company overview for {symbol} not found. (API/Mock Fallback Failed)"
 
-@tool
-async def get_forex_exchange_rate(from_currency: str, to_currency: str, user_token: str = "default") -> str:
-    """
-    Retrieves the current exchange rate between two currencies.
-    Falls back to mock data if API key is missing or API call fails.
+    @tool
+    async def finance_summarize_document_by_path(self, file_path_str: str) -> str:
+        """
+        Summarizes a document related to finance (e.g., financial reports, market analysis) located at the given file path.
+        The file path should be accessible by the system (e.g., in the 'uploads' directory).
+        This tool wraps the generic `summarize_document` tool.
+        
+        Args:
+            file_path_str (str): The full path to the document file to be summarized.
+                                Example: "uploads/default/finance/annual_report.pdf"
+        
+        Returns:
+            str: A concise summary of the document content.
+        """
+        logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}'")
+        if not self.document_tools:
+            return "Error: Document tools are not initialized. Cannot summarize documents."
 
-    Args:
-        from_currency (str): The currency to convert from (e.g., "USD", "EUR").
-        to_currency (str): The currency to convert to (e.g., "JPY", "GBP").
-        user_token (str, optional): The unique identifier for the user. Defaults to "default".
-
-    Returns:
-        str: A formatted string of the exchange rate, or an error/fallback message.
-    """
-    logger.info(f"Tool: get_forex_exchange_rate called for {from_currency} to {to_currency} by user: {user_token}")
-
-    if not get_user_tier_capability(user_token, 'finance_tool_access', False):
-        return "Error: Access to finance tools is not enabled for your current tier."
-    
-    params = {"from_currency": from_currency, "to_currency": to_currency}
-    api_data = await _make_dynamic_api_request("finance", "get_forex_exchange_rate", params, user_token)
-
-    if api_data:
-        try:
-            rate = api_data.get("rate")
-            timestamp = api_data.get("timestamp")
-            if rate:
-                return f"The current exchange rate from {from_currency} to {to_currency} is {rate} (as of {timestamp})."
-            else:
-                logger.warning(f"Live API data for {from_currency} to {to_currency} exchange rate is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live exchange rate for {from_currency} to {to_currency}. Falling back to mock data."
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live forex data for {from_currency} to {to_currency}: {e}")
-            return f"Error parsing live data for {from_currency} to {to_currency}. Falling back to mock data."
-
-    # Fallback to mock data
-    mock_rate_key = f"{from_currency.upper()}_{to_currency.upper()}"
-    mock_rate = _mock_finance_data.get("forex_rates", {}).get(mock_rate_key)
-    if mock_rate:
-        return f"The current exchange rate from {mock_rate['from_currency']} to {mock_rate['to_currency']} is {mock_rate['rate']} (Mock Data Fallback, as of {mock_rate['timestamp']})."
-    else:
-        return f"Exchange rate for {from_currency} to {to_currency} not found. (API/Mock Fallback Failed)"
-
-
-# --- Existing Generic Tools (not directly using external APIs, but can be used in finance context) ---
-
-@tool
-def finance_search_web(query: str, user_token: str = "default", max_chars: int = 2000) -> str:
-    """
-    Searches the web for finance-related information using a smart search fallback mechanism.
-    This tool wraps the generic `scrape_web` tool, providing a finance-specific interface.
-    
-    Args:
-        query (str): The finance-related search query (e.g., "latest stock market news", "explain cryptocurrency taxation").
-        user_token (str): The unique identifier for the user. Defaults to "default".
-        max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
-    
-    Returns:
-        str: A string containing relevant information from the web.
-    """
-    logger.info(f"Tool: finance_search_web called with query: '{query}' for user: '{user_token}'")
-    return scrape_web(query=query, user_token=user_token, max_chars=max_chars)
-
-@tool
-def finance_query_uploaded_docs(query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
-    """
-    Queries previously uploaded and indexed finance documents for a user using vector similarity search.
-    This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "finance".
-    
-    Args:
-        query (str): The search query to find relevant finance documents (e.g., "my investment portfolio details", "tax documents for 2023").
-        user_token (str): The unique identifier for the user. Defaults to "default".
-        export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
-        k (int): The number of top relevant documents to retrieve. Defaults to 5.
-    
-    Returns:
-        str: A string containing the combined content of the relevant document chunks,
-             or a message indicating no data/results found, or the export path if exported.
-    """
-    logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
-    # This will be replaced by a call to self.document_tools.query_uploaded_docs
-    # For now, keeping the original call for review purposes.
-    # This function should be called via DocumentTools instance in __init__.py
-    return "Mocked document query results for finance." # Placeholder for direct call in tool
-
-
-@tool
-async def finance_summarize_document_by_path(file_path_str: str) -> str:
-    """
-    Summarizes a document related to finance (e.g., financial reports, market analysis) located at the given file path.
-    The file path should be accessible by the system (e.g., in the 'uploads' directory).
-    This tool wraps the generic `summarize_document` tool.
-    
-    Args:
-        file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/finance/annual_report.pdf"
-    
-    Returns:
-        str: A concise summary of the document content.
-    """
-    logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}'")
-    file_path = Path(file_path_str)
-    if not file_path.exists():
-        logger.error(f"Document not found at '{file_path_str}' for summarization.")
-        return f"Error: Document not found at '{file_path_str}'."
-    
-    try:
-        # Call the actual summarize_document function (which is async)
-        # We need to run it in an asyncio loop if this tool is called synchronously.
-        # However, since FastAPI endpoints are async, and tools are generally called async,
-        # it's better to make this tool function `async` and `await` summarize_document.
-        # For now, if this is called in a synchronous context, it will raise an error
-        # or require an existing event loop.
-        summary = await summarize_document(file_path.read_text(), user_token="default") # Assuming default user for CLI test
-        return f"Summary of '{file_path.name}':\n{summary}"
-    except ValueError as e:
-        logger.error(f"Error summarizing document '{file_path_str}': {e}")
-        return f"Error summarizing document: {e}"
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred during summarization of '{file_path_str}': {e}", exc_info=True)
-        return f"An unexpected error occurred during summarization: {e}"
+        # Call the actual summarize_document_by_path from the DocumentTools instance
+        return await self.document_tools.document_summarize_document_by_path(file_path_str=file_path_str)
 
 
 # CLI Test (optional)
@@ -732,6 +735,10 @@ if __name__ == "__main__":
     import os
     import sys # Import sys for patching modules
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
+    from database.firestore_manager import FirestoreManager # For mocking
+    from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper # For mocking
+    from shared_tools.vector_utils import VectorUtilsWrapper # For mocking
+    from domain_tools.document_tools.document_tool import DocumentTools # For mocking
 
     logging.basicConfig(level=logging.INFO)
 
@@ -1072,13 +1079,35 @@ if __name__ == "__main__":
         original_summarize_document = sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document
         sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document = MockSummarizeDocument()
 
-        async def run_finance_tests():
+        # Mock FirestoreManager, CloudStorageUtilsWrapper, VectorUtilsWrapper, DocumentTools for init
+        mock_firestore_manager = MagicMock(spec=FirestoreManager)
+        mock_cloud_storage_utils = MagicMock(spec=CloudStorageUtilsWrapper)
+        mock_vector_utils = MagicMock(spec=VectorUtilsWrapper)
+        
+        # Mock log_event function
+        async def mock_log_event(*args, **kwargs):
+            print(f"Mock log_event called with: {args}, {kwargs}")
+
+        # Create a mock DocumentTools instance
+        mock_document_tools = MagicMock(spec=DocumentTools)
+        mock_document_tools.document_query_uploaded_docs = AsyncMock(return_value="Mocked document query results for finance.")
+        mock_document_tools.document_summarize_document_by_path = AsyncMock(return_value="Mocked summary of dummy_file.txt")
+
+        # Instantiate FinanceTools with mocks
+        finance_tools_instance = FinanceTools(
+            config_manager=sys.modules['config.config_manager'].config_manager,
+            firestore_manager=mock_firestore_manager,
+            log_event=mock_log_event,
+            document_tools=mock_document_tools
+        )
+
+        async def run_finance_tests(finance_tools_instance): # Pass the instance to the test function
             print("\n--- Testing finance_tool functions with Analytics ---")
 
-            # Test 1: get_stock_price (success)
-            print("\n--- Test 1: get_stock_price (Success) ---")
+            # Test 1: finance_get_stock_price (success)
+            print("\n--- Test 1: finance_get_stock_price (Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
-            result_price = await get_stock_price("GOOG", user_token=test_user_pro)
+            result_price = await finance_tools_instance.finance_get_stock_price("GOOG", user_token=test_user_pro)
             print(f"Stock Price: {result_price}")
             assert "The current price of GOOG is 175.00" in result_price
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
@@ -1089,8 +1118,8 @@ if __name__ == "__main__":
             assert logged_data["success"] is True
             print("Test 1 Passed (and analytics logged success).")
 
-            # Test 2: get_historical_stock_prices (API failure - no data found)
-            print("\n--- Test 2: get_historical_stock_prices (API Failure) ---")
+            # Test 2: finance_get_historical_stock_prices (API failure - no data found)
+            print("\n--- Test 2: finance_get_historical_stock_prices (API Failure) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             # Temporarily modify mock_requests_get_dynamic to return no data for historical prices
             def mock_requests_get_no_historical(url, params, headers, timeout):
@@ -1104,7 +1133,7 @@ if __name__ == "__main__":
             # Need to re-assign the side_effect to the MagicMock
             requests.get.side_effect = mock_requests_get_no_historical
 
-            result_historical = await get_historical_stock_prices("NONEXISTENT", user_token=test_user_premium)
+            result_historical = await finance_tools_instance.finance_get_historical_stock_prices("NONEXISTENT", user_token=test_user_premium)
             print(f"Historical Prices (API Error): {result_historical}")
             assert "No live historical prices found for NONEXISTENT." in result_historical or "API rate limit hit" in result_historical
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
@@ -1119,23 +1148,23 @@ if __name__ == "__main__":
             # Restore original mock_requests_get_dynamic
             requests.get.side_effect = mock_requests_get_dynamic
 
-            # Test 3: get_company_overview (RBAC denied)
-            print("\n--- Test 3: get_company_overview (RBAC Denied) ---")
+            # Test 3: finance_get_company_overview (RBAC denied)
+            print("\n--- Test 3: finance_get_company_overview (RBAC Denied) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_overview_rbac_denied = await get_company_overview("MSFT", user_token=test_user_free)
+            result_overview_rbac_denied = await finance_tools_instance.finance_get_company_overview("MSFT", user_token=test_user_free)
             print(f"Company Overview (Free User, RBAC Denied): {result_overview_rbac_denied}")
             assert "Error: Access to finance tools is not enabled for your current tier." in result_overview_rbac_denied
             # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
             print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
 
-            # Test 4: get_forex_exchange_rate (success)
-            print("\n--- Test 4: get_forex_exchange_rate (Success) ---")
+            # Test 4: finance_get_forex_exchange_rate (success)
+            print("\n--- Test 4: finance_get_forex_exchange_rate (Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             # Temporarily set API default for finance to exchangerate_api for this test
             sys.modules['config.config_manager'].config_manager._config_data['api_defaults']['finance'] = 'exchangerate_api'
             
-            result_forex = await get_forex_exchange_rate("USD", "EUR", user_token=test_user_pro)
+            result_forex = await finance_tools_instance.finance_get_forex_exchange_rate("USD", "EUR", user_token=test_user_pro)
             print(f"Forex Rate: {result_forex}")
             assert "The current exchange rate from USD to EUR is 1.15" in result_forex
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
@@ -1153,7 +1182,7 @@ if __name__ == "__main__":
             # Test 5: finance_search_web (generic tool)
             print("\n--- Test 5: finance_search_web (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_web_search = await finance_search_web("impact of inflation on economy", user_token=test_user_pro)
+            result_web_search = await finance_tools_instance.finance_search_web("impact of inflation on economy", user_token=test_user_pro)
             print(f"Web Search Result: {result_web_search[:100]}...")
             assert "Search results for impact of inflation on economy" in result_web_search
             # Analytics for generic tools like scrape_web or summarize_document
@@ -1166,11 +1195,17 @@ if __name__ == "__main__":
             # Test 6: finance_query_uploaded_docs (generic tool)
             print("\n--- Test 6: finance_query_uploaded_docs (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_doc_query = await finance_query_uploaded_docs("my investment portfolio", user_token=test_user_pro)
+            result_doc_query = await finance_tools_instance.finance_query_uploaded_docs("my investment portfolio", user_token=test_user_pro)
             print(f"Document Query Result: {result_doc_query}")
             assert "Mocked document query results for finance." in result_doc_query
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 6 Passed (no analytics expected for generic tool directly, will be logged by DocumentTools).")
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Now logged by DocumentTools mock
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "document_query_uploaded_docs"
+            assert logged_data["success"] is True
+            print("Test 6 Passed (analytics expected for generic tool via DocumentTools).")
+
 
             # Test 7: finance_summarize_document_by_path (generic tool)
             print("\n--- Test 7: finance_summarize_document_by_path (Generic Tool) ---")
@@ -1180,11 +1215,16 @@ if __name__ == "__main__":
             dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
             dummy_file_path.write_text("This is a dummy financial report for testing summarization. It contains details about revenue and expenses.")
 
-            result_summarize = await finance_summarize_document_by_path(str(dummy_file_path))
+            result_summarize = await finance_tools_instance.finance_summarize_document_by_path(str(dummy_file_path))
             print(f"Summarize Result: {result_summarize}")
-            assert "Mocked summary of text for user default" in result_summarize # Check for mock summary
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 7 Passed (no analytics expected for generic tool directly).")
+            assert "Mocked summary of dummy_file.txt" in result_summarize # Check for mock summary from DocumentTools
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Now logged by DocumentTools mock
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "document_summarize_document_by_path"
+            assert logged_data["success"] is True
+            print("Test 7 Passed (analytics expected for generic tool via DocumentTools).")
 
 
             print("\nAll finance_tool tests with analytics considerations completed.")
@@ -1192,10 +1232,13 @@ if __name__ == "__main__":
         # Ensure tests are only run when the script is executed directly
         if __name__ == "__main__":
             # Use asyncio.run to execute the async test function
-            asyncio.run(run_finance_tests())
+            asyncio.run(run_finance_tests(finance_tools_instance)) # Pass the instance here
 
         # Restore original requests.get
         requests.get = original_requests_get
+
+        # Restore original summarize_document (if patched)
+        sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document = original_summarize_document
 
         # Clean up dummy files and directories
         test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
