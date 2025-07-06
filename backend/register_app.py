@@ -3,7 +3,7 @@
 import streamlit as st
 import requests
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional # <-- Ensure Optional is imported here
 import json
 import os
 import asyncio # For async operations in CLI test
@@ -124,6 +124,7 @@ def app():
             response = register_user_backend(email, password, username)
 
             # FastAPI backend returns "User registered successfully", and "uid"
+            # CORRECTED: Check for specific success message from backend
             if response.get("message") == "User registered successfully":
                 st.success("Account created successfully! Please log in.")
                 asyncio.run(frontend_log_event('user_registration', {
@@ -137,7 +138,9 @@ def app():
                     st.session_state.current_page = "Login"
                     st.rerun()
             else:
-                error_message = response.get("message", "An unknown error occurred.")
+                # If backend response is not the specific success message, it's a failure
+                # Ensure the error message is extracted correctly from the backend's 'detail' or 'message'
+                error_message = response.get("message", response.get("detail", "An unknown error occurred."))
                 st.error(f"Registration failed: {error_message}")
                 asyncio.run(frontend_log_event('user_registration', {
                     'email': email,
@@ -147,52 +150,10 @@ def app():
                 }, user_id=email.replace('.', '_') if email else 'N/A', success=False, error_message=error_message))
 
     st.markdown("---")
-    st.markdown("Already have an account? [Login here](/login)")
+    # Changed markdown links to Streamlit buttons for internal navigation
+    if st.button("Already have an account? Login here"):
+        st.session_state.current_page = "Login"
+        st.rerun()
 
-# Example of how to run this app standalone for testing
-if __name__ == "__main__":
-    # Mock requests.post for backend calls if running standalone without FastAPI
-    import unittest.mock as mock
-    from typing import Optional # Import Optional for type hinting in mock
-    original_requests_post = requests.post
-
-    def mock_requests_post(url, json, *args, **kwargs):
-        if f"{FASTAPI_BASE_URL}/register" in url: # Corrected mock URL
-            email = json.get("email")
-            password = json.get("password")
-            username = json.get("username")
-
-            if "@" not in email or len(password) < 6:
-                mock_response = mock.Mock()
-                mock_response.status_code = 400
-                mock_response.json.return_value = {"detail": "Invalid email or password format."} # Changed to match FastAPI error format
-                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("400 Client Error: Bad Request for url", response=mock_response)
-                return mock_response
-            elif email == "existing@example.com":
-                mock_response = mock.Mock()
-                mock_response.status_code = 409
-                mock_response.json.return_value = {"detail": "User already exists."} # Changed to match FastAPI error format
-                mock_response.raise_for_status = lambda: requests.exceptions.HTTPError("409 Conflict: User already exists", response=mock_response)
-                return mock_response
-            else:
-                mock_response = mock.Mock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {"message": "User registered successfully.", "uid": f"mock_uid_{email.split('@')[0]}"} # Changed to match backend
-                mock_response.raise_for_status = lambda: None
-                return mock_response
-        return original_requests_post(url, json, *args, **kwargs)
-
-    requests.post = mock_requests_post
-    
-    # Initialize Streamlit session state for standalone testing
-    if 'user_id_from_backend' not in st.session_state:
-        st.session_state.user_id_from_backend = 'unauthenticated_test_user'
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = "Register"
-
-    app()
-
-    # Restore original requests.post after testing
-    requests.post = original_requests_post
 
 
