@@ -10,7 +10,7 @@ import asyncio # Import asyncio
 
 # Import generic tools
 from langchain_core.tools import tool
-from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs
+# REMOVED: from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs
 from shared_tools.scraper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 
@@ -813,6 +813,55 @@ def finance_search_web(query: str, user_token: str = "default", max_chars: int =
     # scrape_web is already designed to handle its own logging for success/failure
     return asyncio.run(scrape_web(query=query, user_token=user_token, max_chars=max_chars))
 
+@tool
+def finance_query_uploaded_docs(query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+    """
+    Queries previously uploaded and indexed finance documents for a user using vector similarity search.
+    This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "finance".
+    
+    Args:
+        query (str): The search query to find relevant finance documents (e.g., "my investment portfolio", "company annual report").
+        user_token (str): The unique identifier for the user. Defaults to "default".
+        export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
+        k (int): The number of top relevant documents to retrieve. Defaults to 5.
+    
+    Returns:
+        str: A string containing the combined content of the relevant document chunks,
+             or a message indicating no data/results found, or the export path if exported.
+    """
+    logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
+    return QueryUploadedDocs(query=query, user_token=user_token, section="finance", export=export, k=k)
+
+@tool
+def finance_summarize_document_by_path(file_path_str: str) -> str:
+    """
+    Summarizes a document related to finance (e.g., financial reports, market analysis) located at the given file path.
+    The file path should be accessible by the system (e.g., in the 'uploads' directory).
+    This tool wraps the generic `summarize_document` tool.
+    
+    Args:
+        file_path_str (str): The full path to the document file to be summarized.
+                              Example: "uploads/default/finance/annual_report.pdf"
+    
+    Returns:
+        str: A concise summary of the document content.
+    """
+    logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}'")
+    file_path = Path(file_path_str)
+    if not file_path.exists():
+        logger.error(f"Document not found at '{file_path_str}' for summarization.")
+        return f"Error: Document not found at '{file_path_str}'."
+    
+    try:
+        summary = summarize_document(file_path)
+        return f"Summary of '{file_path.name}':\n{summary}"
+    except ValueError as e:
+        logger.error(f"Error summarizing document '{file_path_str}': {e}")
+        return f"Error summarizing document: {e}"
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during summarization of '{file_path_str}': {e}", exc_info=True)
+        return f"An unexpected error occurred during summarization: {e}"
+
 
 # --- Test Functions (for direct execution of this file) ---
 async def run_finance_tests():
@@ -1080,6 +1129,34 @@ async def run_finance_tests():
         assert any(e['tool_name'] == 'finance_search_web' and e['success'] for e in analytics_tracker.logged_events)
         print("Test 6 Passed (analytics expected for wrapper tool).")
 
+        # Test 7: finance_query_uploaded_docs (generic tool)
+        print("\n--- Test 7: finance_query_uploaded_docs (Generic Tool) ---")
+        analytics_tracker.logged_events.clear()
+        # Mock QueryUploadedDocs to simulate a response
+        class MockQueryUploadedDocs:
+            def __init__(self, query, user_token, section, export, k):
+                self.query = query
+                self.user_token = user_token
+                self.section = section
+                self.export = export
+                self.k = k
+            def __call__(self):
+                return f"Mocked document query results for '{self.query}' in section '{self.section}'."
+        
+        # Temporarily replace QueryUploadedDocs with our mock
+        original_QueryUploadedDocs = QueryUploadedDocs
+        QueryUploadedDocs = MockQueryUploadedDocs
+
+        result_doc_query = await finance_query_uploaded_docs("my financial reports", user_token=test_user_pro)
+        print(f"Document Query Result: {result_doc_query}")
+        assert "Mocked document query results for 'my financial reports' in section 'finance'." in result_doc_query
+        # Analytics for generic tools like QueryUploadedDocs would be logged by DocumentTools
+        # For now, we are focusing on _make_dynamic_api_request and this wrapper.
+        # The actual analytics for the underlying query_uploaded_docs_internal will be logged by DocumentTools.
+        # Here, we expect analytics for the wrapper `finance_query_uploaded_docs` itself.
+        assert any(e['tool_name'] == 'finance_query_uploaded_docs' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 7 Passed (analytics expected for wrapper tool).")
+        QueryUploadedDocs = original_QueryUploadedDocs # Restore original
 
         print("\nAll finance_tool tests with analytics considerations completed.")
 
