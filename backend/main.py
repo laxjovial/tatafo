@@ -143,12 +143,13 @@ async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_curr
 document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
 
 # Initialize domain tool instances, passing necessary dependencies
-# Based on the CryptoTools __init__ signature, it expects:
-# __init__(self, config_manager, log_event, document_tools)
+# Based on the FinanceTools __init__ signature, it expects:
+# __init__(self, config_manager, firestore_manager, log_event, document_tools)
 # We will assume this pattern for other tools as well unless specified otherwise.
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager, # Positional argument
+        firestore_manager, # Added: Positional argument
         log_event, # Positional argument
         document_tools_instance # Positional argument
     ),
