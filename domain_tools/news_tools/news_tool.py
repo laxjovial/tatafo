@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 # Import generic tools
 from langchain_core.tools import tool
-from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs
+# REMOVED: from shared_tools.query_uploaded_docs_tool import QueryUploadedDocs
 from shared_tools.scraper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 
@@ -667,6 +667,8 @@ def news_query_uploaded_docs(query: str, user_token: str = "default", export: Op
              or a message indicating no data/results found, or the export path if exported.
     """
     logger.info(f"Tool: news_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
+    # This will be replaced by a call to self.document_tools.query_uploaded_docs
+    # For now, keeping the original call for review purposes.
     return QueryUploadedDocs(query=query, user_token=user_token, section="news", export=export, k=k)
 
 @tool
@@ -706,8 +708,9 @@ if __name__ == "__main__":
     from unittest.mock import MagicMock, AsyncMock, patch
     import shutil
     import os
+    import sys # Import sys for patching modules
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
-    from shared_tools.python_interpreter_tool import python_interpreter_with_rbac # For testing REPL
+    # from shared_tools.python_interpreter_tool import python_interpreter_with_rbac # For testing REPL
 
     logging.basicConfig(level=logging.INFO)
 
@@ -826,7 +829,7 @@ if __name__ == "__main__":
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
-                'data_analysis_enabled': { # For python interpreter
+                'document_query_enabled': { # Added for document tool
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
@@ -1015,6 +1018,28 @@ if __name__ == "__main__":
         test_user_pro = "mock_pro_token"
         test_user_free = "mock_free_token"
 
+        # Mock for QueryUploadedDocs
+        class MockQueryUploadedDocs:
+            def __init__(self, query, user_token, section, export, k):
+                self.query = query
+                self.user_token = user_token
+                self.section = section
+                self.export = export
+                self.k = k
+            def __call__(self):
+                return f"Mocked document query results for '{self.query}' in section '{self.section}'."
+
+        # Mock for summarize_document
+        class MockSummarizeDocument:
+            def __call__(self, file_path):
+                return f"Mocked summary of {file_path.name}"
+
+        # Patch QueryUploadedDocs and summarize_document in the news_tool module
+        original_QueryUploadedDocs = sys.modules['domain_tools.news_tools.news_tool'].QueryUploadedDocs
+        original_summarize_document = sys.modules['domain_tools.news_tools.news_tool'].summarize_document
+        sys.modules['domain_tools.news_tools.news_tool'].QueryUploadedDocs = MockQueryUploadedDocs
+        sys.modules['domain_tools.news_tools.news_tool'].summarize_document = MockSummarizeDocument()
+
         async def run_news_tests():
             print("\n--- Testing news_tool functions with Analytics ---")
 
@@ -1083,6 +1108,45 @@ if __name__ == "__main__":
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
             print("Test 4 Passed (no analytics expected for generic tool directly).")
 
+            # Test 5: news_query_uploaded_docs (generic tool)
+            print("\n--- Test 5: news_query_uploaded_docs (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            # Mock QueryUploadedDocs to simulate a response
+            class MockQueryUploadedDocs:
+                def __init__(self, query, user_token, section, export, k):
+                    self.query = query
+                    self.user_token = user_token
+                    self.section = section
+                    self.export = export
+                    self.k = k
+                def __call__(self):
+                    return f"Mocked document query results for '{self.query}' in section '{self.section}'."
+            
+            # Temporarily replace QueryUploadedDocs with our mock
+            original_QueryUploadedDocs_in_test = sys.modules['domain_tools.news_tools.news_tool'].QueryUploadedDocs
+            sys.modules['domain_tools.news_tools.news_tool'].QueryUploadedDocs = MockQueryUploadedDocs
+
+            result_doc_query = await news_query_uploaded_docs("summary of Q3 earnings", user_token=test_user_pro)
+            print(f"Document Query Result: {result_doc_query}")
+            assert "Mocked document query results for 'summary of Q3 earnings' in section 'news'." in result_doc_query
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 5 Passed (no analytics expected for generic tool directly, will be logged by DocumentTools).")
+            sys.modules['domain_tools.news_tools.news_tool'].QueryUploadedDocs = original_QueryUploadedDocs_in_test # Restore original
+
+            # Test 6: news_summarize_document_by_path (generic tool)
+            print("\n--- Test 6: news_summarize_document_by_path (Generic Tool) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            # Create a dummy file for summarization test
+            dummy_file_path = Path("uploads") / test_user_pro / "news" / "daily_briefing.txt"
+            dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
+            dummy_file_path.write_text("This is a dummy news briefing content for testing summarization.")
+
+            result_summarize = await news_summarize_document_by_path(str(dummy_file_path))
+            print(f"Summarize Result: {result_summarize}")
+            assert "Mocked summary of daily_briefing.txt" in result_summarize
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
+            print("Test 6 Passed (no analytics expected for generic tool directly).")
+
             print("\nAll news_tool tests with analytics considerations completed.")
 
         await run_news_tests()
@@ -1096,4 +1160,3 @@ if __name__ == "__main__":
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
-
