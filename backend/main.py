@@ -57,15 +57,15 @@ if not firebase_admin._apps:
 
 # Initialize Firestore Manager
 db_client = firestore.client(firebase_app) # Get the Firestore client instance
-auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
+auth_client = auth # CORRECTED: Get the Auth client instance directly from the module
 
 firestore_manager = FirestoreManager()
 logger.info("FirestoreManager initialized.")
 
 # Initialize Analytics Tracker
-# You need to provide db, auth, app_id, and user_id to initialize_analytics
-# Assuming you have an 'app_id' in your config_manager or as an environment variable
-app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
+# Use os.getenv to fetch the app_id from environment variables
+# The name of the environment variable will be "TATA_AGENT_APP_ID"
+app_id_for_analytics = os.getenv("TATA_AGENT_APP_ID", "default-backend-app-id")
 # For initial analytics setup, use a generic user ID as no end-user is authenticated yet
 user_id_for_analytics = "backend-service-user" 
 
