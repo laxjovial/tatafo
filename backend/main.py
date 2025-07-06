@@ -19,7 +19,7 @@ from utils.analytics_tracker import initialize_analytics, log_event
 from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import module
 import shared_tools.vector_utils as vector_utils_module # Import module
-from utils.date_parser import parse_date_string
+from utils.date_parser import parse_date_to_yyyymmdd # Corrected import: changed from parse_date_string
 from utils.user_manager import UserManager
 
 # Import domain tools
@@ -347,8 +347,9 @@ async def get_analytics_events_endpoint(
     logger.info(f"Admin user {current_user['uid']} requesting analytics events.")
     
     # Parse dates if provided
-    parsed_start_date = parse_date_string(start_date) if start_date else None
-    parsed_end_date = parse_date_string(end_date) if end_date else None
+    # Corrected usage: Renamed parse_date_string to parse_date_to_yyyymmdd
+    parsed_start_date = parse_date_to_yyyymmdd(start_date) if start_date else None
+    parsed_end_date = parse_date_to_yyyymmdd(end_date) if end_date else None
 
     try:
         events = await firestore_manager.get_analytics_events(
