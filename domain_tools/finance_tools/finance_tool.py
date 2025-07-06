@@ -6,6 +6,7 @@ import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime, timedelta
+import asyncio # Import asyncio
 
 # Import generic tools
 from langchain_core.tools import tool
@@ -347,15 +348,15 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
                             error_message=error_msg
                         )
                     return None
-            else:
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
-                    elif '.' in str(original_key_path):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
-                    else:
-                        mapped_data[mapped_key] = data_to_map.get(original_key_path)
-                final_result = mapped_data
+            
+            for mapped_key, original_key_path in data_map.items():
+                if isinstance(original_key_path, list):
+                    mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
+                elif '.' in str(original_key_path):
+                    mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
+                else:
+                    mapped_data[mapped_key] = data_to_map.get(original_key_path)
+            final_result = mapped_data
 
         if log_tool_usage_enabled:
             await analytics_tracker.log_tool_usage(
@@ -418,108 +419,173 @@ async def _make_dynamic_api_request( # Made async to await analytics_tracker.log
 
 # --- Mock Data for Fallback ---
 _mock_finance_data = {
-    "stock_price": {
-        "AAPL": {"price": 175.00, "currency": "USD", "last_updated": datetime.now().isoformat()},
-        "GOOGL": {"price": 150.50, "currency": "USD", "last_updated": datetime.now().isoformat()}
-    },
-    "company_overview": {
+    "stock_prices": {
+        "GOOG": {
+            "date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "open": 150.00,
+            "high": 152.50,
+            "low": 149.80,
+            "close": 151.20,
+            "volume": 1000000
+        },
         "AAPL": {
-            "symbol": "AAPL",
-            "asset_type": "Equity",
-            "name": "Apple Inc.",
-            "description": "Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.",
-            "exchange": "NASDAQ",
-            "currency": "USD",
-            "country": "USA",
-            "sector": "Technology",
-            "industry": "Consumer Electronics",
-            "market_capitalization": "2.7T USD",
-            "pe_ratio": "28.5",
-            "dividend_yield": "0.5%",
-            "52_week_high": "199.62",
-            "52_week_low": "129.00",
-            "address": "One Apple Park Way, Cupertino, California, 95014, United States"
+            "date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "open": 170.00,
+            "high": 171.50,
+            "low": 169.80,
+            "close": 170.80,
+            "volume": 1500000
         }
     },
-    "forex_rate": {
-        "USD/JPY": {"exchange_rate": 155.00, "last_refreshed": datetime.now().isoformat(), "from_currency": "USD", "to_currency": "JPY"},
-        "EUR/USD": {"exchange_rate": 1.08, "last_refreshed": datetime.now().isoformat(), "from_currency": "EUR", "to_currency": "USD"}
-    },
-    "historical_data": {
+    "company_overview": {
+        "GOOG": {
+            "symbol": "GOOG",
+            "name": "Alphabet Inc.",
+            "exchange": "NASDAQ",
+            "sector": "Technology",
+            "industry": "Internet Content & Information",
+            "description": "Alphabet Inc. is an American multinational technology conglomerate holding company...",
+            "market_cap": "2.0T",
+            "pe_ratio": 28.5
+        },
         "AAPL": {
-            (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"): {"open": 170.00, "high": 176.00, "low": 169.50, "close": 175.00, "volume": 80000000},
-            (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"): {"open": 168.00, "high": 171.00, "low": 167.50, "close": 170.00, "volume": 75000000}
+            "symbol": "AAPL",
+            "name": "Apple Inc.",
+            "exchange": "NASDAQ",
+            "sector": "Technology",
+            "industry": "Consumer Electronics",
+            "description": "Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.",
+            "market_cap": "3.0T",
+            "pe_ratio": 32.1
+        }
+    },
+    "currency_exchange_rates": {
+        "USD_EUR": {
+            "from_currency": "USD",
+            "to_currency": "EUR",
+            "exchange_rate": 0.92,
+            "last_refreshed": datetime.now().isoformat()
+        },
+        "GBP_USD": {
+            "from_currency": "GBP",
+            "to_currency": "USD",
+            "exchange_rate": 1.27,
+            "last_refreshed": datetime.now().isoformat()
+        }
+    },
+    "economic_indicators": {
+        "unemployment_rate_us": {
+            "indicator": "Unemployment Rate (US)",
+            "date": (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
+            "value": 3.9,
+            "unit": "%",
+            "source": "Bureau of Labor Statistics"
+        },
+        "gdp_growth_us": {
+            "indicator": "GDP Growth Rate (US)",
+            "date": (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
+            "value": 2.5,
+            "unit": "%",
+            "source": "Bureau of Economic Analysis"
         }
     }
 }
 
 @tool
-def get_stock_price(symbol: str, user_token: str = "default") -> str:
+def get_stock_price(symbol: str, date: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Retrieves the current stock price for a given stock symbol.
+    Retrieves the daily stock price (Open, High, Low, Close, Volume) for a given stock symbol
+    on a specific date. If no date is provided, it fetches the latest available daily price.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        symbol (str): The stock ticker symbol (e.g., "AAPL" for Apple, "GOOGL" for Alphabet).
+        symbol (str): The stock ticker symbol (e.g., "AAPL", "GOOG").
+        date (str, optional): The specific date in YYYY-MM-DD format (e.g., "2023-01-15").
+                              If not provided, the latest available data is returned.
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of the stock price and last updated time, or an error/fallback message.
+        str: A formatted string of stock price information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_stock_price called for symbol: '{symbol}' by user: {user_token}")
+    logger.info(f"Tool: get_stock_price called for symbol: '{symbol}', date: '{date}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'finance_tool_access', False):
         return "Error: Access to finance tools is not enabled for your current tier."
     
-    params = {"symbol": symbol.upper()}
+    params = {"symbol": symbol}
+    parsed_date = None
+    if date:
+        parsed_date = parse_date_to_yyyymmdd(date)
+        if not parsed_date:
+            return "Error: Could not parse the provided date. Please ensure the date is valid."
+        params["date"] = parsed_date
+
     api_data = asyncio.run(_make_dynamic_api_request("finance", "get_stock_price", params, user_token))
 
     if api_data:
         try:
-            price = api_data.get("price")
-            currency = api_data.get("currency", "USD")
-            last_updated = api_data.get("last_updated")
+            # Alpha Vantage returns a dictionary where keys are dates. We need to handle this.
+            # If a specific date was requested, try to find it. Otherwise, get the first (latest) entry.
+            if parsed_date:
+                price_data = api_data.get("data", {}).get(parsed_date)
+            else:
+                # Get the first (latest) entry if no specific date was requested
+                all_dates = list(api_data.get("data", {}).keys())
+                if all_dates:
+                    latest_date = all_dates[0] # Assuming API returns in reverse chronological order
+                    price_data = api_data["data"][latest_date]
+                    parsed_date = latest_date # Update parsed_date for the response string
+                else:
+                    price_data = None
 
-            if price is not None:
-                response_str = f"Current price of {symbol.upper()}: {price} {currency}"
-                if last_updated:
-                    # Attempt to parse and format if it's an ISO string
-                    try:
-                        last_updated_dt = datetime.fromisoformat(last_updated)
-                        response_str += f" (as of {last_updated_dt.strftime('%Y-%m-%d %H:%M')})"
-                    except ValueError:
-                        response_str += f" (last updated: {last_updated})" # Use as is if not ISO
+            if price_data:
+                open_price = price_data.get("open")
+                high_price = price_data.get("high")
+                low_price = price_data.get("low")
+                close_price = price_data.get("close")
+                volume = price_data.get("volume")
+
+                response_str = (
+                    f"Stock Price for {symbol} on {parsed_date or 'latest available date'}:\n"
+                    f"  Open: {open_price}\n"
+                    f"  High: {high_price}\n"
+                    f"  Low: {low_price}\n"
+                    f"  Close: {close_price}\n"
+                    f"  Volume: {volume}"
+                )
                 return response_str
             else:
-                logger.warning(f"Live API data for {symbol} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live stock price for {symbol}. Falling back to mock data."
+                logger.warning(f"Live API data for stock price for '{symbol}' on '{parsed_date}' not found or incomplete. Raw: {api_data}")
+                return f"Could not retrieve live stock price for '{symbol}' on '{parsed_date or 'latest available date'}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live stock price data for {symbol}: {e}")
-            return f"Error parsing live data for {symbol}. Falling back to mock data."
+            logger.error(f"Error parsing live stock price data for '{symbol}': {e}")
+            return f"Error parsing live data for '{symbol}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data = _mock_finance_data.get("stock_price", {}).get(symbol.upper())
-    if mock_data:
-        response_str = f"Current price of {symbol.upper()}: {mock_data['price']} {mock_data['currency']} (Mock Data Fallback)"
-        if mock_data.get('last_updated'):
-            try:
-                last_updated_dt = datetime.fromisoformat(mock_data['last_updated'])
-                response_str += f" (as of {last_updated_dt.strftime('%Y-%m-%d %H:%M')})"
-            except ValueError:
-                response_str += f" (last updated: {mock_data['last_updated']})"
+    mock_data = _mock_finance_data.get("stock_prices", {}).get(symbol.upper())
+    if mock_data and (not parsed_date or mock_data.get("date") == parsed_date):
+        response_str = (
+            f"Stock Price for {symbol} on {mock_data['date']} (Mock Data Fallback):\n"
+            f"  Open: {mock_data['open']}\n"
+            f"  High: {mock_data['high']}\n"
+            f"  Low: {mock_data['low']}\n"
+            f"  Close: {mock_data['close']}\n"
+            f"  Volume: {mock_data['volume']}"
+        )
         return response_str
     else:
-        return f"Stock price for {symbol} not found. (API/Mock Fallback Failed)"
+        return f"Stock price information not found for '{symbol}' on '{date or 'latest available date'}'. (API/Mock Fallback Failed)"
 
 
 @tool
 def get_company_overview(symbol: str, user_token: str = "default") -> str:
     """
-    Retrieves a detailed overview of a company based on its stock symbol.
+    Retrieves a detailed overview of a company based on its stock symbol,
+    including sector, industry, description, and market capitalization.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        symbol (str): The stock ticker symbol (e.g., "AAPL").
+        symbol (str): The stock ticker symbol (e.g., "AAPL", "GOOG").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
@@ -529,630 +595,503 @@ def get_company_overview(symbol: str, user_token: str = "default") -> str:
 
     if not get_user_tier_capability(user_token, 'finance_tool_access', False):
         return "Error: Access to finance tools is not enabled for your current tier."
-
-    params = {"symbol": symbol.upper()}
+    
+    params = {"symbol": symbol}
     api_data = asyncio.run(_make_dynamic_api_request("finance", "get_company_overview", params, user_token))
 
     if api_data:
         try:
             name = api_data.get("name")
-            description = api_data.get("description")
+            exchange = api_data.get("exchange")
             sector = api_data.get("sector")
             industry = api_data.get("industry")
-            market_cap = api_data.get("market_capitalization")
+            description = api_data.get("description")
+            market_cap = api_data.get("market_cap")
             pe_ratio = api_data.get("pe_ratio")
-            dividend_yield = api_data.get("dividend_yield")
 
             if name and description:
                 response_str = (
-                    f"Company Overview for {name} ({symbol.upper()}):\n"
-                    f"  Description: {description}\n"
+                    f"Company Overview for {name} ({symbol}):\n"
+                    f"  Exchange: {exchange}\n"
                     f"  Sector: {sector}\n"
                     f"  Industry: {industry}\n"
                     f"  Market Cap: {market_cap}\n"
                     f"  P/E Ratio: {pe_ratio}\n"
-                    f"  Dividend Yield: {dividend_yield}\n"
+                    f"  Description: {description}"
                 )
                 return response_str
             else:
-                logger.warning(f"Live API data for company overview of {symbol} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live company overview for {symbol}. Falling back to mock data."
+                logger.warning(f"Live API data for company overview for '{symbol}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live company overview for '{symbol}'. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live company overview data for {symbol}: {e}")
-            return f"Error parsing live data for {symbol}. Falling back to mock data."
+            logger.error(f"Error parsing live company overview data for '{symbol}': {e}")
+            return f"Error parsing live data for '{symbol}'. Falling back to mock data."
 
     # Fallback to mock data
     mock_data = _mock_finance_data.get("company_overview", {}).get(symbol.upper())
     if mock_data:
         response_str = (
-            f"Company Overview for {mock_data['name']} ({symbol.upper()}) (Mock Data Fallback):\n"
-            f"  Description: {mock_data['description']}\n"
+            f"Company Overview for {mock_data['name']} ({mock_data['symbol']}) (Mock Data Fallback):\n"
+            f"  Exchange: {mock_data['exchange']}\n"
             f"  Sector: {mock_data['sector']}\n"
             f"  Industry: {mock_data['industry']}\n"
-            f"  Market Cap: {mock_data['market_capitalization']}\n"
+            f"  Market Cap: {mock_data['market_cap']}\n"
             f"  P/E Ratio: {mock_data['pe_ratio']}\n"
-            f"  Dividend Yield: {mock_data['dividend_yield']}\n"
+            f"  Description: {mock_data['description']}"
         )
         return response_str
     else:
-        return f"Company overview for {symbol} not found. (API/Mock Fallback Failed)"
+        return f"Company overview information not found for '{symbol}'. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_forex_exchange_rate(from_currency: str, to_currency: str, user_token: str = "default") -> str:
+def get_currency_exchange_rate(from_currency: str, to_currency: str, user_token: str = "default") -> str:
     """
-    Retrieves the current exchange rate between two currencies.
+    Retrieves the current exchange rate between two specified currencies.
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        from_currency (str): The symbol of the currency to convert from (e.g., "USD", "EUR").
-        to_currency (str): The symbol of the currency to convert to (e.g., "JPY", "GBP").
+        from_currency (str): The currency to convert from (e.g., "USD", "EUR").
+        to_currency (str): The currency to convert to (e.g., "GBP", "JPY").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
         str: A formatted string of the exchange rate, or an error/fallback message.
     """
-    logger.info(f"Tool: get_forex_exchange_rate called for {from_currency}/{to_currency} by user: {user_token}")
+    logger.info(f"Tool: get_currency_exchange_rate called for {from_currency} to {to_currency} by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'finance_tool_access', False):
         return "Error: Access to finance tools is not enabled for your current tier."
-
+    
     params = {"from_currency": from_currency.upper(), "to_currency": to_currency.upper()}
-    api_data = asyncio.run(_make_dynamic_api_request("finance", "get_forex_exchange_rate", params, user_token))
+    api_data = asyncio.run(_make_dynamic_api_request("finance", "get_currency_exchange_rate", params, user_token))
 
     if api_data:
         try:
-            exchange_rate = api_data.get("exchange_rate")
+            rate = api_data.get("exchange_rate")
             last_refreshed = api_data.get("last_refreshed")
-
-            if exchange_rate is not None:
-                response_str = f"1 {from_currency.upper()} = {exchange_rate} {to_currency.upper()}"
+            if rate is not None:
+                response_str = (
+                    f"Current Exchange Rate:\n"
+                    f"  1 {from_currency.upper()} = {rate} {to_currency.upper()}\n"
+                )
                 if last_refreshed:
                     try:
                         last_refreshed_dt = datetime.fromisoformat(last_refreshed)
-                        response_str += f" (as of {last_refreshed_dt.strftime('%Y-%m-%d %H:%M')})"
+                        response_str += f"  Last Refreshed: {last_refreshed_dt.strftime('%Y-%m-%d %H:%M')}"
                     except ValueError:
-                        response_str += f" (last refreshed: {last_refreshed})"
+                        response_str += f"  Last Refreshed: {last_refreshed}"
                 return response_str
             else:
-                logger.warning(f"Live API data for forex {from_currency}/{to_currency} is incomplete. Raw: {api_data}")
-                return f"Could not retrieve complete live exchange rate for {from_currency}/{to_currency}. Falling back to mock data."
+                logger.warning(f"Live API data for exchange rate {from_currency}/{to_currency} is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live exchange rate for {from_currency} to {to_currency}. Falling back to mock data."
         except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing live forex data for {from_currency}/{to_currency}: {e}")
-            return f"Error parsing live data for {from_currency}/{to_currency}. Falling back to mock data."
+            logger.error(f"Error parsing live currency exchange rate data for {from_currency}/{to_currency}: {e}")
+            return f"Error parsing live data for {from_currency} to {to_currency}. Falling back to mock data."
 
     # Fallback to mock data
-    mock_key = f"{from_currency.upper()}/{to_currency.upper()}"
-    mock_data = _mock_finance_data.get("forex_rate", {}).get(mock_key)
+    mock_key = f"{from_currency.upper()}_{to_currency.upper()}"
+    mock_data = _mock_finance_data.get("currency_exchange_rates", {}).get(mock_key)
     if mock_data:
-        response_str = f"1 {mock_data['from_currency']} = {mock_data['exchange_rate']} {mock_data['to_currency']} (Mock Data Fallback)"
+        response_str = (
+            f"Current Exchange Rate (Mock Data Fallback):\n"
+            f"  1 {mock_data['from_currency']} = {mock_data['exchange_rate']} {mock_data['to_currency']}\n"
+        )
         if mock_data.get('last_refreshed'):
             try:
                 last_refreshed_dt = datetime.fromisoformat(mock_data['last_refreshed'])
-                response_str += f" (as of {last_refreshed_dt.strftime('%Y-%m-%d %H:%M')})"
+                response_str += f"  Last Refreshed: {last_refreshed_dt.strftime('%Y-%m-%d %H:%M')}"
             except ValueError:
-                response_str += f" (last refreshed: {mock_data['last_refreshed']})"
+                response_str += f"  Last Refreshed: {mock_data['last_refreshed']}"
         return response_str
     else:
-        return f"Exchange rate for {from_currency}/{to_currency} not found. (API/Mock Fallback Failed)"
+        return f"Exchange rate information not found for {from_currency} to {to_currency}. (API/Mock Fallback Failed)"
 
 
 @tool
-def get_historical_stock_prices(symbol: str, date: str, user_token: str = "default") -> str:
+def get_economic_indicator(indicator_name: str, country: Optional[str] = None, user_token: str = "default") -> str:
     """
-    Retrieves the historical stock prices (open, high, low, close, volume) for a given symbol on a specific date.
-    Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'January 1, 2023').
+    Retrieves the latest value for a specified economic indicator, optionally filtered by country.
+    Examples of indicators: "Unemployment Rate", "GDP Growth".
     Falls back to mock data if API key is missing or API call fails.
 
     Args:
-        symbol (str): The stock ticker symbol (e.g., "AAPL").
-        date (str): The specific date for which to retrieve historical data.
+        indicator_name (str): The name of the economic indicator (e.g., "Unemployment Rate", "GDP Growth").
+        country (str, optional): The country for which to retrieve the indicator (e.g., "US", "Germany").
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
 
     Returns:
-        str: A formatted string of historical stock data, or an error/fallback message.
+        str: A formatted string of economic indicator information, or an error/fallback message.
     """
-    logger.info(f"Tool: get_historical_stock_prices called for symbol: '{symbol}', date: '{date}' by user: {user_token}")
+    logger.info(f"Tool: get_economic_indicator called for indicator: '{indicator_name}', country: '{country}' by user: {user_token}")
 
     if not get_user_tier_capability(user_token, 'finance_tool_access', False):
         return "Error: Access to finance tools is not enabled for your current tier."
+    
+    params = {"indicator_name": indicator_name}
+    if country: params["country"] = country
 
-    parsed_date = parse_date_to_yyyymmdd(date)
-    if not parsed_date:
-        return "Error: Could not parse the provided date. Please ensure the date is valid."
+    api_data = asyncio.run(_make_dynamic_api_request("finance", "get_economic_indicator", params, user_token))
 
-    params = {"symbol": symbol.upper(), "date": parsed_date}
-    api_data = asyncio.run(_make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_token))
+    if api_data:
+        try:
+            indicator = api_data.get("indicator")
+            date = api_data.get("date")
+            value = api_data.get("value")
+            unit = api_data.get("unit")
+            source = api_data.get("source")
 
-    if api_data and api_data.get("data"): # Note: api_data is wrapped in {"data": ...} for lists/dicts where keys are dates
-        # For historical data, the 'data' key holds a dict where keys are dates
-        daily_data = api_data["data"].get(parsed_date)
-        if daily_data:
-            try:
+            if indicator and value is not None:
                 response_str = (
-                    f"Historical Stock Data for {symbol.upper()} on {parsed_date}:\n"
-                    f"  Open: {daily_data.get('open', 'N/A')}\n"
-                    f"  High: {daily_data.get('high', 'N/A')}\n"
-                    f"  Low: {daily_data.get('low', 'N/A')}\n"
-                    f"  Close: {daily_data.get('close', 'N/A')}\n"
-                    f"  Volume: {daily_data.get('volume', 'N/A')}\n"
+                    f"Economic Indicator: {indicator}\n"
+                    f"  Value: {value}{unit or ''}\n"
+                    f"  Date: {date or 'N/A'}\n"
+                    f"  Source: {source or 'N/A'}"
                 )
                 return response_str
-            except (ValueError, TypeError) as e:
-                logger.error(f"Error parsing live historical data for {symbol} on {date}: {e}")
-                return f"Error parsing live data for {symbol} on {date}. Falling back to mock data."
-        else:
-            logger.warning(f"No live historical data found for {symbol} on {date}. Raw: {api_data}")
-            return f"No live historical data found for {symbol} on {date}. Falling back to mock data."
+            else:
+                logger.warning(f"Live API data for economic indicator '{indicator_name}' is incomplete. Raw: {api_data}")
+                return f"Could not retrieve complete live economic indicator for '{indicator_name}'. Falling back to mock data."
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing live economic indicator data for '{indicator_name}': {e}")
+            return f"Error parsing live data for '{indicator_name}'. Falling back to mock data."
 
     # Fallback to mock data
-    mock_data_for_symbol = _mock_finance_data.get("historical_data", {}).get(symbol.upper(), {})
-    mock_daily_data = mock_data_for_symbol.get(parsed_date)
-    if mock_daily_data:
+    mock_key_prefix = indicator_name.lower().replace(" ", "_")
+    if country:
+        mock_key_prefix += f"_{country.lower()}"
+    
+    mock_data = None
+    for key, entry in _mock_finance_data.get("economic_indicators", {}).items():
+        if mock_key_prefix in key:
+            mock_data = entry
+            break
+
+    if mock_data:
         response_str = (
-            f"Historical Stock Data for {symbol.upper()} on {parsed_date} (Mock Data Fallback):\n"
-            f"  Open: {mock_daily_data['open']}\n"
-            f"  High: {mock_daily_data['high']}\n"
-            f"  Low: {mock_daily_data['low']}\n"
-            f"  Close: {mock_daily_data['close']}\n"
-            f"  Volume: {mock_daily_data['volume']}\n"
+            f"Economic Indicator: {mock_data['indicator']} (Mock Data Fallback)\n"
+            f"  Value: {mock_data['value']}{mock_data.get('unit', '')}\n"
+            f"  Date: {mock_data['date']}\n"
+            f"  Source: {mock_data['source']}"
         )
         return response_str
     else:
-        return f"Historical stock data for {symbol} on {date} not found. (API/Mock Fallback Failed)"
+        return f"Economic indicator information not found for '{indicator_name}'. (API/Mock Fallback Failed)"
 
-
-# --- Existing Generic Tools (not directly using external APIs, but can be used in finance context) ---
 
 @tool
 def finance_search_web(query: str, user_token: str = "default", max_chars: int = 2000) -> str:
     """
-    Searches the web for finance-related information using a smart search fallback mechanism.
-    This tool wraps the generic `scrape_web` tool, providing a finance-specific interface.
-    
+    Searches the web for general finance-related information using a smart search fallback mechanism.
+    This tool is suitable for queries that cannot be answered by specific structured finance APIs.
+    It leverages a web scraping tool to get information from the internet.
+
     Args:
-        query (str): The finance-related search query (e.g., "impact of inflation on stock market", "best investment strategies 2024").
-        user_token (str): The unique identifier for the user. Defaults to "default".
-        max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
-    
+        query (str): The search query (e.g., "latest financial news", "explanation of quantitative easing").
+        user_token (str, optional): The unique identifier for the user. Defaults to "default".
+        max_chars (int, optional): The maximum number of characters to return from the scraped content.
+                                    Defaults to 2000.
+
     Returns:
-        str: A string containing relevant information from the web.
+        str: A summary of search results or an error message.
     """
-    logger.info(f"Tool: finance_search_web called with query: '{query}' for user: '{user_token}'")
-    return scrape_web(query=query, user_token=user_token, max_chars=max_chars)
+    logger.info(f"Tool: finance_search_web called for query: '{query}' by user: {user_token}")
 
-@tool
-def finance_query_uploaded_docs(query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
-    """
-    Queries previously uploaded and indexed financial documents for a user using vector similarity search.
-    This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "finance".
+    if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+        return "Error: Access to finance tools is not enabled for your current tier."
     
-    Args:
-        query (str): The search query to find relevant financial documents (e.g., "annual report of company X", "my investment portfolio details").
-        user_token (str): The unique identifier for the user. Defaults to "default".
-        export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
-        k (int): The number of top relevant documents to retrieve. Defaults to 5.
-    
-    Returns:
-        str: A string containing the combined content of the relevant document chunks,
-             or a message indicating no data/results found, or the export path if exported.
-    """
-    logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
-    return QueryUploadedDocs(query=query, user_token=user_token, section="finance", export=export, k=k)
+    # Log the generic web search tool usage
+    asyncio.create_task(analytics_tracker.log_tool_usage(
+        tool_name="finance_search_web",
+        tool_params={"query": query, "max_chars": max_chars},
+        user_token=user_token,
+        success=True, # Assume success for logging purposes here, actual success handled by scrape_web
+        error_message=None
+    ))
 
-@tool
-def finance_summarize_document_by_path(file_path_str: str) -> str:
-    """
-    Summarizes a document related to finance or economics located at the given file path.
-    The file path should be accessible by the system (e.g., in the 'uploads' directory).
-    This tool wraps the generic `summarize_document` tool.
-    
-    Args:
-        file_path_str (str): The full path to the document file to be summarized.
-                              Example: "uploads/default/finance/Q3_earnings.pdf"
-    
-    Returns:
-        str: A concise summary of the document content.
-    """
-    logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}'")
-    file_path = Path(file_path_str)
-    if not file_path.exists():
-        logger.error(f"Document not found at '{file_path_str}' for summarization.")
-        return f"Error: Document not found at '{file_path_str}'."
-    
-    try:
-        summary = summarize_document(file_path)
-        return f"Summary of '{file_path.name}':\n{summary}"
-    except ValueError as e:
-        logger.error(f"Error summarizing document '{file_path_str}': {e}")
-        return f"Error summarizing document: {e}"
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred during summarization of '{file_path_str}': {e}", exc_info=True)
-        return f"An unexpected error occurred during summarization: {e}"
+    # Use the generic scrape_web tool for web search
+    # scrape_web is already designed to handle its own logging for success/failure
+    return asyncio.run(scrape_web(query=query, user_token=user_token, max_chars=max_chars))
 
 
-# CLI Test (optional)
-if __name__ == "__main__":
-    import sys
-    from unittest.mock import MagicMock, AsyncMock, patch
-    import shutil
-    import os
-    from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
-    from shared_tools.python_interpreter_tool import python_interpreter_with_rbac # For testing REPL
-    import asyncio # Import asyncio for running async functions
+# --- Test Functions (for direct execution of this file) ---
+async def run_finance_tests():
+    """Runs a series of tests for the finance tools."""
+    print("--- Running Finance Tool Tests ---")
+    test_user_pro = "test_user_pro_finance_123" # A dummy user token for testing
 
-    logging.basicConfig(level=logging.INFO)
-
-    # Mock Streamlit secrets and config_manager for local testing
-    class MockSecrets:
-        def __init__(self):
-            self.alphavantage_api_key = "MOCK_ALPHAVANTAGE_API_KEY"
-            self.openai_api_key = "sk-mock-openai-key-12345"
-            self.google_api_key = "AIzaSy-mock-google-key"
-            self.firebase_config = "{}"
-            self.serpapi_api_key = "MOCK_SERPAPI_KEY" # For scrape_web
-
-        def get(self, key, default=None):
-            return getattr(self, key, default)
-    
+    # Mock config_manager and analytics_tracker for testing context
     class MockConfigManager:
-        _instance = None
-        _is_loaded = False
-        def __init__(self):
-            if MockConfigManager._instance is not None:
-                raise Exception("ConfigManager is a singleton. Use get_instance().")
-            MockConfigManager._instance = self
-            self._config_data = {
-                'llm': {'max_summary_input_chars': 10000},
-                'rag': {'chunk_size': 500, 'chunk_overlap': 50, 'max_query_results_k': 10},
-                'web_scraping': {
-                    'user_agent': 'Mozilla/5.0 (Test; Python)',
-                    'timeout_seconds': 1 # Short timeout for mocks
-                },
-                'tiers': {},
-                'default_user_tier': 'free',
-                'default_user_roles': ['user'],
-                'api_defaults': { # Mock api_defaults
-                    'finance': 'alphavantage'
-                },
-                'analytics': { # Mock analytics settings
-                    'enabled': True,
-                    'log_tool_usage': True,
-                    'log_query_failures': True
-                }
-            }
-            self._api_providers_data = { # Mock api_providers_data for finance
-                "finance": {
-                    "alphavantage": {
-                        "base_url": "https://www.alphavantage.co/query",
-                        "api_key_name": "alphavantage_api_key",
-                        "api_key_param_name": "apikey",
-                        "functions": {
-                            "get_stock_price": {
-                                "function_param": "GLOBAL_QUOTE",
-                                "required_params": ["symbol"],
-                                "response_path": ["Global Quote"],
-                                "data_map": {
-                                    "price": "05. price",
-                                    "currency": "08. previous close", # Mocking currency here, real API has no direct currency
-                                    "last_updated": "07. latest trading day" # Mocking as last updated
-                                }
-                            },
-                            "get_company_overview": {
-                                "function_param": "OVERVIEW",
-                                "required_params": ["symbol"],
-                                "response_path": [], # Root is the data
-                                "data_map": {
-                                    "name": "Name",
-                                    "description": "Description",
-                                    "sector": "Sector",
-                                    "industry": "Industry",
-                                    "market_capitalization": "MarketCapitalization",
-                                    "pe_ratio": "PERatio",
-                                    "dividend_yield": "DividendYield"
-                                }
-                            },
-                            "get_forex_exchange_rate": {
-                                "function_param": "CURRENCY_EXCHANGE_RATE",
-                                "required_params": ["from_currency", "to_currency"],
-                                "response_path": ["Realtime Currency Exchange Rate"],
-                                "data_map": {
-                                    "from_currency": "1. From_Currency Code",
-                                    "to_currency": "3. To_Currency Code",
-                                    "exchange_rate": "5. Exchange Rate",
-                                    "last_refreshed": "6. Last Refreshed"
-                                }
-                            },
-                            "get_historical_stock_prices": {
-                                "function_param": "TIME_SERIES_DAILY",
-                                "required_params": ["symbol"],
-                                "optional_params": ["outputsize"], # full or compact
-                                "response_path": ["Time Series (Daily)"], # This will return a dict of dates
-                                "data_map": {
-                                    "open": "1. open",
-                                    "high": "2. high",
-                                    "low": "3. low",
-                                    "close": "4. close",
-                                    "volume": "5. volume"
-                                }
+        def get(self, key, default=None):
+            if key == "analytics.log_tool_usage":
+                return True # Enable logging for tests
+            if key == "web_scraping.timeout_seconds":
+                return 5
+            return default
+        
+        def get_secret(self, key):
+            # Simulate fetching a secret (e.g., from secrets.toml)
+            if "alphavantage_api_key" in key:
+                return "YOUR_ALPHAVANTAGE_API_KEY_HERE" # Use a dummy key for testing
+            if "exchangerate_api_key" in key:
+                return "YOUR_EXCHANGERATE_API_KEY_HERE" # Use a dummy key for testing
+            return None
+
+        def get_api_provider_config(self, domain, provider_name):
+            # Simplified mock for Alpha Vantage and ExchangeRate-API
+            if domain == "finance" and provider_name == "alphavantage":
+                return {
+                    "base_url": "https://www.alphavantage.co/query",
+                    "api_key_name": "alphavantage_api_key",
+                    "api_key_param_name": "apikey",
+                    "functions": {
+                        "get_stock_price": {
+                            "function_param": "TIME_SERIES_DAILY",
+                            "required_params": ["symbol"],
+                            "optional_params": [],
+                            "response_path": ["Time Series (Daily)"],
+                            "data_map": {
+                                "open": "1. open",
+                                "high": "2. high",
+                                "low": "3. low",
+                                "close": "4. close",
+                                "volume": "5. volume"
+                            }
+                        },
+                        "get_company_overview": {
+                            "function_param": "OVERVIEW",
+                            "required_params": ["symbol"],
+                            "optional_params": [],
+                            "response_path": [], # Root of the response is the data
+                            "data_map": {
+                                "name": "Name",
+                                "exchange": "Exchange",
+                                "sector": "Sector",
+                                "industry": "Industry",
+                                "description": "Description",
+                                "market_cap": "MarketCapitalization",
+                                "pe_ratio": "PERatio"
                             }
                         }
                     }
                 }
-            }
-            self._is_loaded = True
-        
-        def get(self, key, default=None):
-            parts = key.split('.')
-            val = self._config_data
-            for part in parts:
-                if isinstance(val, dict) and part in val:
-                    val = val[part]
-                else:
-                    return default
-            return val
-        
-        def get_secret(self, key, default=None):
-            mock_secrets_instance = MockSecrets()
-            return mock_secrets_instance.get(key, default)
-
-        def set_secret(self, key, value):
-            pass
-        
-        def get_api_provider_config(self, domain: str, provider_name: str) -> Optional[Dict[str, Any]]:
-            return self._api_providers_data.get(domain, {}).get(provider_name)
-
-        def get_domain_api_providers(self, domain: str) -> Dict[str, Any]:
-            return self._api_providers_data.get(domain, {})
-
-
-    # Mock user_manager.get_current_user and get_user_tier_capability for testing RBAC
-    class MockUserManager:
-        _mock_users = {
-            "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
-            "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
-            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
-            "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
-        }
-        _rbac_capabilities = {
-            'capabilities': {
-                'finance_tool_access': {
-                    'default': False,
-                    'roles': {'pro': True, 'premium': True, 'admin': True}
-                },
-                'data_analysis_enabled': { # For python interpreter
-                    'default': False,
-                    'roles': {'pro': True, 'premium': True, 'admin': True}
-                },
-                'web_search_max_results': {
-                    'default': 2,
-                    'tiers': {'pro': 7, 'premium': 15}
-                },
-                'web_search_limit_chars': {
-                    'default': 500,
-                    'tiers': {'pro': 3000, 'premium': 10000}
+            elif domain == "finance" and provider_name == "exchangerate_api":
+                return {
+                    "base_url": "https://open.er-api.com/v6/latest/",
+                    "api_key_name": "exchangerate_api_key", # This is actually part of the path, but we'll include it here
+                    "path_params": ["from_currency"], # The 'from_currency' is part of the URL path
+                    "functions": {
+                        "get_currency_exchange_rate": {
+                            "endpoint": "/{from_currency}", # Placeholder for from_currency
+                            "required_params": ["to_currency"],
+                            "response_path": ["rates"],
+                            "data_map": {
+                                "exchange_rate": "to_currency_placeholder", # This will be dynamically replaced
+                                "last_refreshed": "time_last_update_utc" # Example path
+                            }
+                        }
+                    }
                 }
+            # Add other provider configs as needed for testing
+            return None
+
+    class MockAnalyticsTracker:
+        def __init__(self):
+            self.logged_events = []
+            self.db = type('FirestoreMock', (object,), {'collection': lambda s, path: type('CollectionMock', (object,), {'add': lambda s, data: self.logged_events.append(data)})()})()
+
+        async def log_tool_usage(self, tool_name, tool_params, user_token, success, error_message=None):
+            event_data = {
+                "event_type": "tool_usage",
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "user_token": user_token,
+                "timestamp": datetime.now().isoformat(),
+                "success": success
             }
-        }
-        _tier_hierarchy = {
-            "free": 0, "user": 1, "basic": 2, "pro": 3, "premium": 4, "admin": 99
-        }
+            if error_message:
+                event_data["error_message"] = error_message
+            self.logged_events.append(event_data)
+            print(f"MockAnalyticsTracker: Logged tool usage for {tool_name}, success: {success}")
 
-        def get_current_user(self) -> Dict[str, Any]:
-            return getattr(self, '_current_mock_user', {})
+        async def log_event(self, event_type, event_details, user_id, success, error_message=None):
+            event_data = {
+                "event_type": event_type,
+                "event_details": event_details,
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "success": success
+            }
+            if error_message:
+                event_data["error_message"] = error_message
+            self.logged_events.append(event_data)
+            print(f"MockAnalyticsTracker: Logged event {event_type}, success: {success}")
 
-        def get_user_tier_capability(self, user_token: Optional[str], capability_key: str, default_value: Any = None) -> Any:
-            user_info = self._mock_users.get(user_token, {})
-            user_id = user_info.get('user_id')
-            user_tier = user_info.get('tier', 'free')
-            user_roles = user_info.get('roles', [])
 
-            if "admin" in user_roles:
-                if isinstance(default_value, bool): return True
-                if isinstance(default_value, (int, float)): return float('inf')
-                return default_value
-            
-            capability_config = self._rbac_capabilities.get('capabilities', {}).get(capability_key)
-            if not capability_config:
-                return default_value
+    # Temporarily replace global instances with mocks for testing
+    original_config_manager = config_manager
+    original_analytics_tracker = analytics_tracker
+    original_requests_get = requests.get
 
-            # Check roles first
-            for role in user_roles:
-                if role in capability_config.get('roles', {}):
-                    return capability_config['roles'][role]
-            
-            # Then check tiers
-            if user_tier in capability_config.get('tiers', {}):
-                return capability_config['tiers'][user_tier]
+    # Mock requests.get for external API calls
+    def mock_requests_get(*args, **kwargs):
+        url = args[0]
+        params = kwargs.get('params', {})
+        headers = kwargs.get('headers', {})
 
-            return capability_config.get('default', default_value)
-
-    # Patch the actual imports for testing
-    import streamlit as st_mock
-    if not hasattr(st_mock, 'secrets'):
-        st_mock.secrets = MockSecrets()
-    
-    sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
-    sys.modules['utils.user_manager'] = MockUserManager()
-    sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability # Patch the function directly
-
-    # Mock analytics_tracker
-    mock_analytics_tracker_db = MagicMock()
-    mock_analytics_tracker_auth = MagicMock()
-    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
-    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
-
-    # Patch firebase_admin.firestore for the local import within log_event
-    with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
-        sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
-        sys.modules['firebase_admin.firestore'].firestore.DocumentReference = MagicMock()
+        # Mock for Alpha Vantage stock price
+        if "alphavantage.co/query" in url and params.get("function") == "TIME_SERIES_DAILY":
+            symbol = params.get("symbol", "").upper()
+            if symbol == "GOOG":
+                return MockResponse({
+                    "Meta Data": {"2. Symbol": "GOOG"},
+                    "Time Series (Daily)": {
+                        "2025-07-05": {"1. open": "160.00", "2. high": "162.00", "3. low": "159.50", "4. close": "161.50", "5. volume": "1200000"},
+                        "2025-07-04": {"1. open": "158.00", "2. high": "160.00", "3. low": "157.50", "4. close": "159.00", "5. volume": "1100000"}
+                    }
+                }, 200)
+            elif symbol == "AAPL":
+                return MockResponse({
+                    "Meta Data": {"2. Symbol": "AAPL"},
+                    "Time Series (Daily)": {
+                        "2025-07-05": {"1. open": "180.00", "2. high": "181.00", "3. low": "179.50", "4. close": "180.50", "5. volume": "2000000"}
+                    }
+                }, 200)
+            else:
+                return MockResponse({"Error Message": "Invalid API call. Please retry or visit the documentation."}, 200)
         
-        # Initialize the actual analytics_tracker with mocks
-        analytics_tracker.initialize_analytics(
-            mock_analytics_tracker_db,
-            mock_analytics_tracker_auth,
-            "test_app_id_for_analytics",
-            "mock_user_123"
-        )
+        # Mock for Alpha Vantage company overview
+        if "alphavantage.co/query" in url and params.get("function") == "OVERVIEW":
+            symbol = params.get("symbol", "").upper()
+            if symbol == "GOOG":
+                return MockResponse({
+                    "Symbol": "GOOG", "AssetType": "Common Stock", "Name": "Alphabet Inc.",
+                    "Description": "Alphabet Inc. is an American multinational technology conglomerate holding company...",
+                    "Exchange": "NASDAQ", "Sector": "Technology", "Industry": "Internet Content & Information",
+                    "MarketCapitalization": "2000000000000", "PERatio": "28.5"
+                }, 200)
+            else:
+                return MockResponse({"Error Message": "Invalid API call. Please retry or visit the documentation."}, 200)
 
-        # Mock requests.get for external API calls
-        original_requests_get = requests.get
-
-        def mock_requests_get_dynamic(url, params, headers, timeout):
-            # Simulate Alpha Vantage responses
-            if "alphavantage.co/query" in url:
-                function = params.get("function")
-                symbol = params.get("symbol")
-                from_currency = params.get("from_currency")
-                to_currency = params.get("to_currency")
-                date = params.get("date")
-
-                if function == "GLOBAL_QUOTE" and symbol == "AAPL":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "Global Quote": {
-                            "01. symbol": "AAPL", "02. open": "170.0000", "03. high": "176.0000",
-                            "04. low": "169.5000", "05. price": "175.0000", "06. volume": "80000000",
-                            "07. latest trading day": "2024-07-04", "08. previous close": "170.0000",
-                            "09. change": "5.0000", "10. change percent": "2.9412%"
-                        }
+        # Mock for ExchangeRate-API
+        if "open.er-api.com/v6/latest/" in url:
+            from_currency = url.split('/')[-1]
+            if from_currency == "USD":
+                return MockResponse({
+                    "result": "success",
+                    "documentation": "https://www.exchangerate-api.com/docs/v6",
+                    "terms_of_use": "https://www.exchangerate-api.com/terms",
+                    "time_last_update_unix": 1678886400,
+                    "time_last_update_utc": "Fri, 17 Mar 2023 00:00:00 +0000",
+                    "time_next_update_unix": 1678972800,
+                    "time_next_update_utc": "Sat, 18 Mar 2023 00:00:00 +0000",
+                    "base_code": "USD",
+                    "rates": {
+                        "EUR": 0.92, "GBP": 0.82, "JPY": 133.00, "USD": 1.0
                     }
-                    return mock_response
-                elif function == "OVERVIEW" and symbol == "AAPL":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "Symbol": "AAPL", "AssetType": "Equity", "Name": "Apple Inc.",
-                        "Description": "Apple Inc. designs, manufactures, and markets smartphones...",
-                        "Exchange": "NASDAQ", "Currency": "USD", "Country": "USA",
-                        "Sector": "Technology", "Industry": "Consumer Electronics",
-                        "MarketCapitalization": "2700000000000", "PERatio": "28.5",
-                        "DividendYield": "0.005"
+                }, 200)
+            elif from_currency == "GBP":
+                return MockResponse({
+                    "result": "success",
+                    "base_code": "GBP",
+                    "rates": {
+                        "USD": 1.27, "EUR": 1.15, "GBP": 1.0
                     }
-                    return mock_response
-                elif function == "CURRENCY_EXCHANGE_RATE" and from_currency == "USD" and to_currency == "JPY":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "Realtime Currency Exchange Rate": {
-                            "1. From_Currency Code": "USD", "2. From_Currency Name": "United States Dollar",
-                            "3. To_Currency Code": "JPY", "4. To_Currency Name": "Japanese Yen",
-                            "5. Exchange Rate": "155.0000", "6. Last Refreshed": "2024-07-04 10:00:00",
-                            "7. Time Zone": "UTC", "8. Bid Price": "154.9500", "9. Ask Price": "155.0500"
-                        }
-                    }
-                    return mock_response
-                elif function == "TIME_SERIES_DAILY" and symbol == "AAPL":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {
-                        "Meta Data": {},
-                        "Time Series (Daily)": {
-                            "2024-07-04": {"1. open": "170.00", "2. high": "176.00", "3. low": "169.50", "4. close": "175.00", "5. volume": "80000000"},
-                            "2024-07-03": {"1. open": "168.00", "2. high": "171.00", "3. low": "167.50", "4. close": "170.00", "5. volume": "75000000"}
-                        }
-                    }
-                    return mock_response
-                else:
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"Error Message": "Invalid API call or symbol."}
-                    return mock_response
-            
-            # Simulate scrape_web's internal requests.get if needed
-            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'finance')}</h1><p>Some finance related content from web search.</p></body></html>"
-                return mock_response
+                }, 200)
+            else:
+                return MockResponse({"result": "error", "error-type": "unsupported-code"}, 200)
+        
+        # Default to a generic error for unmocked requests
+        return MockResponse({}, 404)
 
-            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+    class MockResponse:
+        def __init__(self, json_data, status_code):
+            self._json_data = json_data
+            self.status_code = status_code
+            self.ok = status_code == 200
 
-        requests.get = mock_requests_get_dynamic
+        def json(self):
+            return self._json_data
 
-        test_user_pro = "mock_pro_token"
-        test_user_free = "mock_free_token"
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.exceptions.HTTPError(f"HTTP Error: {self.status_code}", response=self)
 
-        async def run_finance_tests():
-            print("\n--- Testing finance_tool functions with Analytics ---")
+    config_manager = MockConfigManager()
+    analytics_tracker = MockAnalyticsTracker()
+    requests.get = mock_requests_get
 
-            # Test get_stock_price (success)
-            print("\n--- Test 1: get_stock_price (Success) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
-            result_stock_price = await get_stock_price("AAPL", user_token=test_user_pro)
-            print(f"Stock Price: {result_stock_price}")
-            assert "Current price of AAPL: 175.0000 USD" in result_stock_price
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
-            logged_data = args[0]
-            assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "finance_get_stock_price"
-            assert logged_data["success"] is True
-            print("Test 1 Passed (and analytics logged success).")
+    try:
+        # Test 1: get_stock_price - latest
+        print("\n--- Test 1: get_stock_price (Latest) ---")
+        result = await get_stock_price("GOOG", user_token=test_user_pro)
+        print(f"Result: {result}")
+        assert "Stock Price for GOOG" in result and "Open: 160.00" in result
+        assert any(e['tool_name'] == 'finance_get_stock_price' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 1 Passed.")
 
-            # Test get_company_overview (failure - mock API returns error)
-            print("\n--- Test 2: get_company_overview (API Failure) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            # Temporarily modify mock_requests_get_dynamic for this specific call to simulate API error
-            original_mock_get = requests.get
-            def mock_get_error(url, params, headers, timeout):
-                if "alphavantage.co/query" in url and params.get("function") == "OVERVIEW":
-                    mock_response = MagicMock()
-                    mock_response.status_code = 200
-                    mock_response.json.return_value = {"Error Message": "Invalid API call or symbol."}
-                    return mock_response
-                return original_mock_get(url, params=params, headers=headers, timeout=timeout)
-            requests.get = mock_get_error
+        # Test 2: get_stock_price - specific date
+        print("\n--- Test 2: get_stock_price (Specific Date) ---")
+        analytics_tracker.logged_events.clear() # Clear logs for next test
+        result = await get_stock_price("GOOG", date="2025-07-04", user_token=test_user_pro)
+        print(f"Result: {result}")
+        assert "Stock Price for GOOG on 2025-07-04" in result and "Open: 158.00" in result
+        assert any(e['tool_name'] == 'finance_get_stock_price' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 2 Passed.")
 
-            result_company_overview = await get_company_overview("INVALID", user_token=test_user_pro)
-            print(f"Company Overview (API Error): {result_company_overview}")
-            assert "Could not retrieve complete live company overview for INVALID." in result_company_overview
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
-            logged_data = args[0]
-            assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "finance_get_company_overview"
-            assert logged_data["success"] is False
-            assert "Invalid API call or symbol." in logged_data["error_message"]
-            print("Test 2 Passed (and analytics logged failure).")
-            requests.get = original_mock_get # Restore original mock
+        # Test 3: get_company_overview
+        print("\n--- Test 3: get_company_overview ---")
+        analytics_tracker.logged_events.clear()
+        result = await get_company_overview("AAPL", user_token=test_user_pro)
+        print(f"Result: {result}")
+        assert "Company Overview for Apple Inc. (AAPL)" in result and "Consumer Electronics" in result
+        assert any(e['tool_name'] == 'finance_get_company_overview' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 3 Passed.")
 
-            # Test get_forex_exchange_rate (RBAC denied)
-            print("\n--- Test 3: get_forex_exchange_rate (RBAC Denied) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_forex_rbac_denied = await get_forex_exchange_rate("USD", "JPY", user_token=test_user_free)
-            print(f"Forex Rate (Free User, RBAC Denied): {result_forex_rbac_denied}")
-            assert "Error: Access to finance tools is not enabled for your current tier." in result_forex_rbac_denied
-            # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
+        # Test 4: get_currency_exchange_rate
+        print("\n--- Test 4: get_currency_exchange_rate ---")
+        analytics_tracker.logged_events.clear()
+        result = await get_currency_exchange_rate("USD", "EUR", user_token=test_user_pro)
+        print(f"Result: {result}")
+        assert "1 USD = 0.92 EUR" in result
+        assert any(e['tool_name'] == 'finance_get_currency_exchange_rate' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 4 Passed.")
 
-            # Test finance_search_web (generic tool, not using _make_dynamic_api_request)
-            print("\n--- Test 4: finance_search_web (Generic Tool) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_web_search = await finance_search_web("latest stock market news", user_token=test_user_pro)
-            print(f"Web Search Result: {result_web_search[:100]}...")
-            assert "Search results for latest stock market news" in result_web_search
-            # This tool uses scrape_web, which is a generic tool.
-            # Analytics for generic tools like scrape_web or summarize_document
-            # would need to be integrated within those shared_tools themselves,
-            # or wrapped by a higher-level agent logging.
-            # For now, we are focusing on _make_dynamic_api_request.
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 4 Passed (no analytics expected for generic tool directly).")
+        # Test 5: get_economic_indicator (mocked fallback)
+        print("\n--- Test 5: get_economic_indicator (Mocked Fallback) ---")
+        analytics_tracker.logged_events.clear()
+        # This will hit mock data as we don't have a live API mock for it
+        result = await get_economic_indicator("Unemployment Rate", "US", user_token=test_user_pro)
+        print(f"Result: {result}")
+        assert "Economic Indicator: Unemployment Rate (US) (Mock Data Fallback)" in result and "Value: 3.9%" in result
+        # No analytics logged for this as it's a mock fallback.
+        print("Test 5 Passed (mock fallback expected).")
 
-            print("\nAll finance_tool tests with analytics considerations completed.")
+        # Test 6: finance_search_web (generic tool)
+        print("\n--- Test 6: finance_search_web (Generic Tool) ---")
+        analytics_tracker.logged_events.clear()
+        result_web_search = await finance_search_web("impact of inflation on economy", user_token=test_user_pro)
+        print(f"Web Search Result: {result_web_search[:100]}...")
+        assert "Search results for impact of inflation on economy" in result_web_search
+        # Analytics for generic tools like scrape_web or summarize_document
+        # would need to be integrated within those shared_tools themselves,
+        # or wrapped by a higher-level agent logging.
+        # For now, we are focusing on _make_dynamic_api_request.
+        assert any(e['tool_name'] == 'finance_search_web' and e['success'] for e in analytics_tracker.logged_events)
+        print("Test 6 Passed (analytics expected for wrapper tool).")
 
-        await run_finance_tests()
 
-        # Restore original requests.get
+        print("\nAll finance_tool tests with analytics considerations completed.")
+
+    finally:
+        # Restore original instances
+        config_manager = original_config_manager
+        analytics_tracker = original_analytics_tracker
         requests.get = original_requests_get
+        print("Restored original config_manager, analytics_tracker, and requests.get.")
 
-        # Clean up dummy files and directories
-        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
-        for d in test_user_dirs:
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
-                print(f"Cleaned up {d}")
+# Ensure tests are only run when the script is executed directly
+if __name__ == "__main__":
+    # Use asyncio.run to execute the async test function
+    asyncio.run(run_finance_tests())
+
