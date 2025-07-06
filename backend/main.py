@@ -48,7 +48,7 @@ if not firebase_admin._apps:
             raise ValueError("FIREBASE_CREDENTIALS environment variable not set.")
         
         cred = credentials.Certificate(json.loads(firebase_credentials_json))
-        firebase_admin.initialize_app(cred)
+        firebase_app = firebase_admin.initialize_app(cred)
         logger.info("Firebase Admin SDK initialized successfully.")
     except Exception as e:
         logger.error(f"Error initializing Firebase Admin SDK: {e}")
@@ -56,11 +56,20 @@ if not firebase_admin._apps:
         raise
 
 # Initialize Firestore Manager
+db_client = firestore.client(firebase_app) # Get the Firestore client instance
+auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
+
 firestore_manager = FirestoreManager()
 logger.info("FirestoreManager initialized.")
 
 # Initialize Analytics Tracker
-initialize_analytics(firestore_manager)
+# You need to provide db, auth, app_id, and user_id to initialize_analytics
+# Assuming you have an 'app_id' in your config_manager or as an environment variable
+app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
+# For initial analytics setup, use a generic user ID as no end-user is authenticated yet
+user_id_for_analytics = "backend-service-user" 
+
+initialize_analytics(db_client, auth_client, app_id_for_analytics, user_id_for_analytics)
 logger.info("Analytics Tracker initialized.")
 
 # Initialize Cloud Storage Utils Wrapper
@@ -104,7 +113,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     """
     try:
         # Verify the Firebase ID token
-        decoded_token = auth.verify_id_token(token)
+        decoded_token = auth_client.verify_id_token(token) # Use auth_client here
         uid = decoded_token['uid']
         user_record = await user_manager.get_user(uid) # Fetch user details including roles
         if not user_record:
@@ -158,7 +167,7 @@ async def read_root():
 async def register_user_endpoint(email: EmailStr, password: str, request: Request):
     """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
     try:
-        user = auth.create_user(email=email, password=password)
+        user = auth_client.create_user(email=email, password=password) # Use auth_client here
         await user_manager.create_user_profile(user.uid, email)
         logger.info(f"User registered: {user.uid} with email {email}")
         await log_event('user_registered', {'email': email}, user_id=user.uid, success=True)
@@ -181,8 +190,8 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
         # and then create a custom token, or verify credentials against a different system).
         # For simplicity, this example assumes you'd have a way to verify password
         # or that this is for generating a custom token for an already existing Firebase user.
-        user_record = auth.get_user_by_email(email)
-        custom_token = auth.create_custom_token(user_record.uid).decode('utf-8')
+        user_record = auth_client.get_user_by_email(email) # Use auth_client here
+        custom_token = auth_client.create_custom_token(user_record.uid).decode('utf-8') # Use auth_client here
         logger.info(f"Custom token generated for user: {user_record.uid}")
         await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
         return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
@@ -294,7 +303,7 @@ async def chat_with_agent_endpoint(
             # Dynamically call the tool method
             # This is a simplified example; your agent's logic would be more sophisticated
             # For a real agent, the agent would parse the message to extract 'symbol'
-            stock_price = await domain_tool_instances["finance_tools"].get_stock_price(symbol="GOOG", user_token=user_id)
+            stock_price = await domain_tool_instances["finance_tools"].get_current_stock_price(symbol="GOOG", user_token=user_id)
             response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
         except Exception as e:
             response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
@@ -362,3 +371,4 @@ async def get_analytics_events_endpoint(
     except Exception as e:
         logger.error(f"Error retrieving analytics events: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
