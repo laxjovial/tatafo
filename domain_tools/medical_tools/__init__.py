@@ -1,16 +1,15 @@
 # domain_tools/medical_tools/__init__.py
 
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Any, Optional, List # Import Optional and List
 
-# Import individual tool functions from the medical_tool module
 from .medical_tool import (
     get_drug_info,
     check_symptoms,
     get_hospital_info,
-    medical_search_web, # Added
-    medical_query_uploaded_docs, # Added
-    medical_summarize_document_by_path # Added
+    medical_search_web,
+    medical_query_uploaded_docs,
+    medical_summarize_document_by_path
 )
 
 logger = logging.getLogger(__name__)
@@ -21,18 +20,18 @@ class MedicalTools:
     This class acts as a wrapper to group related tool functions and
     provides a consistent interface for the main application.
     """
-    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any): # Added document_tools
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any):
         """
         Initializes the MedicalTools with necessary dependencies.
 
         Args:
             config_manager (Any): The configuration manager instance.
             log_event (Any): The analytics logging function.
-            document_tools (Any): The DocumentTools instance for document querying. # Added
+            document_tools (Any): The DocumentTools instance for document querying and summarization.
         """
         self.config_manager = config_manager
         self.log_event = log_event
-        self.document_tools = document_tools # Stored
+        self.document_tools = document_tools
         logger.info("MedicalTools initialized.")
 
     # Expose individual tool functions as methods of this class
@@ -61,17 +60,16 @@ class MedicalTools:
         """
         Searches the web for medical or health-related information.
         """
-        return await medical_search_web(query=query, user_token=user_token, max_chars=max_chars) # Call the function from medical_tool.py
+        return await medical_search_web(query=query, user_token=user_token, max_chars=max_chars)
 
     async def medical_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
         """
         Queries previously uploaded and indexed medical documents for a user using vector similarity search.
         """
-        # This now calls the DocumentTools instance
-        return await self.document_tools.query_uploaded_docs(
-            query_text=query,
+        return await self.document_tools.document_query_uploaded_docs(
+            query=query,
             user_token=user_token,
-            collection_name="medical", # Specific collection for medical documents
+            section="medical",
             export=export,
             k=k
         )
@@ -80,5 +78,19 @@ class MedicalTools:
         """
         Summarizes a document related to medicine or health located at the given file path.
         """
-        return await medical_summarize_document_by_path(file_path_str=file_path_str) # Call the function from medical_tool.py
+        return await self.document_tools.document_summarize_document_by_path(file_path_str=file_path_str)
+
+    def get_tools(self):
+        """
+        Returns a list of tool functions exposed by this class.
+        """
+        return [
+            self.get_drug_info,
+            self.check_symptoms,
+            self.get_hospital_info,
+            self.medical_search_web,
+            self.medical_query_uploaded_docs,
+            self.medical_summarize_document_by_path
+        ]
+
 
