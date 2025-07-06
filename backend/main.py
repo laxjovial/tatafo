@@ -20,7 +20,7 @@ from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module # Import module
 import shared_tools.vector_utils as vector_utils_module # Import module
 from utils.date_parser import parse_date_to_yyyymmdd # Corrected import: changed from parse_date_string
-from utils.user_manager import UserManager, get_user_tier_capability # Explicitly import get_user_tier_capability
+from utils.user_manager import UserManager
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -57,28 +57,16 @@ if not firebase_admin._apps:
 
 # Initialize Firestore Manager
 db_client = firestore.client(firebase_app) # Get the Firestore client instance
-auth_client = auth # CORRECTED: Get the Auth client instance directly from the module
+auth_client = auth.Client.from_app(firebase_app) # Get the Auth client instance
 
 firestore_manager = FirestoreManager()
 logger.info("FirestoreManager initialized.")
 
-# Initialize Analytics Tracker
-# Use os.getenv to fetch the app_id from environment variables
-# The name of the environment variable will be "TATA_AGENT_APP_ID"
-app_id_for_analytics = os.getenv("TATA_AGENT_APP_ID", "default-backend-app-id")
-# For initial analytics setup, use a generic user ID as no end-user is authenticated yet
-user_id_for_analytics = "backend-service-user" 
-
-initialize_analytics(db_client, auth_client, app_id_for_analytics, user_id_for_analytics)
-logger.info("Analytics Tracker initialized.")
-
-# Initialize Cloud Storage Utils Wrapper
-# CORRECTED: Instantiate the CloudStorageUtilsWrapper class
+# Initialize Cloud Storage Utils
 cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
 logger.info("CloudStorageUtilsWrapper initialized.")
 
-# Initialize Vector Utils Wrapper
-# Pass the necessary managers to the VectorUtilsWrapper
+# Initialize Vector Utils
 vector_utils = vector_utils_module.VectorUtilsWrapper(
     firestore_manager=firestore_manager,
     cloud_storage_utils=cloud_storage_utils,
@@ -105,240 +93,181 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OAuth2PasswordBearer for token authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# Initialize analytics tracker for backend context
+# Pass the actual Firestore client and Auth client
+initialize_analytics(db_client, auth_client, config_manager.get("app_id", "default-backend-app-id"), "backend_server")
+logger.info("Analytics tracker initialized for backend.")
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    """
-    Authenticates the user using Firebase ID token.
-    """
+# --- RBAC and Authentication Dependencies ---
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+    """Retrieves the current authenticated user based on the Firebase ID token."""
     try:
         # Verify the Firebase ID token
-        decoded_token = auth_client.verify_id_token(token) # Use auth_client here
+        decoded_token = auth.verify_id_token(token)
+        # The decoded_token contains the user's UID and other claims
         uid = decoded_token['uid']
-        user_record = await user_manager.get_user(uid) # Fetch user details including roles
-        if not user_record:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
+        # Optionally, fetch more user details from Firestore if needed
+        user_profile = await user_manager.get_user_profile(uid)
+        if not user_profile:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User profile not found.")
         
-        # Add UID to the user_record for easier access
-        user_record['uid'] = uid
-        return user_record
-    except Exception as e:
-        logger.error(f"Authentication failed: {e}")
+        # Add capabilities to the user object
+        user_capabilities = await user_manager.get_user_capabilities(uid)
+        user_profile['capabilities'] = user_capabilities
+        user_profile['uid'] = uid # Ensure uid is in the profile for consistency
+        return user_profile
+    except ValueError as e:
+        logger.error(f"Invalid token: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {e}",
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error(f"Authentication error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """
-    Dependency to check if the current user is an admin.
-    """
+async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Ensures the current user has 'admin' role."""
     if "admin" not in current_user.get("roles", []):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized. Admin access required.")
     return current_user
 
-# Initialize DocumentTools first, as it's a dependency for other domain tools
-document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
+# --- Tool Initialization ---
+# Initialize domain-specific tool classes with necessary dependencies
+finance_tools = FinanceTools(config_manager)
+crypto_tools = CryptoTools(config_manager)
+medical_tools = MedicalTools(config_manager)
+news_tools = NewsTools(config_manager)
+legal_tools = LegalTools(config_manager)
+education_tools = EducationTools(config_manager)
+entertainment_tools = EntertainmentTools(config_manager)
+weather_tools = WeatherTools(config_manager)
+travel_tools = TravelTools(config_manager)
+sports_tools = SportsTools(config_manager)
+# CORRECTED: Initialize DocumentTools with the vector_utils instance and other managers
+document_tools = DocumentTools(
+    vector_utils_wrapper=vector_utils,
+    config_manager=config_manager,
+    firestore_manager=firestore_manager, # Pass firestore_manager
+    cloud_storage_utils=cloud_storage_utils, # Pass cloud_storage_utils
+    log_event_func=log_event # Pass log_event function
+)
+logger.info("Domain tools initialized.")
 
-# Initialize domain tool instances, passing necessary dependencies
-# Each tool class receives the managers it needs, including document_tools_instance.
-domain_tool_instances = {
-    "finance_tools": FinanceTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "crypto_tools": CryptoTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "medical_tools": MedicalTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "news_tools": NewsTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "legal_tools": LegalTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "education_tools": EducationTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "entertainment_tools": EntertainmentTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "weather_tools": WeatherTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "travel_tools": TravelTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "sports_tools": SportsTools(firestore_manager, config_manager, log_event, document_tools_instance),
-    "document_tools": document_tools_instance, # Add the initialized instance itself
-}
+# --- Pydantic Models for Request Bodies ---
+class TokenRequest(BaseModel):
+    email: EmailStr
+    password: str
 
-# --- API Endpoints ---
+class UserRegistration(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    username: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class UploadDocumentRequest(BaseModel):
+    file_name: str
+    file_content_base64: str # Base64 encoded content of the file
+
+class UpdateUserRolesAndTierRequest(BaseModel):
+    new_tier: str
+    roles: List[str]
+
+# --- Health Check Endpoint ---
 @app.get("/")
 async def read_root():
-    return {"message": "Welcome to the Intelli-Agent Backend!"}
+    return {"message": "Intelli-Agent Backend is running!"}
 
-@app.post("/register")
-async def register_user_endpoint(email: EmailStr, password: str, request: Request):
-    """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
-    try:
-        user = auth_client.create_user(email=email, password=password) # Use auth_client here
-        await user_manager.create_user_profile(user.uid, email)
-        logger.info(f"User registered: {user.uid} with email {email}")
-        await log_event('user_registered', {'email': email}, user_id=user.uid, success=True)
-        return {"message": "User registered successfully", "uid": user.uid}
-    except Exception as e:
-        logger.error(f"Registration failed for email {email}: {e}")
-        await log_event('user_registered', {'email': email, 'error': str(e)}, success=False)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+# --- Authentication Endpoints ---
+@app.post("/auth/register")
+async def register(user_data: UserRegistration):
+    """Registers a new user."""
+    result = await user_manager.register_user(user_data.email, user_data.password, user_data.username)
+    if result["success"]:
+        return {"message": "User registered successfully", "user_id": result["user_id"]}
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
-@app.post("/login")
-async def login_user_endpoint(email: EmailStr, password: str, request: Request):
-    """
-    Generates a custom Firebase token for a user.
-    Note: In a real application, you'd typically use Firebase Client SDK for login
-    and receive an ID token, which you'd then verify on the backend.
-    This endpoint is for demonstration or specific backend-initiated authentication flows.
-    """
-    try:
-        # Authenticate user (e.g., using Firebase Admin SDK's ability to get user by email
-        # and then create a custom token, or verify credentials against a different system).
-        # For simplicity, this example assumes you'd have a way to verify password
-        # or that this is for generating a custom token for an already existing Firebase user.
-        user_record = auth_client.get_user_by_email(email) # Use auth_client here
-        custom_token = auth_client.create_custom_token(user_record.uid).decode('utf-8') # Use auth_client here
-        logger.info(f"Custom token generated for user: {user_record.uid}")
-        await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
-        return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
-    except Exception as e:
-        logger.error(f"Login failed for email {email}: {e}")
-        await log_event('user_logged_in', {'email': email, 'error': str(e)}, success=False)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+@app.post("/auth/token")
+async def login(request: Request, user_request: TokenRequest):
+    """Generates a custom Firebase token for a user."""
+    token_info = await user_manager.login_user(user_request.email, user_request.password)
+    if token_info["success"]:
+        return {"access_token": token_info["id_token"], "token_type": "bearer"}
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=token_info["message"])
 
-@app.get("/user/profile")
-async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Retrieves the profile of the current authenticated user."""
-    logger.info(f"User {current_user['uid']} requesting profile.")
-    return {"user": current_user}
+@app.post("/auth/forgot_password")
+async def forgot_password(request: Request, forgot_password_data: ForgotPasswordRequest):
+    """Handles forgot password requests."""
+    result = await user_manager.forgot_password(forgot_password_data.email)
+    if result["success"]:
+        return {"message": result["message"]}
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
-class UserProfileUpdate(BaseModel):
-    display_name: Optional[str] = None
-    phone_number: Optional[str] = None
-    photo_url: Optional[str] = None
-    # Add other updatable fields as needed
+# --- User Profile Endpoints ---
+@app.get("/users/me")
+async def read_users_me(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Retrieves the profile of the currently authenticated user."""
+    return current_user
 
-@app.put("/user/profile")
-async def update_user_profile_endpoint(
-    update_data: UserProfileUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Updates the profile of the current authenticated user."""
-    uid = current_user['uid']
-    logger.info(f"User {uid} updating profile.")
-    update_dict = update_data.model_dump(exclude_unset=True) # Use model_dump to get only provided fields
+@app.get("/users/{user_id}/profile")
+async def get_user_profile_endpoint(user_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Retrieves a specific user's profile (requires admin or self-access)."""
+    if current_user["uid"] != user_id and "admin" not in current_user.get("roles", []):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this user's profile.")
     
-    if not update_dict:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields provided for update.")
+    profile = await user_manager.get_user_profile(user_id)
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    return profile
 
-    try:
-        await user_manager.update_user_profile(uid, update_dict)
-        logger.info(f"User {uid} profile updated successfully.")
-        await log_event('user_profile_updated', {'fields': list(update_dict.keys())}, user_id=uid, success=True)
-        return {"message": "Profile updated successfully"}
-    except Exception as e:
-        logger.error(f"Failed to update profile for user {uid}: {e}")
-        await log_event('user_profile_updated', {'error': str(e)}, user_id=uid, success=False)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-@app.post("/upload-document")
-async def upload_document_endpoint(
-    file_name: str,
-    file_content_base64: str, # Base64 encoded content of the file
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Uploads a document for the current user, processes it, and stores its vectors.
-    """
-    user_id = current_user['uid']
-    logger.info(f"User {user_id} attempting to upload document: {file_name}")
-
-    if not get_user_tier_capability(user_id, 'document_upload_enabled', False):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Document upload is not enabled for your current tier.")
-
-    try:
-        # Call the process_uploaded_document from vector_utils_module directly
-        # It now expects the managers as arguments
-        result = await vector_utils_module.process_uploaded_document(
-            user_id=user_id,
-            file_name=file_name,
-            file_content_base64=file_content_base64,
-            firestore_manager=firestore_manager,
-            cloud_storage_utils=cloud_storage_utils, # Pass the instantiated object
-            config_manager=config_manager,
-            log_event_func=log_event
-        )
-        if result["success"]:
-            return {"message": result["message"], "document_id": result.get("document_id")}
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
-    except Exception as e:
-        logger.error(f"Error uploading document for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e}")
-
-
-@app.post("/agent/chat")
-async def chat_with_agent_endpoint(
-    message: str,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Allows authenticated users to chat with the Intelli-Agent, leveraging available tools.
-    """
-    user_id = current_user['uid']
-    user_tier = current_user.get('tier', 'free')
-    user_roles = current_user.get('roles', [])
-    logger.info(f"Chat request from user {user_id} (Tier: {user_tier}, Roles: {user_roles}): {message}")
-
-    # Log the incoming chat request
-    await log_event('chat_request', {'message': message}, user_id=user_id, success=True)
-
-    # Placeholder for agent response logic
-    # In a real scenario, you would integrate your LLM agent here,
-    # passing the message, user_id, user_tier, and the domain_tool_instances.
-    # The agent would then decide which tool to use based on the message.
-
-    # Example of how to call a tool (for demonstration)
-    # This part would be replaced by your actual agent's tool calling logic
-    response_message = f"Hello {current_user.get('display_name', 'user')}! I received your message: '{message}'. " \
-                       "I'm currently under development, but I can tell you about some tools I have."
-
-    # Example: If the message contains "finance", use a finance tool
-    if "stock price" in message.lower():
-        try:
-            # Dynamically call the tool method
-            # This is a simplified example; your agent's logic would be more sophisticated
-            # For a real agent, the agent would parse the message to extract 'symbol'
-            stock_price = await domain_tool_instances["finance_tools"].get_current_stock_price(symbol="GOOG", user_token=user_id)
-            response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
-        except Exception as e:
-            response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
+@app.put("/users/{user_id}/profile")
+async def update_user_profile_endpoint(user_id: str, profile_data: Dict[str, Any], current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Updates a user's profile (requires admin or self-access)."""
+    if current_user["uid"] != user_id and "admin" not in current_user.get("roles", []):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to update this user's profile.")
     
-    # NEW: Example of calling the document query tool
-    elif "my documents" in message.lower() or "uploaded files" in message.lower():
-        try:
-            document_tools = domain_tool_instances["document_tools"]
-            # This is a simplified example; your agent would extract the actual query
-            doc_query_result = await document_tools.query_uploaded_docs(
-                query_text="summarize key points from my latest report", # Example query
-                user_token=user_id
-            )
-            response_message += f"\n\n(Example Tool Call: Document Query Result: {doc_query_result})"
-        except Exception as e:
-            response_message += f"\n\n(Example Tool Call Error: Could not query documents: {e})"
+    # Prevent updating sensitive fields like email, password, roles, tier directly here
+    # These should have dedicated admin endpoints or Firebase Auth methods
+    for key in ["email", "password", "roles", "tier", "uid"]:
+        if key in profile_data:
+            del profile_data[key] # Ensure sensitive fields are not updated via this endpoint
 
+    result = await user_manager.update_user_profile(user_id, profile_data)
+    if result["success"]:
+        return {"message": "Profile updated successfully."}
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
-    # Log the outgoing chat response
-    await log_event('chat_response', {'response': response_message}, user_id=user_id, success=True)
-    
-    return {"response": response_message}
+# --- RBAC Endpoints ---
+@app.get("/rbac/capabilities/me")
+async def get_my_capabilities(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Retrieves the capabilities for the currently authenticated user."""
+    return current_user.get('capabilities', {})
 
-class UserRoleUpdate(BaseModel):
-    new_tier: Optional[str] = None
-    roles: Optional[List[str]] = None
+@app.get("/rbac/capabilities/{user_id}")
+async def get_user_capabilities_endpoint(user_id: str, current_user: Dict[str, Any] = Depends(get_current_admin_user)):
+    """Retrieves capabilities for a specific user (admin only)."""
+    capabilities = await user_manager.get_user_capabilities(user_id)
+    if not capabilities:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or no capabilities defined.")
+    return capabilities
 
-@app.put("/admin/users/{user_id}/roles-and-tier")
+# --- Admin Endpoints ---
+@app.put("/admin/users/{user_id}/roles_and_tier")
 async def update_user_roles_and_tier_endpoint(
     user_id: str,
-    update_data: UserRoleUpdate,
+    update_data: UpdateUserRolesAndTierRequest,
     current_user: Dict[str, Any] = Depends(get_current_admin_user)
 ):
-    """Updates a user's tier and roles (admin only)."""
+    """Updates a user's roles and tier (admin only)."""
     logger.info(f"Admin user {current_user['uid']} updating roles and tier for user {user_id}.")
     result = await user_manager.update_user_roles_and_tier(user_id, update_data.new_tier, update_data.roles)
     if result["success"]:
@@ -368,8 +297,62 @@ async def get_analytics_events_endpoint(
             start_date=parsed_start_date,
             end_date=parsed_end_date
         )
-        return {"success": True, "events": events}
+        await log_event('admin_action', {
+            'action': 'view_analytics_events',
+            'filters': {'event_type': event_type, 'user_id': user_id, 'start_date': start_date, 'end_date': end_date},
+            'num_results': len(events)
+        }, user_id=current_user['uid'], success=True)
+        return events
     except Exception as e:
-        logger.error(f"Error retrieving analytics events: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.error(f"Error retrieving analytics events: {e}", exc_info=True)
+        await log_event('admin_action', {
+            'action': 'view_analytics_events',
+            'filters': {'event_type': event_type, 'user_id': user_id, 'start_date': start_date, 'end_date': end_date},
+            'status': 'failed',
+            'error': str(e)
+        }, user_id=current_user['uid'], success=False, error_message=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve analytics events: {e}")
+
+# --- Document Upload Endpoint ---
+class DocumentUploadRequest(BaseModel):
+    file_name: str
+    file_content_base64: str
+
+@app.post("/documents/upload")
+async def upload_document_endpoint(
+    upload_request: DocumentUploadRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Endpoint to upload a document to cloud storage and index it for RAG.
+    Requires 'document_upload_enabled' capability.
+    """
+    user_id = current_user['uid']
+    file_name = upload_request.file_name
+    file_content_base64 = upload_request.file_content_base64
+
+    logger.info(f"Received document upload request for user: {user_id}, file: {file_name}")
+
+    # RBAC check for document upload capability
+    if not current_user.get('capabilities', {}).get('document_upload_enabled', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access to document upload is not enabled for your current tier."
+        )
+
+    # Call the process_uploaded_document method from vector_utils_module
+    # Note: process_uploaded_document now expects the managers as arguments
+    result = await vector_utils.process_uploaded_document(
+        user_id=user_id,
+        file_name=file_name,
+        file_content_base64=file_content_base64,
+        firestore_manager=firestore_manager,
+        cloud_storage_utils=cloud_storage_utils,
+        config_manager=config_manager,
+        log_event_func=log_event # Pass the log_event function
+    )
+
+    if result["success"]:
+        return {"message": result["message"], "document_id": result.get("document_id")}
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
