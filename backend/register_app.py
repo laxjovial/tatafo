@@ -7,6 +7,16 @@ from typing import Dict, Any, Optional
 import json
 import os
 import asyncio # For async operations in CLI test
+import sys # Import sys
+from pathlib import Path # Import Path
+
+# --- Add project root to sys.path ---
+# This allows imports like 'from config.config_manager import config_manager' to work
+# when running Streamlit apps from nested directories.
+current_file_path = Path(__file__).resolve()
+project_root = current_file_path.parents[1] # Go up two levels from register_app.py to the 'tatafo' root
+sys.path.insert(0, str(project_root))
+# --- End sys.path modification ---
 
 # Import config_manager (if needed for frontend config like backend URL)
 from config.config_manager import config_manager # Keep for potential future use or if other configs are needed
@@ -184,4 +194,5 @@ if __name__ == "__main__":
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
+
 
