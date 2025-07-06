@@ -1160,7 +1160,7 @@ if __name__ == "__main__":
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
 
-}
+
 
 Thank you for providing the `crypto_tool.py` and `crypto_tools/__init__.py` files.
 
