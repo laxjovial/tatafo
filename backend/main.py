@@ -220,7 +220,9 @@ async def register_user_endpoint(email: EmailStr, password: str, request: Reques
     except Exception as e:
         logger.error(f"Registration failed for email {email}: {e}")
         await log_event('user_registered', {'email': email, 'error': str(e)}, success=False)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        # MODIFIED: Return a dictionary that matches the frontend's expected error format
+        # This will allow the frontend to display the actual error message from Firebase
+        return {"success": False, "message": f"Registration failed: {str(e)}"}
 
 @app.post("/login")
 async def login_user_endpoint(email: EmailStr, password: str, request: Request):
@@ -240,7 +242,8 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
     except Exception as e:
         logger.error(f"Login failed for email {email}: {e}")
         await log_event('user_logged_in', {'email': email, 'error': str(e)}, success=False)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        # MODIFIED: Return a dictionary that matches the frontend's expected error format
+        return {"success": False, "message": f"Login failed: {str(e)}"}
 
 @app.get("/user/profile")
 async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
