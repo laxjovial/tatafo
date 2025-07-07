@@ -103,6 +103,11 @@ def app():
         with st.spinner("Logging in..."):
             response = login_user_backend(email, password)
 
+            # --- DEBUGGING LINE ---
+            st.write("Backend Login Response:")
+            st.write(response)
+            # --- END DEBUGGING LINE ---
+
             if response.get("message") == "Login successful": # Check for specific success message
                 st.success("Logged in successfully!")
                 st.session_state['user_email'] = email
@@ -124,7 +129,7 @@ def app():
                     st.session_state.current_page = "AI Assistant" # Or "User Profile"
                     st.rerun()
             else:
-                error_message = response.get("message", "An unknown error occurred.")
+                error_message = response.get("message", response.get("detail", "An unknown error occurred."))
                 st.error(f"Login failed: {error_message}")
                 asyncio.run(frontend_log_event('user_login', {
                     'email': email,
@@ -135,10 +140,10 @@ def app():
 
     st.markdown("---")
     # Changed markdown links to Streamlit buttons for internal navigation
-    if st.button("Don't have an account? Register here"):
+    if st.button("Don't have an account? Register here", key="register_button_from_login"):
         st.session_state.current_page = "Register"
         st.rerun()
-    if st.button("Forgot your password? Reset here"):
+    if st.button("Forgot your password? Reset here", key="forgot_password_button_from_login"):
         st.session_state.current_page = "ForgotPassword" # Assuming a ForgotPassword page
         st.rerun()
 
@@ -147,7 +152,6 @@ def app():
 if __name__ == "__main__":
     # Mock requests.post for backend calls if running standalone without FastAPI
     import unittest.mock as mock
-    # No need to import Optional here, it's at the top of the file
     original_requests_post = requests.post
 
     def mock_requests_post(url, json, *args, **kwargs):
@@ -191,5 +195,6 @@ if __name__ == "__main__":
 
     # Restore original requests.post after testing
     requests.post = original_requests_post
+
 
 
