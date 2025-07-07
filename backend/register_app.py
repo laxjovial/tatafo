@@ -158,3 +158,4 @@ def app():
     if st.button("Already have an account? Login here", key="login_button_from_register"):
         st.session_state.current_page = "Login"
         st.rerun()
+ 
