@@ -1,116 +1,109 @@
 # utils/analytics_tracker.py
 
 import logging
-from datetime import datetime, timezone # Import timezone
+from datetime import datetime
 from typing import Optional, Dict, Any
-import asyncio
+
+# Firebase imports (assuming these are globally available or handled by the main app)
+# We will use the global __app_id, __firebase_config, __initial_auth_token
+# and firebase client libraries for Firestore operations.
 
 logger = logging.getLogger(__name__)
 
-# Global variables for Firebase instances and app_id, initialized by the main app
-_db = None
-_auth = None
-_app_id = None
-_backend_user_id = None # To distinguish backend-initiated logs
+# Global Firestore and Auth instances will be initialized in the main app
+# and passed or accessed via global scope in a Streamlit context.
+# For standalone testing, we'll mock them.
+db = None
+auth = None
+app_id = None
+user_id = None # This will be set by the main app's auth state
 
-def initialize_analytics(db_instance, auth_instance, app_id: str, backend_user_id: str = "backend-service"):
+def initialize_analytics(firestore_db, firebase_auth, current_app_id: str, current_user_id: str):
     """
-    Initializes the analytics tracker with Firebase Firestore and Auth instances.
-    This should be called once at application startup.
+    Initializes the analytics module with Firestore and Auth instances.
+    This should be called once at the application startup.
     """
-    global _db, _auth, _app_id, _backend_user_id
-    _db = db_instance
-    _auth = auth_instance
-    _app_id = app_id
-    _backend_user_id = backend_user_id
-    logger.info(f"Analytics Tracker initialized for app_id: {_app_id}")
+    global db, auth, app_id, user_id
+    db = firestore_db
+    auth = firebase_auth
+    app_id = current_app_id
+    user_id = current_user_id
+    logger.info(f"Analytics initialized for app_id: {app_id}, user_id: {user_id}")
 
 async def log_event(
     event_type: str,
-    details: Dict[str, Any],
-    user_id: Optional[str] = None, # Corrected: user_id is now a direct parameter
-    success: bool = True, # Corrected: success is now a direct parameter
-    error_message: Optional[str] = None, # Corrected: error_message is now a direct parameter
-    log_from_backend: bool = True # New parameter to indicate if log is from backend
+    event_details: Dict[str, Any],
+    user_id: Optional[str] = None, # Renamed from user_token to user_id for clarity
+    success: Optional[bool] = None,
+    error_message: Optional[str] = None,
+    log_from_backend: bool = False # New parameter to indicate if log is from backend
 ):
     """
     Logs an analytics event to Firestore.
-    
+
     Args:
-        event_type (str): The type of event (e.g., 'page_view', 'tool_usage', 'user_login').
-        details (Dict[str, Any]): A dictionary containing specific details about the event.
-        user_id (Optional[str]): The ID of the user performing the action.
-                                  Defaults to the backend service user ID if not provided and from_backend is True.
-        success (bool): Whether the operation was successful.
-        error_message (Optional[str]): An error message if the operation failed.
-        log_from_backend (bool): True if the event is logged from the backend, False if from frontend.
+        event_type (str): The type of event (e.g., "tool_usage", "query_failure", "user_login").
+        event_details (Dict[str, Any]): A dictionary containing specific details about the event.
+        user_id (str, optional): The user's unique ID.
+        success (bool, optional): Whether the event was successful.
+        error_message (str, optional): An error message if the event failed.
+        log_from_backend (bool): True if the log is initiated from the backend, False if from frontend.
     """
-    if _db is None:
-        logger.warning("Firestore DB not initialized for analytics. Event not logged.")
+    if db is None or app_id is None:
+        logger.warning("Analytics not initialized. Cannot log event.")
         return
 
-    # Determine the collection path based on where the log originated
-    if log_from_backend:
-        # Backend-initiated logs (e.g., tool usage, internal processes)
-        # Use a fixed backend user ID or the provided user_id
-        effective_user_id = user_id if user_id else _backend_user_id
-        collection_path = f"artifacts/{_app_id}/backend_analytics/{effective_user_id}/events"
-    else:
-        # Frontend-initiated logs (sent via /log-frontend-analytics endpoint)
-        # These logs already contain the user_id from the frontend
-        if not user_id:
-            logger.error("Frontend analytics event received without user_id. Event not logged.")
-            return
-        collection_path = f"artifacts/{_app_id}/frontend_analytics/{user_id}/events"
+    # Determine the user ID for logging
+    # If user_id is explicitly passed, use it. Otherwise, try global user_id or anonymous.
+    current_user_id = user_id if user_id else (globals().get('user_id') or (auth.currentUser.uid if auth and auth.currentUser else "anonymous"))
 
     event_data = {
+        "timestamp": datetime.now().isoformat(),
+        "app_id": app_id,
+        "user_id": current_user_id,
         "event_type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(), # Use timezone.utc and isoformat
-        "details": details,
-        "user_id": user_id, # Store the user_id explicitly
+        "details": event_details,
         "success": success,
         "error_message": error_message,
-        "source": "backend" if log_from_backend else "frontend"
+        "log_from_backend": log_from_backend # Store the origin of the log
     }
 
     try:
-        # Firestore collection path must be odd number of elements.
-        # artifacts/{app_id}/backend_analytics/{user_id}/events (5 elements, odd)
-        # artifacts/{app_id}/frontend_analytics/{user_id}/events (5 elements, odd)
-        await _db.collection(collection_path).add(event_data)
-        logger.debug(f"Analytics event '{event_type}' logged successfully to {collection_path}")
+        # Store analytics in a public collection for easier aggregation/reporting
+        # Path: /artifacts/{appId}/public/analytics_logs/{docId}
+        collection_path = f"artifacts/{app_id}/public/analytics_logs"
+        
+        # Import firestore locally to avoid circular dependencies if analytics_tracker
+        # is imported by modules that initialize firestore.
+        from firebase_admin import firestore 
+        await db.collection(collection_path).add(event_data)
+        logger.info(f"Logged analytics event: {event_type} for user {current_user_id}")
     except Exception as e:
         logger.error(f"Failed to log analytics event to Firestore: {e}", exc_info=True)
-
 
 async def log_tool_usage(
     tool_name: str,
     tool_params: Dict[str, Any],
-    user_token: Optional[str] = None,
+    user_id: Optional[str] = None, # Renamed from user_token
     success: bool = True,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    log_from_backend: bool = False
 ):
     """
     Logs the usage of a specific tool.
     """
-    details = {
+    event_details = {
         "tool_name": tool_name,
-        "tool_params": tool_params,
+        "tool_params": tool_params
     }
-    await log_event(
-        event_type="tool_usage",
-        details=details,
-        user_id=user_token, # user_token is the user_id here
-        success=success,
-        error_message=error_message,
-        log_from_backend=True # Tool usage is always from backend
-    )
+    await log_event("tool_usage", event_details, user_id, success, error_message, log_from_backend)
 
 async def log_query_failure(
     query: str,
     reason: str,
-    user_token: Optional[str] = None,
-    tool_attempted: Optional[str] = None
+    user_id: Optional[str] = None, # Renamed from user_token
+    tool_attempted: Optional[str] = None,
+    log_from_backend: bool = False
 ):
     """
     Logs a query failure event.
@@ -120,9 +113,9 @@ async def log_query_failure(
         "reason": reason,
         "tool_attempted": tool_attempted
     }
-    await log_event("query_failure", event_details, user_id=user_token, success=False, log_from_backend=True)
+    await log_event("query_failure", event_details, user_id, success=False, log_from_backend=log_from_backend)
 
-# CLI Test (optional) - This part remains the same for testing purposes
+# CLI Test (optional)
 if __name__ == "__main__":
     import asyncio
     from unittest.mock import MagicMock, AsyncMock, patch
@@ -151,8 +144,9 @@ if __name__ == "__main__":
             await log_tool_usage(
                 tool_name="get_stock_price",
                 tool_params={"symbol": "AAPL"},
-                user_token="mock_user_token_pro",
-                success=True
+                user_id="mock_user_token_pro",
+                success=True,
+                log_from_backend=True
             )
             mock_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_db.collection.return_value.add.call_args
@@ -161,15 +155,17 @@ if __name__ == "__main__":
             assert logged_data["event_type"] == "tool_usage"
             assert logged_data["details"]["tool_name"] == "get_stock_price"
             assert logged_data["success"] is True
+            assert logged_data["log_from_backend"] is True
             mock_db.collection.return_value.add.reset_mock() # Reset mock for next test
 
             print("\n--- Testing log_tool_usage (Failure) ---")
             await log_tool_usage(
                 tool_name="search_flights",
                 tool_params={"origin": "XYZ"},
-                user_token="mock_user_token_free",
+                user_id="mock_user_token_free",
                 success=False,
-                error_message="Invalid origin code"
+                error_message="Invalid origin code",
+                log_from_backend=True
             )
             mock_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_db.collection.return_value.add.call_args
@@ -179,14 +175,15 @@ if __name__ == "__main__":
             assert logged_data["details"]["tool_name"] == "search_flights"
             assert logged_data["success"] is False
             assert "Invalid origin code" in logged_data["error_message"]
+            assert logged_data["log_from_backend"] is True
             mock_db.collection.return_value.add.reset_mock()
 
             print("\n--- Testing log_query_failure ---")
             await log_query_failure(
-                query="What is the meaning of life?"),
+                query="What is the meaning of life?",
                 reason="No tool available for philosophical queries.",
-                user_token="mock_user_token_pro",
-                tool_attempted=None
+                user_id="mock_user_token_pro",
+                log_from_backend=True
             )
             mock_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_db.collection.return_value.add.call_args
@@ -196,6 +193,7 @@ if __name__ == "__main__":
             assert logged_data["details"]["query"] == "What is the meaning of life?"
             assert logged_data["success"] is False
             assert "No tool available" in logged_data["details"]["reason"]
+            assert logged_data["log_from_backend"] is True
             mock_db.collection.return_value.add.reset_mock()
 
             print("\nAll analytics tests completed.")
