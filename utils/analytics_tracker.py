@@ -70,8 +70,9 @@ async def log_event(
 
     try:
         # Store analytics in a public collection for easier aggregation/reporting
-        # Path: /artifacts/{appId}/public/analytics_logs/{docId}
-        collection_path = f"artifacts/{app_id}/public/analytics_logs"
+        # Path: /artifacts/{appId}/public/data/analytics_logs/{docId}
+        # This path structure ensures an odd number of elements for a collection.
+        collection_path = f"artifacts/{app_id}/public/data/analytics_logs"
         
         # Import firestore locally to avoid circular dependencies if analytics_tracker
         # is imported by modules that initialize firestore.
