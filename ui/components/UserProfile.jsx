@@ -3,7 +3,7 @@ import { User, Save, XCircle, Loader2 } from 'lucide-react'; // Import Loader2 f
 import { logEvent } from './utils/analytics_tracker'; // Ensure correct path to logEvent
 
 // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // Use your actual Codespace URL here!
+const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/"; // Use your actual Codespace URL here!
 
 const UserProfile = ({ userId }) => {
     const [profile, setProfile] = useState({
