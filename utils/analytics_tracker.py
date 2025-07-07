@@ -1,12 +1,9 @@
 # utils/analytics_tracker.py
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone # Import timezone
 from typing import Optional, Dict, Any
-
-# Firebase imports (assuming these are globally available or handled by the main app)
-# We will use the global __app_id, __firebase_config, __initial_auth_token
-# and firebase client libraries for Firestore operations.
+import asyncio # Import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -32,18 +29,18 @@ def initialize_analytics(firestore_db, firebase_auth, current_app_id: str, curre
 
 async def log_event(
     event_type: str,
-    event_details: Dict[str, Any],
-    user_id: Optional[str] = None, # Renamed from user_token to user_id for clarity
+    details: Dict[str, Any],
+    user_id: Optional[str] = None,
     success: Optional[bool] = None,
     error_message: Optional[str] = None,
-    log_from_backend: bool = False # New parameter to indicate if log is from backend
+    log_from_backend: bool = False
 ):
     """
     Logs an analytics event to Firestore.
 
     Args:
         event_type (str): The type of event (e.g., "tool_usage", "query_failure", "user_login").
-        event_details (Dict[str, Any]): A dictionary containing specific details about the event.
+        details (Dict[str, Any]): A dictionary containing specific details about the event.
         user_id (str, optional): The user's unique ID.
         success (bool, optional): Whether the event was successful.
         error_message (str, optional): An error message if the event failed.
@@ -53,31 +50,26 @@ async def log_event(
         logger.warning("Analytics not initialized. Cannot log event.")
         return
 
-    # Determine the user ID for logging
-    # If user_id is explicitly passed, use it. Otherwise, try global user_id or anonymous.
     current_user_id = user_id if user_id else (globals().get('user_id') or (auth.currentUser.uid if auth and auth.currentUser else "anonymous"))
 
     event_data = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(), # Use timezone.utc
         "app_id": app_id,
         "user_id": current_user_id,
         "event_type": event_type,
-        "details": event_details,
+        "details": details,
         "success": success,
         "error_message": error_message,
-        "log_from_backend": log_from_backend # Store the origin of the log
+        "log_from_backend": log_from_backend
     }
 
     try:
-        # Store analytics in a public collection for easier aggregation/reporting
+        # Corrected Firestore path to ensure odd number of elements for a collection
         # Path: /artifacts/{appId}/public/data/analytics_logs/{docId}
-        # This path structure ensures an odd number of elements for a collection.
         collection_path = f"artifacts/{app_id}/public/data/analytics_logs"
         
-        # Import firestore locally to avoid circular dependencies if analytics_tracker
-        # is imported by modules that initialize firestore.
-        from firebase_admin import firestore 
-        await db.collection(collection_path).add(event_data)
+        # Wrap the synchronous Firestore call in asyncio.to_thread
+        await asyncio.to_thread(db.collection(collection_path).add, event_data)
         logger.info(f"Logged analytics event: {event_type} for user {current_user_id}")
     except Exception as e:
         logger.error(f"Failed to log analytics event to Firestore: {e}", exc_info=True)
@@ -85,7 +77,7 @@ async def log_event(
 async def log_tool_usage(
     tool_name: str,
     tool_params: Dict[str, Any],
-    user_id: Optional[str] = None, # Renamed from user_token
+    user_id: Optional[str] = None,
     success: bool = True,
     error_message: Optional[str] = None,
     log_from_backend: bool = False
@@ -102,7 +94,7 @@ async def log_tool_usage(
 async def log_query_failure(
     query: str,
     reason: str,
-    user_id: Optional[str] = None, # Renamed from user_token
+    user_id: Optional[str] = None,
     tool_attempted: Optional[str] = None,
     log_from_backend: bool = False
 ):
@@ -129,8 +121,8 @@ if __name__ == "__main__":
     mock_auth = MagicMock()
     mock_auth.currentUser = MagicMock(uid="mock_user_123")
     
-    # Mock the add method to be an async mock
-    mock_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
+    # Mock the add method to be synchronous for testing with to_thread
+    mock_db.collection.return_value.add = MagicMock(return_value=MagicMock(id="mock_doc_id"))
 
     # Patch firebase_admin.firestore for the local import within log_event
     with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
