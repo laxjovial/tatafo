@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
 
-
-// --- Analytics Tracker Functions (integrated from utils/analytics_tracker.js) ---
+// --- Analytics Tracker Functions ---
 let dbInstance = null;
 let authInstance = null;
 let currentAppId = null;
@@ -28,7 +27,7 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
         event_type: eventType,
         details: eventDetails,
         timestamp: new Date().toISOString(),
-        user_id: currentUserId, // Use the ID from the authenticated user
+        user_id: currentUserId,
         app_id: currentAppId,
     };
 
@@ -40,8 +39,6 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
     }
 
     try {
-        // Log to a public collection for analytics
-        // Corrected path to ensure an odd number of segments for a collection
         const analyticsCollectionRef = collection(dbInstance, `artifacts/${currentAppId}/public/data/analytics_events`);
         await addDoc(analyticsCollectionRef, eventData);
         console.log(`Analytics event '${eventType}' logged successfully for user ${currentUserId}.`);
@@ -50,8 +47,225 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
     }
 };
 
-// --- UserProfile Component (integrated from UserProfile.jsx) ---
-// UserProfile now accepts 'auth' prop
+// --- Login Page Component ---
+const LoginPage = ({ onLoginSuccess, onNavigateToRegister }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
+    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        try {
+            // 1. Call FastAPI /login endpoint to get custom token
+            const response = await fetch(`${FASTAPI_BASE_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Login failed. Please check your credentials.');
+            }
+
+            const data = await response.json();
+            const customToken = data.custom_token;
+            const uid = data.uid;
+
+            // 2. Use custom token to sign in with Firebase Client SDK
+            const auth = getAuth();
+            await signInWithCustomToken(auth, customToken);
+
+            console.log("Logged in successfully with Firebase Client SDK:", uid);
+            await logEvent('user_login', { email: email, uid: uid }, true);
+            onLoginSuccess(uid); // Notify parent App component of successful login
+
+        } catch (err) {
+            console.error("Login error:", err);
+            setError(err.message || 'An unexpected error occurred during login.');
+            await logEvent('user_login', { email: email, error: err.message }, false, err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 p-4">
+            <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md transform transition-all duration-300 hover:scale-[1.01]">
+                <h2 className="text-4xl font-extrabold text-indigo-800 mb-6 text-center">Login</h2>
+                {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 text-center">{error}</div>}
+                <form onSubmit={handleLogin} className="space-y-6">
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">Email</label>
+                        <input
+                            type="email"
+                            id="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+                            placeholder="your@example.com"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">Password</label>
+                        <input
+                            type="password"
+                            id="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 mb-3 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+                            placeholder="********"
+                            required
+                        />
+                    </div>
+                    <button
+                        type="submit"
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-md shadow-lg transform hover:scale-105 transition duration-300 flex items-center justify-center"
+                        disabled={loading}
+                    >
+                        {loading ? (
+                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        ) : 'Login'}
+                    </button>
+                </form>
+                <div className="mt-6 text-center">
+                    <p className="text-gray-600">Don't have an account?</p>
+                    <button
+                        onClick={onNavigateToRegister}
+                        className="text-indigo-600 hover:text-indigo-800 font-semibold mt-2 transition duration-300"
+                    >
+                        Register here
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- Register Page Component ---
+const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [username, setUsername] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [message, setMessage] = useState('');
+
+    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
+    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
+
+    const handleRegister = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        setMessage('');
+        try {
+            const response = await fetch(`${FASTAPI_BASE_URL}/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, username }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Registration failed.');
+            }
+
+            const data = await response.json();
+            setMessage(data.message || 'Registration successful! Please log in.');
+            await logEvent('user_registration', { email: email, username: username, uid: data.uid }, true);
+            onRegisterSuccess(); // Notify parent App component
+        } catch (err) {
+            console.error("Registration error:", err);
+            setError(err.message || 'An unexpected error occurred during registration.');
+            await logEvent('user_registration', { email: email, username: username, error: err.message }, false, err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 p-4">
+            <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md transform transition-all duration-300 hover:scale-[1.01]">
+                <h2 className="text-4xl font-extrabold text-indigo-800 mb-6 text-center">Register</h2>
+                {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 text-center">{error}</div>}
+                {message && <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4 text-center">{message}</div>}
+                <form onSubmit={handleRegister} className="space-y-6">
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="username">Username</label>
+                        <input
+                            type="text"
+                            id="username"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+                            placeholder="Your Username"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">Email</label>
+                        <input
+                            type="email"
+                            id="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+                            placeholder="your@example.com"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">Password</label>
+                        <input
+                            type="password"
+                            id="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 mb-3 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+                            placeholder="********"
+                            required
+                            minLength="6"
+                        />
+                    </div>
+                    <button
+                        type="submit"
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-md shadow-lg transform hover:scale-105 transition duration-300 flex items-center justify-center"
+                        disabled={loading}
+                    >
+                        {loading ? (
+                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        ) : 'Register'}
+                    </button>
+                </form>
+                <div className="mt-6 text-center">
+                    <p className="text-gray-600">Already have an account?</p>
+                    <button
+                        onClick={onNavigateToLogin}
+                        className="text-indigo-600 hover:text-indigo-800 font-semibold mt-2 transition duration-300"
+                    >
+                        Login here
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- UserProfile Component ---
 const UserProfile = ({ userId, auth }) => {
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
     const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
@@ -74,7 +288,7 @@ const UserProfile = ({ userId, auth }) => {
 
     const fetchUserProfile = useCallback(async () => {
         if (!userId || userId === 'unauthenticated_test_user' || userId === 'anonymous_error') {
-            setError("User not authenticated. Please log in to the Streamlit app first.");
+            setError("User not authenticated. Please log in.");
             setLoading(false);
             return;
         }
@@ -88,11 +302,15 @@ const UserProfile = ({ userId, auth }) => {
                 throw new Error("No authentication token available. Please log in.");
             }
 
+            // Note: FastAPI endpoint is /profile/{user_id}, but we're sending the token
+            // and the backend will get the user_id from the token.
+            // So, the endpoint should ideally be /profile or /user/profile
+            // I'm adjusting it to /user/profile as discussed.
             const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${idToken}` // Use the Firebase ID token
+                    'Authorization': `Bearer ${idToken}`
                 }
             });
 
@@ -102,7 +320,9 @@ const UserProfile = ({ userId, auth }) => {
             }
 
             const data = await response.json();
-            setUserData(data.user); // Backend returns {"user": profile_data}
+            // Assuming backend returns {"user": profile_data}
+            // If backend returns profile_data directly, use setUserData(data)
+            setUserData(data.user || data); // Adjust based on actual backend response structure
             await logEvent('user_profile_view', { user_id: userId, status: 'success' });
         } catch (err) {
             console.error("Error fetching user profile:", err);
@@ -111,7 +331,7 @@ const UserProfile = ({ userId, auth }) => {
         } finally {
             setLoading(false);
         }
-    }, [userId, auth, FASTAPI_BASE_URL]); // Added auth to dependencies
+    }, [userId, auth, FASTAPI_BASE_URL]);
 
     useEffect(() => {
         fetchUserProfile();
@@ -130,21 +350,26 @@ const UserProfile = ({ userId, auth }) => {
         setError(null);
         setMessage('');
         try {
-            const idToken = await auth.currentUser?.getIdToken(true); // Get fresh ID token
+            const idToken = await auth.currentUser?.getIdToken(true);
             if (!idToken) {
                 throw new Error("No authentication token available. Please log in.");
             }
 
+            // Note: FastAPI endpoint is /profile/update/{user_id}, but we're sending the token
+            // and the backend will get the user_id from the token.
+            // So, the endpoint should ideally be /user/profile (PUT)
+            // I'm adjusting it to /user/profile as discussed.
             const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${idToken}` // Use the Firebase ID token
+                    'Authorization': `Bearer ${idToken}`
                 },
                 body: JSON.stringify({
                     phone: userData.phone,
                     address: userData.address,
-                    bio: userData.bio
+                    bio: userData.bio,
+                    username: userData.username // Include username in update as it's editable
                 })
             });
 
@@ -157,8 +382,7 @@ const UserProfile = ({ userId, auth }) => {
             setMessage(data.message || 'Profile updated successfully!');
             setIsEditing(false);
             await logEvent('user_profile_update', { user_id: userId, status: 'success' });
-            // Re-fetch to get the latest data, including server-side updates if any
-            fetchUserProfile();
+            fetchUserProfile(); // Re-fetch to get the latest data
         } catch (err) {
             console.error("Error updating user profile:", err);
             setError(err.message);
@@ -168,149 +392,145 @@ const UserProfile = ({ userId, auth }) => {
         }
     };
 
-    if (loading) {
-        return <div className="text-center py-20 text-xl text-indigo-600">Loading user profile...</div>;
-    }
-
-    if (error) {
-        return <div className="text-center py-20 text-red-500 text-xl">Error: {error}</div>;
-    }
+    const handleCancel = () => {
+        setIsEditing(false);
+        setMessage('Edit cancelled.');
+        fetchUserProfile(); // Discard changes by re-fetching
+    };
 
     return (
-        <div className="max-w-4xl mx-auto bg-white p-8 rounded-lg shadow-xl mt-10">
+        <div className="max-w-4xl mx-auto bg-white p-8 rounded-lg shadow-xl my-10 animate-fade-in">
             <h2 className="text-4xl font-extrabold text-indigo-800 mb-8 text-center">User Profile</h2>
 
             {message && (
-                <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-6" role="alert">
-                    <span className="block sm:inline">{message}</span>
+                <div className={`p-4 mb-6 rounded-md text-center ${error ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                    {message}
                 </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Username:</label>
-                    <input
-                        type="text"
-                        name="username"
-                        value={userData.username}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                <div className="space-y-6">
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="username">
+                            Username
+                        </label>
+                        <input
+                            type="text"
+                            id="username"
+                            name="username"
+                            value={userData.username}
+                            onChange={handleChange}
+                            readOnly={!isEditing}
+                            className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 ${isEditing ? 'bg-white' : 'bg-gray-100 cursor-not-allowed'}`}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
+                            Email
+                        </label>
+                        <input
+                            type="email"
+                            id="email"
+                            name="email"
+                            value={userData.email}
+                            readOnly // Email is typically managed by Firebase Auth directly, not via profile update
+                            className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 bg-gray-100 cursor-not-allowed`}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="phone">
+                            Phone
+                        </label>
+                        <input
+                            type="tel"
+                            id="phone"
+                            name="phone"
+                            value={userData.phone}
+                            onChange={handleChange}
+                            readOnly={!isEditing}
+                            className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 ${isEditing ? 'bg-white' : 'bg-gray-100 cursor-not-allowed'}`}
+                        />
+                    </div>
                 </div>
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Email:</label>
-                    <input
-                        type="email"
-                        name="email"
-                        value={userData.email}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
-                </div>
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Account Tier:</label>
-                    <input
-                        type="text"
-                        name="tier"
-                        value={userData.tier}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
-                </div>
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Roles:</label>
-                    <input
-                        type="text"
-                        name="roles"
-                        value={userData.roles.join(', ')}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
-                </div>
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Last Login:</label>
-                    <input
-                        type="text"
-                        name="last_login"
-                        value={userData.last_login ? new Date(userData.last_login).toLocaleString() : 'N/A'}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
-                </div>
-                <div className="flex flex-col">
-                    <label className="text-gray-600 text-sm font-semibold mb-1">Account Created:</label>
-                    <input
-                        type="text"
-                        name="created_at"
-                        value={userData.created_at ? new Date(userData.created_at).toLocaleString() : 'N/A'}
-                        readOnly
-                        className="p-3 border border-gray-300 rounded-md bg-gray-100 text-gray-800 focus:outline-none"
-                    />
-                </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <div className="flex flex-col">
-                    <label htmlFor="phone" className="text-gray-600 text-sm font-semibold mb-1">Phone:</label>
-                    <input
-                        type="text"
-                        id="phone"
-                        name="phone"
-                        value={userData.phone}
-                        onChange={handleChange}
-                        readOnly={!isEditing}
-                        className={`p-3 border rounded-md text-gray-800 focus:outline-none ${isEditing ? 'border-indigo-400' : 'border-gray-300 bg-gray-50'}`}
-                    />
-                </div>
-                <div className="flex flex-col">
-                    <label htmlFor="address" className="text-gray-600 text-sm font-semibold mb-1">Address:</label>
-                    <input
-                        type="text"
-                        id="address"
-                        name="address"
-                        value={userData.address}
-                        onChange={handleChange}
-                        readOnly={!isEditing}
-                        className={`p-3 border rounded-md text-gray-800 focus:outline-none ${isEditing ? 'border-indigo-400' : 'border-gray-300 bg-gray-50'}`}
-                    />
-                </div>
-                <div className="col-span-1 md:col-span-2 flex flex-col">
-                    <label htmlFor="bio" className="text-gray-600 text-sm font-semibold mb-1">Bio:</label>
-                    <textarea
-                        id="bio"
-                        name="bio"
-                        value={userData.bio}
-                        onChange={handleChange}
-                        readOnly={!isEditing}
-                        rows="4"
-                        className={`p-3 border rounded-md text-gray-800 focus:outline-none ${isEditing ? 'border-indigo-400' : 'border-gray-300 bg-gray-50'}`}
-                    ></textarea>
+                <div className="space-y-6">
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="address">
+                            Address
+                        </label>
+                        <input
+                            type="text"
+                            id="address"
+                            name="address"
+                            value={userData.address}
+                            onChange={handleChange}
+                            readOnly={!isEditing}
+                            className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 ${isEditing ? 'bg-white' : 'bg-gray-100 cursor-not-allowed'}`}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="bio">
+                            Bio
+                        </label>
+                        <textarea
+                            id="bio"
+                            name="bio"
+                            value={userData.bio}
+                            onChange={handleChange}
+                            readOnly={!isEditing}
+                            rows="4"
+                            className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 ${isEditing ? 'bg-white' : 'bg-gray-100 cursor-not-allowed'}`}
+                        ></textarea>
+                    </div>
+                    <div>
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="tier">
+                            Tier
+                        </label>
+                        <input
+                            type="text"
+                            id="tier"
+                            name="tier"
+                            value={userData.tier}
+                            readOnly // Tier is read-only, managed by admin
+                            className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-gray-300 bg-gray-100 cursor-not-allowed"
+                        />
+                    </div>
                 </div>
             </div>
 
-            <div className="flex justify-center space-x-4 mt-8">
-                {!isEditing ? (
+            <div className="flex justify-end space-x-4 mt-8">
+                {loading ? (
+                    <button
+                        className="bg-indigo-400 text-white font-bold py-3 px-6 rounded-md shadow-lg flex items-center justify-center"
+                        disabled
+                    >
+                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                    </button>
+                ) : !isEditing ? (
                     <button
                         onClick={() => setIsEditing(true)}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transform hover:scale-105 transition duration-300"
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 flex items-center"
                     >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-user-pen mr-2"><path d="M12 20v-2c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v2"/><path d="M18.42 1.41a2 2 0 0 1 2.83 0l.59.59a2 2 0 0 1 0 2.83L18 8l-5-5 5.42-5.42Z"/><path d="M12 4V2"/><path d="M10 20H6a2 2 0 0 0-2 2v2"/><circle cx="8" cy="7" r="4"/></svg>
                         Edit Profile
                     </button>
                 ) : (
                     <>
                         <button
                             onClick={handleSave}
-                            className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transform hover:scale-105 transition duration-300"
+                            className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 flex items-center"
                         >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-save mr-2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><polyline points="17 21 17 13 7 13 7 21"/><path d="M7 3v4a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V3"/></svg>
                             Save Changes
                         </button>
                         <button
-                            onClick={() => {
-                                setIsEditing(false);
-                                fetchUserProfile(); // Discard changes by re-fetching
-                            }}
-                            className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transform hover:scale-105 transition duration-300"
+                            onClick={handleCancel}
+                            className="bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 flex items-center"
                         >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-x-circle mr-2"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
                             Cancel
                         </button>
                     </>
@@ -320,7 +540,7 @@ const UserProfile = ({ userId, auth }) => {
     );
 };
 
-// --- AnalyticsDashboard Component (integrated from AnalyticsDashboard.jsx) ---
+// --- AnalyticsDashboard Component ---
 const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -340,9 +560,8 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
         setLoading(true);
         setError(null);
         try {
-            // Corrected path to ensure an odd number of segments for a collection
             const analyticsCollectionRef = collection(db, `artifacts/${appId}/public/data/analytics_events`);
-            let q = analyticsCollectionRef;
+            let q = query(analyticsCollectionRef); // Removed orderBy for now to avoid index issues if not needed
 
             if (filterEventType) {
                 q = query(q, where('event_type', '==', filterEventType));
@@ -354,7 +573,7 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
             const querySnapshot = await getDocs(q);
             let fetchedEvents = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            // In-memory date filtering
+            // In-memory date filtering and sorting
             if (filterStartDate) {
                 const start = new Date(filterStartDate).toISOString();
                 fetchedEvents = fetchedEvents.filter(event => event.timestamp >= start);
@@ -364,7 +583,6 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
                 fetchedEvents = fetchedEvents.filter(event => event.timestamp <= end);
             }
 
-            // Sort by timestamp descending
             fetchedEvents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
             setEvents(fetchedEvents);
@@ -390,43 +608,104 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
         fetchAnalyticsEvents(); // Re-fetch with current filters
     };
 
-    if (loading) {
-        return <div className="text-center py-20 text-xl text-indigo-600">Loading analytics data...</div>;
-    }
+    // Prepare data for charts (simplified, no recharts import here)
+    const getChartData = () => {
+        const dailyCounts = {};
+        const toolSuccessCounts = {};
+        const toolFailureCounts = {};
 
-    if (error) {
-        return <div className="text-center py-20 text-red-500 text-xl">Error: {error}</div>;
-    }
+        events.forEach(event => {
+            if (event.timestamp) {
+                const dateKey = new Date(event.timestamp).toISOString().split('T')[0]; // YYYY-MM-DD
+                dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1;
+            }
+
+            if (event.event_type === 'tool_usage' && event.details && event.details.tool_name) {
+                const toolName = event.details.tool_name;
+                if (event.success) {
+                    toolSuccessCounts[toolName] = (toolSuccessCounts[toolName] || 0) + 1;
+                } else {
+                    toolFailureCounts[toolName] = (toolFailureCounts[toolName] || 0) + 1;
+                }
+            }
+        });
+
+        const dailyChartData = Object.keys(dailyCounts).sort().map(date => ({
+            date,
+            count: dailyCounts[date]
+        }));
+
+        const toolUsageChartData = Object.keys(toolSuccessCounts).map(toolName => ({
+            toolName,
+            success: toolSuccessCounts[toolName],
+            failure: toolFailureCounts[toolName] || 0
+        })).sort((a, b) => (b.success + b.failure) - (a.success + a.failure));
+
+        return { dailyChartData, toolUsageChartData };
+    };
+
+    const { dailyChartData, toolUsageChartData } = getChartData();
+
+    const handleExport = () => {
+        const headers = ["Event ID", "Timestamp", "User ID", "Event Type", "Tool Name", "Success", "Error Message", "Details (JSON)"];
+        const csvRows = [headers.join(',')];
+
+        events.forEach(event => {
+            const row = [
+                event.id,
+                event.timestamp ? new Date(event.timestamp).toISOString() : '',
+                event.user_id || 'N/A',
+                event.event_type || 'N/A',
+                event.details?.tool_name || 'N/A',
+                event.success ? 'True' : 'False',
+                event.error_message || '',
+                JSON.stringify(event.details || {})
+            ];
+            csvRows.push(row.map(item => `"${String(item).replace(/"/g, '""')}"`).join(','));
+        });
+
+        const csvString = csvRows.join('\n');
+        const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.setAttribute('download', `analytics_data_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const uniqueEventTypes = [...new Set(events.map(e => e.event_type))];
+    const uniqueUserIds = [...new Set(events.map(e => e.user_id))];
 
     return (
         <div className="max-w-6xl mx-auto bg-white p-8 rounded-lg shadow-xl mt-10">
             <h2 className="text-4xl font-extrabold text-indigo-800 mb-8 text-center">Analytics Dashboard</h2>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                <input
-                    type="text"
-                    placeholder="Filter by Event Type"
+                <select
                     value={filterEventType}
                     onChange={handleFilterChange(setFilterEventType)}
                     className="p-3 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-400"
-                />
-                <input
-                    type="text"
-                    placeholder="Filter by User ID"
+                >
+                    <option value="">All Event Types</option>
+                    {uniqueEventTypes.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+                <select
                     value={filterUserId}
                     onChange={handleFilterChange(setFilterUserId)}
                     className="p-3 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-400"
-                />
+                >
+                    <option value="">All User IDs</option>
+                    {uniqueUserIds.map(id => <option key={id} value={id}>{id}</option>)}
+                </select>
                 <input
                     type="date"
-                    placeholder="Start Date"
                     value={filterStartDate}
                     onChange={handleFilterChange(setFilterStartDate)}
                     className="p-3 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-400"
                 />
                 <input
                     type="date"
-                    placeholder="End Date"
                     value={filterEndDate}
                     onChange={handleFilterChange(setFilterEndDate)}
                     className="p-3 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-400"
@@ -439,7 +718,11 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
                 </button>
             </div>
 
-            {events.length === 0 ? (
+            {loading ? (
+                <div className="text-center py-20 text-xl text-indigo-600">Loading analytics data...</div>
+            ) : error ? (
+                <div className="text-center py-20 text-red-500 text-xl">Error: {error}</div>
+            ) : events.length === 0 ? (
                 <p className="text-center text-gray-600 text-lg">No analytics events found for the selected filters.</p>
             ) : (
                 <div className="overflow-x-auto">
@@ -483,95 +766,118 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
 
 
 // --- Main App Component ---
-// Ensure __app_id and __firebase_config are available in the environment
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-
-// Initialize Firebase outside the component to prevent re-initialization
-let app, db, auth;
-if (Object.keys(firebaseConfig).length > 0) {
-    try {
-        app = initializeApp(firebaseConfig);
-        db = getFirestore(app);
-        auth = getAuth(app);
-        console.log("Firebase initialized successfully in App.jsx");
-    } catch (error) {
-        console.error("Error initializing Firebase in App.jsx:", error);
-    }
-} else {
-    console.warn("Firebase config not found. Application may not function correctly.");
-}
-
 const App = () => {
-    const [currentPage, setCurrentPage] = useState('home');
+    const [currentPage, setCurrentPage] = useState('login'); // Start at login page
     const [currentUserId, setCurrentUserId] = useState(null);
-    const [isAnalyticsInitialized, setIsAnalyticsInitialized] = useState(false);
+    const [isAuthReady, setIsAuthReady] = useState(false);
 
+    // Firebase client-side configuration
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+    // Initialize Firebase outside the component to prevent re-initialization
+    let app, db, auth;
+    if (Object.keys(firebaseConfig).length > 0) {
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            console.log("Firebase initialized successfully in App.jsx");
+        } catch (error) {
+            console.error("Error initializing Firebase in App.jsx:", error);
+        }
+    } else {
+        console.warn("Firebase config not found. Application may not function correctly.");
+    }
+
+    // Auth state listener
     useEffect(() => {
         if (!auth || !db) {
-            console.warn("Firebase Auth or Firestore not available. Cannot initialize analytics with user context.");
-            setIsAnalyticsInitialized(true); // Allow app to proceed even without analytics if Firebase isn't ready
+            console.warn("Firebase Auth or Firestore not available. Cannot establish auth listener.");
+            setIsAuthReady(true);
             return;
         }
 
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
-            let userIdToUse = null;
             if (user) {
-                userIdToUse = user.uid;
+                setCurrentUserId(user.uid);
+                // If coming from login/register, navigate to home/profile
+                if (currentPage === 'login' || currentPage === 'register') {
+                    setCurrentPage('home');
+                }
             } else {
-                try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                    userIdToUse = auth.currentUser?.uid || crypto.randomUUID();
-                } catch (anonError) {
-                    console.error("Error signing in anonymously for analytics:", anonError);
-                    userIdToUse = 'anonymous_error';
+                setCurrentUserId(null);
+                // If not authenticated, always show login page
+                if (currentPage !== 'register') { // Allow staying on register if user is there
+                    setCurrentPage('login');
                 }
             }
-            setCurrentUserId(userIdToUse);
-
-            if (db && userIdToUse) {
-                initializeAnalytics(db, auth, appId, userIdToUse);
-                setIsAnalyticsInitialized(true);
-                // Log initial page view after auth is ready
-                await logEvent('page_view', { page_name: currentPage, user_id: userIdToUse });
-                console.log(`Analytics: Logged initial page_view for '${currentPage}' by user '${userIdToUse}'`);
-            } else {
-                console.warn("Firestore or userId not available for analytics initialization.");
-                setIsAnalyticsInitialized(true); // Proceed anyway
-            }
+            setIsAuthReady(true);
+            // Initialize analytics once auth is ready and we have a potential user ID
+            initializeAnalytics(db, auth, appId, user?.uid || 'anonymous');
         });
 
         return () => unsubscribe();
-    }, []);
+    }, [auth, db, appId, currentPage]); // Added currentPage to re-evaluate navigation logic
 
     // Log page views when currentPage changes (after analytics is initialized)
     useEffect(() => {
-        if (isAnalyticsInitialized && currentUserId) {
+        if (isAuthReady && currentUserId) {
             (async () => {
                 await logEvent('page_view', { page_name: currentPage, user_id: currentUserId });
                 console.log(`Analytics: Logged page_view for '${currentPage}' by user '${currentUserId}'`);
             })();
         }
-    }, [currentPage, isAnalyticsInitialized, currentUserId]);
+    }, [currentPage, isAuthReady, currentUserId]);
+
+
+    const handleLogout = async () => {
+        if (auth) {
+            try {
+                await auth.signOut();
+                console.log("User logged out.");
+                await logEvent('user_logout', { user_id: currentUserId }, true);
+                setCurrentUserId(null);
+                setCurrentPage('login'); // Redirect to login page after logout
+            } catch (error) {
+                console.error("Error logging out:", error);
+                await logEvent('user_logout', { user_id: currentUserId, error: error.message }, false, error.message);
+            }
+        }
+    };
 
     const renderPage = useCallback(() => {
-        if (!isAnalyticsInitialized) {
-            return <div className="text-center py-20 text-xl text-indigo-600">Initializing application...</div>;
+        if (!isAuthReady) {
+            return (
+                <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
+                    <div className="text-center py-20 text-xl text-indigo-600 flex items-center">
+                        <svg className="animate-spin -ml-1 mr-3 h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Initializing application...
+                    </div>
+                </div>
+            );
+        }
+
+        if (!currentUserId && currentPage !== 'register') {
+            return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} />;
         }
 
         switch (currentPage) {
+            case 'login':
+                return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} />;
+            case 'register':
+                return <RegisterPage onRegisterSuccess={() => setCurrentPage('login')} onNavigateToLogin={() => setCurrentPage('login')} />;
             case 'home':
                 return (
-                    <div className="text-center py-20">
+                    <div className="text-center py-20 bg-gradient-to-br from-indigo-50 to-purple-100 min-h-[calc(100vh-80px)] flex flex-col justify-center items-center">
                         <h1 className="text-5xl font-extrabold text-indigo-800 mb-6 animate-fade-in-down">
                             Welcome to Intelli-Agent!
                         </h1>
                         <p className="text-xl text-gray-700 mb-8 animate-fade-in-up">
-                            Your smart assistant for everything.
+                            Your smart assistant for everything. Explore your profile or view analytics.
                         </p>
                         <div className="flex justify-center space-x-4">
                             <button
@@ -590,10 +896,8 @@ const App = () => {
                     </div>
                 );
             case 'analytics':
-                // Pass firebase instances and currentUserId to AnalyticsDashboard
                 return <AnalyticsDashboard db={db} auth={auth} appId={appId} currentUserId={currentUserId} />;
             case 'profile':
-                // Pass auth instance to UserProfile
                 return <UserProfile userId={currentUserId} auth={auth} />;
             default:
                 return (
@@ -609,7 +913,7 @@ const App = () => {
                     </div>
                 );
         }
-    }, [currentPage, isAnalyticsInitialized, currentUserId, db, auth]); // Added db, auth to dependencies
+    }, [currentPage, isAuthReady, currentUserId, db, auth, appId]);
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 font-inter">
@@ -618,30 +922,42 @@ const App = () => {
                     <h1 className="text-3xl font-bold">Intelli-Agent</h1>
                     <nav>
                         <ul className="flex justify-center space-x-6">
-                            <li>
-                                <button
-                                    onClick={() => setCurrentPage('home')}
-                                    className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
-                                >
-                                    Home
-                                </button>
-                            </li>
-                            <li>
-                                <button
-                                    onClick={() => setCurrentPage('analytics')}
-                                    className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
-                                >
-                                    Analytics
-                                </button>
-                            </li>
-                            <li>
-                                <button
-                                    onClick={() => setCurrentPage('profile')}
-                                    className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
-                                >
-                                    User Profile
-                                </button>
-                            </li>
+                            {currentUserId && ( // Only show navigation if logged in
+                                <>
+                                    <li>
+                                        <button
+                                            onClick={() => setCurrentPage('home')}
+                                            className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
+                                        >
+                                            Home
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            onClick={() => setCurrentPage('analytics')}
+                                            className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
+                                        >
+                                            Analytics
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            onClick={() => setCurrentPage('profile')}
+                                            className="text-white hover:text-indigo-200 text-lg font-medium transition duration-300"
+                                        >
+                                            User Profile
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            onClick={handleLogout}
+                                            className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition duration-300"
+                                        >
+                                            Logout
+                                        </button>
+                                    </li>
+                                </>
+                            )}
                         </ul>
                     </nav>
                 </div>
