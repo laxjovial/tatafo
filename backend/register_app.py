@@ -123,6 +123,11 @@ def app():
         with st.spinner("Registering..."):
             response = register_user_backend(email, password, username)
 
+            # --- DEBUGGING LINE ---
+            st.write("Backend Register Response:")
+            st.write(response)
+            # --- END DEBUGGING LINE ---
+
             # FastAPI backend returns "User registered successfully", and "uid"
             # CORRECTED: Check for specific success message from backend
             if response.get("message") == "User registered successfully":
@@ -151,8 +156,10 @@ def app():
 
     st.markdown("---")
     # Changed markdown links to Streamlit buttons for internal navigation
-    if st.button("Already have an account? Login here"):
+    if st.button("Already have an account? Login here", key="login_button_from_register"):
         st.session_state.current_page = "Login"
+        st.rerun()
+
         st.rerun()
 
 
