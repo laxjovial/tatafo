@@ -21,7 +21,7 @@ from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module
 import shared_tools.vector_utils as vector_utils_module
 from utils.date_parser import parse_date_to_yyyymmdd
-from utils.user_manager import UserManager, get_user_tier_capability # <-- ADDED get_user_tier_capability HERE
+from utils.user_manager import UserManager, get_user_tier_capability
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -209,6 +209,23 @@ domain_tool_instances = {
     "document_tools": document_tools_instance,
 }
 
+# --- Pydantic Models for Request Bodies ---
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    username: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class FrontendAnalyticsEvent(BaseModel):
+    event_type: str
+    details: Dict[str, Any]
+    user_id: str
+    success: bool
+    error_message: Optional[str] = None
+
 # --- API Endpoints ---
 
 @app.get("/")
@@ -216,18 +233,18 @@ async def read_root():
     return {"message": "Welcome to the Intelli-Agent Backend!"}
 
 @app.post("/register")
-async def register_user_endpoint(email: EmailStr, password: str, username: str, request: Request):
+async def register_user_endpoint(request_data: RegisterRequest, request: Request): # Use RegisterRequest
     """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
-    logger.debug(f"Attempting registration for email: {email}, username: {username}")
+    logger.debug(f"Attempting registration for email: {request_data.email}, username: {request_data.username}")
     try:
-        user = auth.create_user(email=email, password=password)
+        user = auth.create_user(email=request_data.email, password=request_data.password)
         logger.debug(f"Firebase user created: {user.uid}")
-        await user_manager.create_user_profile(user.uid, email, username)
-        logger.info(f"User registered and profile created: {user.uid} with email {email}")
-        await log_event('user_registered', {'email': email, 'username': username}, user_id=user.uid, success=True)
+        await user_manager.create_user_profile(user.uid, request_data.email, request_data.username)
+        logger.info(f"User registered and profile created: {user.uid} with email {request_data.email}")
+        await log_event('user_registered', {'email': request_data.email, 'username': request_data.username}, user_id=user.uid, success=True)
         return {"message": "User registered successfully", "uid": user.uid}
     except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase registration error for {email}: {e.code} - {e.cause}", exc_info=True)
+        logger.error(f"Firebase registration error for {request_data.email}: {e.code} - {e.cause}", exc_info=True)
         error_message = e.code
         display_message = f"Firebase error: {error_message}"
         
@@ -238,28 +255,28 @@ async def register_user_endpoint(email: EmailStr, password: str, username: str, 
         elif error_message == 'auth/weak-password':
             display_message = "Password is too weak. Please choose a stronger password (at least 6 characters)."
         
-        await log_event('user_registered', {'email': email, 'username': username, 'error': str(e), 'firebase_code': error_message}, success=False)
+        await log_event('user_registered', {'email': request_data.email, 'username': request_data.username, 'error': str(e), 'firebase_code': error_message}, success=False)
         return {"success": False, "message": f"Registration failed: {display_message}"}
     except Exception as e:
-        logger.error(f"An unexpected error occurred during registration for email {email}: {e}", exc_info=True)
-        await log_event('user_registered', {'email': email, 'username': username, 'error': str(e)}, success=False)
+        logger.error(f"An unexpected error occurred during registration for email {request_data.email}: {e}", exc_info=True)
+        await log_event('user_registered', {'email': request_data.email, 'username': request_data.username, 'error': str(e)}, success=False)
         return {"success": False, "message": f"An unexpected error occurred: {str(e)}"}
 
 @app.post("/login")
-async def login_user_endpoint(email: EmailStr, password: str, request: Request):
+async def login_user_endpoint(request_data: LoginRequest, request: Request): # Use LoginRequest
     """
     Generates a custom Firebase token for a user.
     """
-    logger.debug(f"Attempting login for email: {email}")
+    logger.debug(f"Attempting login for email: {request_data.email}")
     try:
-        user_record = auth.get_user_by_email(email)
+        user_record = auth.get_user_by_email(request_data.email)
         
         custom_token = auth.create_custom_token(user_record.uid).decode('utf-8')
         logger.info(f"Custom token generated for user: {user_record.uid}")
-        await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
+        await log_event('user_logged_in', {'email': request_data.email}, user_id=user_record.uid, success=True)
         return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
     except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase login error for {email}: {e.code} - {e.cause}", exc_info=True)
+        logger.error(f"Firebase login error for {request_data.email}: {e.code} - {e.cause}", exc_info=True)
         error_message = e.code
         display_message = f"Firebase error: {error_message}"
         
@@ -270,12 +287,33 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
         elif error_message == 'auth/invalid-password':
             display_message = "Invalid password. Please try again."
         
-        await log_event('user_logged_in', {'email': email, 'error': str(e), 'firebase_code': error_message}, success=False)
+        await log_event('user_logged_in', {'email': request_data.email, 'error': str(e), 'firebase_code': error_message}, success=False)
         return {"success": False, "message": f"Login failed: {display_message}"}
     except Exception as e:
-        logger.error(f"An unexpected error occurred during login for email {email}: {e}", exc_info=True)
-        await log_event('user_logged_in', {'email': email, 'error': str(e)}, success=False)
+        logger.error(f"An unexpected error occurred during login for email {request_data.email}: {e}", exc_info=True)
+        await log_event('user_logged_in', {'email': request_data.email, 'error': str(e)}, success=False)
         return {"success": False, "message": f"An unexpected error occurred: {str(e)}"}
+
+@app.post("/log-frontend-analytics") # NEW: Unauthenticated endpoint for frontend analytics
+async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
+    """
+    Receives analytics events from the frontend (unauthenticated).
+    """
+    logger.debug(f"Received frontend analytics event: {event_data.event_type} for user {event_data.user_id}")
+    try:
+        # We use the log_event function directly here, which handles Firestore logging
+        await log_event(
+            event_data.event_type,
+            event_data.details,
+            user_id=event_data.user_id,
+            success=event_data.success,
+            error_message=event_data.error_message
+        )
+        return {"message": "Analytics event logged successfully"}
+    except Exception as e:
+        logger.error(f"Failed to log frontend analytics event: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to log analytics event: {e}")
+
 
 @app.get("/user/profile")
 async def get_user_profile_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
@@ -324,8 +362,6 @@ async def upload_document_endpoint(
     user_id = current_user['uid']
     logger.info(f"User {user_id} attempting to upload document: {file_name}")
 
-    # REMOVED the local definition/import of get_user_tier_capability
-    # It should be imported from utils.user_manager at the top of the file.
     if not get_user_tier_capability(user_id, 'document_upload_enabled', False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Document upload is not enabled for your current tier.")
 
@@ -345,7 +381,7 @@ async def upload_document_endpoint(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
     except Exception as e:
         logger.error(f"Error uploading document for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e})"
 
 
 @app.post("/agent/chat")
