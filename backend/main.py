@@ -10,7 +10,7 @@ import os
 import asyncio
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
-from firebase_admin import exceptions as firebase_exceptions # Import Firebase exceptions
+from firebase_admin import exceptions as firebase_exceptions
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime, timezone
 
@@ -21,13 +21,24 @@ from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module
 import shared_tools.vector_utils as vector_utils_module
 from utils.date_parser import parse_date_to_yyyymmdd
-from utils.user_manager import UserManager
+from utils.user_manager import UserManager, get_user_tier_capability # <-- ADDED get_user_tier_capability HERE
+
+# Import domain tools
+from domain_tools.finance_tools import FinanceTools
+from domain_tools.crypto_tools import CryptoTools
+from domain_tools.medical_tools import MedicalTools
+from domain_tools.news_tools import NewsTools
+from domain_tools.legal_tools import LegalTools
+from domain_tools.education_tools import EducationTools
+from domain_tools.entertainment_tools import EntertainmentTools
+from domain_tools.weather_tools import WeatherTools
+from domain_tools.travel_tools import TravelTools
+from domain_tools.sports_tools import SportsTools
+from domain_tools.document_tools.document_tool import DocumentTools 
 
 # Initialize logger
 logger = logging.getLogger(__name__)
-# Set logger level to DEBUG to see more details
 logger.setLevel(logging.DEBUG)
-# Add a handler to print to console if not already configured
 if not logger.handlers:
     handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -38,12 +49,9 @@ if not logger.handlers:
 # --- Firebase Admin SDK Initialization ---
 if not firebase_admin._apps:
     try:
-        # Load Firebase credentials from environment variable
         firebase_credentials_json = os.environ.get("FIREBASE_CREDENTIALS")
         if not firebase_credentials_json:
             logger.error("FIREBASE_CREDENTIALS environment variable not set. Using dummy credentials for local testing.")
-            # Create a dummy credential object just to allow initialization for local testing
-            # This should ONLY be used for local development if FIREBASE_CREDENTIALS is truly missing
             firebase_config_str = config_manager.get_secret("firebase_config")
             firebase_config = json.loads(firebase_config_str) if firebase_config_str else {}
             cred = credentials.Certificate({
@@ -66,7 +74,6 @@ if not firebase_admin._apps:
         logger.info("Firebase Admin SDK initialized successfully.")
     except Exception as e:
         logger.error(f"FATAL: Error initializing Firebase Admin SDK: {e}", exc_info=True)
-        # Re-raise the exception to prevent the app from starting with a broken Firebase setup
         raise
 
 # Initialize Firestore Manager
@@ -128,7 +135,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         user_record['uid'] = uid
         return user_record
     except Exception as e:
-        logger.error(f"Authentication failed: {e}", exc_info=True) # Added exc_info
+        logger.error(f"Authentication failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid authentication credentials: {e}",
@@ -220,11 +227,11 @@ async def register_user_endpoint(email: EmailStr, password: str, username: str, 
         await log_event('user_registered', {'email': email, 'username': username}, user_id=user.uid, success=True)
         return {"message": "User registered successfully", "uid": user.uid}
     except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase registration error for {email}: {e.code} - {e.cause}", exc_info=True) # More detailed logging
-        error_message = e.code # FirebaseError objects have a 'code' attribute
-        display_message = f"Firebase error: {error_message}" # Default display message
+        logger.error(f"Firebase registration error for {email}: {e.code} - {e.cause}", exc_info=True)
+        error_message = e.code
+        display_message = f"Firebase error: {error_message}"
         
-        if hasattr(e, 'message') and e.message: # Some Firebase errors have a 'message' attribute
+        if hasattr(e, 'message') and e.message:
             display_message = e.message
         elif error_message == 'auth/email-already-exists':
             display_message = "Email already in use. Please use a different email or log in."
@@ -246,17 +253,13 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
     logger.debug(f"Attempting login for email: {email}")
     try:
         user_record = auth.get_user_by_email(email)
-        # Note: Firebase Admin SDK's get_user_by_email doesn't authenticate password directly.
-        # For this demo, we assume if user exists, we can create a custom token.
-        # In a real app, you'd use Firebase Client SDK for login and verify the ID token on backend,
-        # or implement a secure password verification logic here.
         
         custom_token = auth.create_custom_token(user_record.uid).decode('utf-8')
         logger.info(f"Custom token generated for user: {user_record.uid}")
         await log_event('user_logged_in', {'email': email}, user_id=user_record.uid, success=True)
         return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid}
     except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase login error for {email}: {e.code} - {e.cause}", exc_info=True) # More detailed logging
+        logger.error(f"Firebase login error for {email}: {e.code} - {e.cause}", exc_info=True)
         error_message = e.code
         display_message = f"Firebase error: {error_message}"
         
@@ -264,7 +267,7 @@ async def login_user_endpoint(email: EmailStr, password: str, request: Request):
             display_message = e.message
         elif error_message == 'auth/user-not-found':
             display_message = "No account found with that email. Please register or check your email."
-        elif error_message == 'auth/invalid-password': # This is a common code for incorrect password
+        elif error_message == 'auth/invalid-password':
             display_message = "Invalid password. Please try again."
         
         await log_event('user_logged_in', {'email': email, 'error': str(e), 'firebase_code': error_message}, success=False)
@@ -321,14 +324,8 @@ async def upload_document_endpoint(
     user_id = current_user['uid']
     logger.info(f"User {user_id} attempting to upload document: {file_name}")
 
-    # Assuming get_user_tier_capability is available and imported from utils.user_manager
-    # from utils.user_manager import get_user_tier_capability # Ensure this is imported at the top if needed
-    # For now, I'll add a dummy placeholder if it's not imported or defined in main.py
-    def get_user_tier_capability(user_id: str, capability: str, default: bool):
-        # Placeholder: In a real scenario, this would check user's tier for capabilities
-        # For now, always allow document upload for demonstration
-        return True 
-
+    # REMOVED the local definition/import of get_user_tier_capability
+    # It should be imported from utils.user_manager at the top of the file.
     if not get_user_tier_capability(user_id, 'document_upload_enabled', False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Document upload is not enabled for your current tier.")
 
