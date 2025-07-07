@@ -55,7 +55,7 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister }) => {
     const [error, setError] = useState('');
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
 
     const handleLogin = async (e) => {
         e.preventDefault();
@@ -162,7 +162,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
     const [message, setMessage] = useState('');
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
 
     const handleRegister = async (e) => {
         e.preventDefault();
@@ -268,7 +268,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
 // --- UserProfile Component ---
 const UserProfile = ({ userId, auth }) => {
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev";
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
 
     const [userData, setUserData] = useState({
         username: '',
