@@ -34,7 +34,7 @@ from domain_tools.entertainment_tools import EntertainmentTools
 from domain_tools.weather_tools import WeatherTools
 from domain_tools.travel_tools import TravelTools
 from domain_tools.sports_tools import SportsTools
-from domain_tools.document_tools.document_tool import DocumentTools 
+from domain_tools.document_tools.document_tool import DocumentTools # Ensure this import is present
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ async def read_root():
     return {"message": "Welcome to the Intelli-Agent Backend!"}
 
 @app.post("/register")
-async def register_user_endpoint(request_data: RegisterRequest, request: Request): # Use RegisterRequest
+async def register_user_endpoint(request_data: RegisterRequest, request: Request):
     """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
     logger.debug(f"Attempting registration for email: {request_data.email}, username: {request_data.username}")
     try:
@@ -263,7 +263,7 @@ async def register_user_endpoint(request_data: RegisterRequest, request: Request
         return {"success": False, "message": f"An unexpected error occurred: {str(e)}"}
 
 @app.post("/login")
-async def login_user_endpoint(request_data: LoginRequest, request: Request): # Use LoginRequest
+async def login_user_endpoint(request_data: LoginRequest, request: Request):
     """
     Generates a custom Firebase token for a user.
     """
@@ -294,14 +294,13 @@ async def login_user_endpoint(request_data: LoginRequest, request: Request): # U
         await log_event('user_logged_in', {'email': request_data.email, 'error': str(e)}, success=False)
         return {"success": False, "message": f"An unexpected error occurred: {str(e)}"}
 
-@app.post("/log-frontend-analytics") # NEW: Unauthenticated endpoint for frontend analytics
+@app.post("/log-frontend-analytics")
 async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
     """
     Receives analytics events from the frontend (unauthenticated).
     """
     logger.debug(f"Received frontend analytics event: {event_data.event_type} for user {event_data.user_id}")
     try:
-        # We use the log_event function directly here, which handles Firestore logging
         await log_event(
             event_data.event_type,
             event_data.details,
@@ -381,7 +380,7 @@ async def upload_document_endpoint(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
     except Exception as e:
         logger.error(f"Error uploading document for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e})"
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload document: {e}")
 
 
 @app.post("/agent/chat")
