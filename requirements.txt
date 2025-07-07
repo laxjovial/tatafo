@@ -53,3 +53,5 @@ toml
 streamlit
 fastapi
 google-cloud-storage
+email-validator
+pydantic
