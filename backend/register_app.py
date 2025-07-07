@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # --- Configuration for FastAPI Backend ---
 # IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
 # Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/"
-FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/" # Use your actual Codespace URL here!
+FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev" # Use your actual Codespace URL here!
 
 # --- Frontend-specific Analytics Logging (sends to FastAPI backend) ---
 async def frontend_log_event(event_type: str, details: dict, user_id: str = "unauthenticated", success: bool = True, error_message: Optional[str] = None):
@@ -42,9 +42,8 @@ async def frontend_log_event(event_type: str, details: dict, user_id: str = "una
             "success": success,
             "error_message": error_message
         }
-        # Assuming an analytics endpoint exists on your backend
-        # You might need to add a dedicated endpoint in main.py for frontend analytics
-        response = requests.post(f"{FASTAPI_BASE_URL}/admin/analytics/events", json=payload)
+        # UPDATED: Point to the new unauthenticated analytics endpoint
+        response = requests.post(f"{FASTAPI_BASE_URL}/log-frontend-analytics", json=payload)
         response.raise_for_status()
         logger.info(f"Frontend Analytics Logged: {event_type} for user {user_id}")
     except requests.exceptions.RequestException as e:
@@ -67,7 +66,7 @@ def register_user_backend(email: str, password: str, username: str) -> Dict[str,
         logger.error(f"HTTP Error during registration: {e.response.status_code} - {e.response.text}", exc_info=True)
         # Parse error message from backend if available
         try:
-            error_detail = e.response.json().get("detail", str(e))
+            error_detail = e.response.json().get("message", e.response.json().get("detail", str(e))) # Check 'message' first
         except json.JSONDecodeError:
             error_detail = e.response.text
         return {"success": False, "message": f"Registration failed: {error_detail}"}
@@ -159,8 +158,3 @@ def app():
     if st.button("Already have an account? Login here", key="login_button_from_register"):
         st.session_state.current_page = "Login"
         st.rerun()
-
-        st.rerun()
-
-
-
