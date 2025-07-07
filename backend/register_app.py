@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # --- Configuration for FastAPI Backend ---
 # IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
 # Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/"
-FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev" # Use your actual Codespace URL here!
+FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev/" # Use your actual Codespace URL here!
 
 # --- Frontend-specific Analytics Logging (sends to FastAPI backend) ---
 async def frontend_log_event(event_type: str, details: dict, user_id: str = "unauthenticated", success: bool = True, error_message: Optional[str] = None):
