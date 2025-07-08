@@ -55,3 +55,6 @@ fastapi
 google-cloud-storage
 email-validator
 pydantic
+firebase
+recharts
+lucide-react
