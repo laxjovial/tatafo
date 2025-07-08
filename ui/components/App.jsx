@@ -773,21 +773,49 @@ const App = () => {
     const [currentPage, setCurrentPage] = useState('login');
     const [currentUserId, setCurrentUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
-    const [firebaseError, setFirebaseError] = useState(null); // New state for Firebase init errors
+    const [firebaseError, setFirebaseError] = useState(null);
 
     const [firebaseApp, setFirebaseApp] = useState(null);
     const [firestoreDb, setFirestoreDb] = useState(null);
     const [firebaseAuth, setFirebaseAuth] = useState(null);
 
+    // Debugging: Log the raw __firebase_config and __app_id
+    console.log("Raw __firebase_config:", typeof __firebase_config, __firebase_config);
+    console.log("Raw __app_id:", typeof __app_id, __app_id);
+
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    let firebaseConfig = {};
+
+    try {
+        if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+            firebaseConfig = JSON.parse(__firebase_config);
+        } else {
+            // TEMPORARY FALLBACK FOR LOCAL TESTING ONLY - REMOVE IN PRODUCTION
+            console.warn("Using fallback Firebase config. Ensure FIREBASE_CLIENT_CONFIG secret is set in Codespaces.");
+            firebaseConfig = {
+                "apiKey": "AIzaSyAmU1jL_OumyVv0XwE8yWnVl3UJuONCZ3E",
+                "authDomain": "tatafo-assistant.firebaseapp.com",
+                "projectId": "tatafo-assistant",
+                "storageBucket": "tatafo-assistant.firebasestorage.app",
+                "messagingSenderId": "308839803512",
+                "appId": "1:308839803512:web:e2a9328c49c50832f5db8d",
+                "measurementId": "G-5B5FJE8FJW"
+            };
+        }
+    } catch (e) {
+        console.error("Error parsing __firebase_config:", e);
+        setFirebaseError(`Error parsing Firebase configuration: ${e.message}. Ensure it's valid JSON.`);
+        // Don't return here, let the useEffect handle the initialization with potentially empty config
+    }
+
 
     // Effect for Firebase Initialization
     useEffect(() => {
+        // If firebaseConfig is still empty after parsing/fallback, show error and mark ready
         if (Object.keys(firebaseConfig).length === 0) {
             console.error("Firebase config is empty. Cannot initialize Firebase.");
             setFirebaseError("Firebase configuration is missing. Please ensure __firebase_config is properly set.");
-            setIsAuthReady(true); // Allow app to proceed to show error
+            setIsAuthReady(true);
             return;
         }
 
@@ -800,17 +828,16 @@ const App = () => {
             setFirestoreDb(db);
             setFirebaseAuth(auth);
             console.log("Firebase initialized successfully in App.jsx (via useEffect)");
-            setFirebaseError(null); // Clear any previous errors
+            setFirebaseError(null);
         } catch (error) {
             console.error("Error initializing Firebase in App.jsx:", error);
             setFirebaseError(`Failed to initialize Firebase: ${error.message}. Check your Firebase config.`);
-            setIsAuthReady(true); // Mark as ready even on error to display the error message
+            setIsAuthReady(true);
         }
-    }, [appId, JSON.stringify(firebaseConfig)]);
+    }, [appId, JSON.stringify(firebaseConfig)]); // Depend on appId and stringified config for re-init if config changes
 
     // Effect for Auth State Listener
     useEffect(() => {
-        // Only proceed if firebaseAuth and firestoreDb are successfully initialized
         if (!firebaseAuth || !firestoreDb) {
             console.warn("Firebase Auth or Firestore not available for auth listener. Waiting for initialization.");
             return;
@@ -819,19 +846,16 @@ const App = () => {
         const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
             if (user) {
                 setCurrentUserId(user.uid);
-                // If coming from login/register, navigate to home/profile
                 if (currentPage === 'login' || currentPage === 'register') {
                     setCurrentPage('home');
                 }
             } else {
                 setCurrentUserId(null);
-                // If not authenticated, always show login page unless on register page
                 if (currentPage !== 'register') {
                     setCurrentPage('login');
                 }
             }
-            setIsAuthReady(true); // Auth state has been determined, so app is ready
-            // Initialize analytics once auth is ready and we have a potential user ID
+            setIsAuthReady(true);
             initializeAnalytics(firestoreDb, firebaseAuth, appId, user?.uid || 'anonymous');
         });
 
@@ -865,7 +889,6 @@ const App = () => {
     };
 
     const renderPage = useCallback(() => {
-        // If there was a Firebase initialization error, display it
         if (firebaseError) {
             return (
                 <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
@@ -878,8 +901,7 @@ const App = () => {
             );
         }
 
-        // Show loading spinner until auth state is determined
-        if (!isAuthReady) {
+        if (!isAuthReady || !firebaseApp || !firestoreDb || !firebaseAuth) {
             return (
                 <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
                     <div className="text-center py-20 text-xl text-indigo-600 flex items-center">
@@ -893,12 +915,10 @@ const App = () => {
             );
         }
 
-        // If auth is ready but no user is logged in, and not on register page, show login
         if (!currentUserId && currentPage !== 'register') {
             return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={firebaseAuth} />;
         }
 
-        // Render pages based on current state
         switch (currentPage) {
             case 'login':
                 return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={firebaseAuth} />;
@@ -947,7 +967,7 @@ const App = () => {
                     </div>
                 );
         }
-    }, [currentPage, isAuthReady, currentUserId, firebaseApp, firestoreDb, firebaseAuth, appId, firebaseError]); // Added firebaseError to dependencies
+    }, [currentPage, isAuthReady, currentUserId, firebaseApp, firestoreDb, firebaseAuth, appId, firebaseError]);
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 font-inter">
