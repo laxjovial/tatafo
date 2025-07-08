@@ -4,6 +4,7 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, on
 import { getFirestore, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
 
 // --- Analytics Tracker Functions ---
+// These will now use the dbInstance and authInstance passed from App component
 let dbInstance = null;
 let authInstance = null;
 let currentAppId = null;
@@ -48,14 +49,16 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
 };
 
 // --- Login Page Component ---
-const LoginPage = ({ onLoginSuccess, onNavigateToRegister }) => {
+// Now receives 'auth' prop
+const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
+    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
+    // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleLogin = async (e) => {
         e.preventDefault();
@@ -79,7 +82,7 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister }) => {
             const uid = data.uid;
 
             // 2. Use custom token to sign in with Firebase Client SDK
-            const auth = getAuth();
+            // Use the 'auth' prop directly
             await signInWithCustomToken(auth, customToken);
 
             console.log("Logged in successfully with Firebase Client SDK:", uid);
@@ -153,7 +156,8 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister }) => {
 };
 
 // --- Register Page Component ---
-const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
+// Now receives 'auth' prop
+const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [username, setUsername] = useState('');
@@ -161,8 +165,9 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
 
-    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
+    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
+    // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleRegister = async (e) => {
         e.preventDefault();
@@ -266,9 +271,11 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin }) => {
 };
 
 // --- UserProfile Component ---
+// Now receives 'auth' prop
 const UserProfile = ({ userId, auth }) => {
-    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev/";
+    // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
+    // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
+    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const [userData, setUserData] = useState({
         username: '',
@@ -292,6 +299,12 @@ const UserProfile = ({ userId, auth }) => {
             setLoading(false);
             return;
         }
+        // Ensure auth is available before trying to get ID token
+        if (!auth || !auth.currentUser) {
+            setError("Authentication not ready. Please wait or log in again.");
+            setLoading(false);
+            return;
+        }
 
         setLoading(true);
         setError(null);
@@ -302,10 +315,6 @@ const UserProfile = ({ userId, auth }) => {
                 throw new Error("No authentication token available. Please log in.");
             }
 
-            // Note: FastAPI endpoint is /profile/{user_id}, but we're sending the token
-            // and the backend will get the user_id from the token.
-            // So, the endpoint should ideally be /profile or /user/profile
-            // I'm adjusting it to /user/profile as discussed.
             const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
                 method: 'GET',
                 headers: {
@@ -320,9 +329,7 @@ const UserProfile = ({ userId, auth }) => {
             }
 
             const data = await response.json();
-            // Assuming backend returns {"user": profile_data}
-            // If backend returns profile_data directly, use setUserData(data)
-            setUserData(data.user || data); // Adjust based on actual backend response structure
+            setUserData(data.user || data); // Backend returns {"user": profile_data}
             await logEvent('user_profile_view', { user_id: userId, status: 'success' });
         } catch (err) {
             console.error("Error fetching user profile:", err);
@@ -355,10 +362,6 @@ const UserProfile = ({ userId, auth }) => {
                 throw new Error("No authentication token available. Please log in.");
             }
 
-            // Note: FastAPI endpoint is /profile/update/{user_id}, but we're sending the token
-            // and the backend will get the user_id from the token.
-            // So, the endpoint should ideally be /user/profile (PUT)
-            // I'm adjusting it to /user/profile as discussed.
             const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
                 method: 'PUT',
                 headers: {
@@ -541,6 +544,7 @@ const UserProfile = ({ userId, auth }) => {
 };
 
 // --- AnalyticsDashboard Component ---
+// Now receives 'db' and 'auth' props
 const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -561,7 +565,7 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
         setError(null);
         try {
             const analyticsCollectionRef = collection(db, `artifacts/${appId}/public/data/analytics_events`);
-            let q = query(analyticsCollectionRef); // Removed orderBy for now to avoid index issues if not needed
+            let q = query(analyticsCollectionRef);
 
             if (filterEventType) {
                 q = query(q, where('event_type', '==', filterEventType));
@@ -616,7 +620,7 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
 
         events.forEach(event => {
             if (event.timestamp) {
-                const dateKey = new Date(event.timestamp).toISOString().split('T')[0]; // YYYY-MM-DD
+                const dateKey = new Date(event.timestamp).toISOString().split('T')[0]; //YYYY-MM-DD
                 dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1;
             }
 
@@ -775,7 +779,7 @@ const App = () => {
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
-    // Initialize Firebase outside the component to prevent re-initialization
+    // Initialize Firebase instances (will be available globally or passed down)
     let app, db, auth;
     if (Object.keys(firebaseConfig).length > 0) {
         try {
@@ -861,15 +865,12 @@ const App = () => {
             );
         }
 
-        if (!currentUserId && currentPage !== 'register') {
-            return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} />;
-        }
-
+        // Pass auth and db instances to child components
         switch (currentPage) {
             case 'login':
-                return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} />;
+                return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={auth} />;
             case 'register':
-                return <RegisterPage onRegisterSuccess={() => setCurrentPage('login')} onNavigateToLogin={() => setCurrentPage('login')} />;
+                return <RegisterPage onRegisterSuccess={() => setCurrentPage('login')} onNavigateToLogin={() => setCurrentPage('login')} auth={auth} />;
             case 'home':
                 return (
                     <div className="text-center py-20 bg-gradient-to-br from-indigo-50 to-purple-100 min-h-[calc(100vh-80px)] flex flex-col justify-center items-center">
@@ -913,7 +914,7 @@ const App = () => {
                     </div>
                 );
         }
-    }, [currentPage, isAuthReady, currentUserId, db, auth, appId]);
+    }, [currentPage, isAuthReady, currentUserId, db, auth, appId]); // Added db, auth to dependencies
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 font-inter">
