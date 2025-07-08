@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, query, where, getDocs, doc, setDoc } from 'firebase/firestore'; // Added doc and setDoc
 
 // --- Analytics Tracker Functions ---
 let dbInstance = null;
@@ -40,7 +40,9 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
 
     try {
         const analyticsCollectionRef = collection(dbInstance, `artifacts/${currentAppId}/public/data/analytics_events`);
-        await addDoc(analyticsCollectionRef, eventData);
+        // Explicitly create a new document reference with an auto-generated ID
+        const newDocRef = doc(analyticsCollectionRef);
+        await setDoc(newDocRef, eventData); // Use setDoc with the new unique document reference
         console.log(`Analytics event '${eventType}' logged successfully for user ${currentUserId}.`);
     } catch (error) {
         console.error(`Error logging analytics event '${eventType}':`, error);
@@ -315,7 +317,8 @@ const UserProfile = ({ userId, auth }) => {
                 throw new Error("No authentication token available. Please log in.");
             }
 
-            const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
+            // Corrected GET request URL to match backend: /profile/{user_id}
+            const response = await fetch(`${FASTAPI_BASE_URL}/profile/${userId}`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -329,7 +332,7 @@ const UserProfile = ({ userId, auth }) => {
             }
 
             const data = await response.json();
-            setUserData(data.user || data);
+            setUserData(data.user || data); // Backend now returns direct profile, not nested under 'user'
             await logEvent('user_profile_view', { user_id: userId, status: 'success' });
         } catch (err) {
             console.error("Error fetching user profile:", err);
@@ -362,7 +365,8 @@ const UserProfile = ({ userId, auth }) => {
                 throw new Error("No authentication token available. Please log in.");
             }
 
-            const response = await fetch(`${FASTAPI_BASE_URL}/user/profile`, {
+            // Corrected PUT request URL to match backend: /profile/update/{user_id}
+            const response = await fetch(`${FASTAPI_BASE_URL}/profile/update/${userId}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -736,7 +740,7 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
                                 <th className="py-3 px-4 text-left text-sm font-semibold text-gray-700">Event Type</th>
                                 <th className="py-3 px-4 text-left text-sm font-semibold text-gray-700">User ID</th>
                                 <th className="py-3 px-4 text-left text-sm font-semibold text-gray-700">Details</th>
-                                <th className="py-3 px-4 text-left text-sm font-semibold text-gray-700">Success</th>
+                                <th className="py-3 px-4 text-sm text-gray-800">Success</th>
                                 <th className="py-3 px-4 text-left text-sm font-semibold text-gray-700">Error Message</th>
                             </tr>
                         </thead>
