@@ -1,3 +1,16 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  optimizeDeps: {
+    exclude: ['firebase/app', 'firebase/auth', 'firebase/firestore']
+  }
+})
+
+
+
 # 1. Create a new Vite React project
 npm create vite@latest my-intelli-agent-frontend -- --template react
 
