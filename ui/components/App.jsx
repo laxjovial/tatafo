@@ -65,6 +65,11 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
         setLoading(true);
         setError('');
         try {
+            // Ensure auth is available
+            if (!auth) {
+                throw new Error("Firebase Auth is not initialized.");
+            }
+
             // 1. Call FastAPI /login endpoint to get custom token
             const response = await fetch(`${FASTAPI_BASE_URL}/login`, {
                 method: 'POST',
@@ -82,7 +87,6 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
             const uid = data.uid;
 
             // 2. Use custom token to sign in with Firebase Client SDK
-            // Use the 'auth' prop directly
             await signInWithCustomToken(auth, customToken);
 
             console.log("Logged in successfully with Firebase Client SDK:", uid);
@@ -175,6 +179,11 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
         setError('');
         setMessage('');
         try {
+            // Ensure auth is available
+            if (!auth) {
+                throw new Error("Firebase Auth is not initialized.");
+            }
+
             const response = await fetch(`${FASTAPI_BASE_URL}/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -775,34 +784,46 @@ const App = () => {
     const [currentUserId, setCurrentUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
 
+    // Use useState to hold Firebase instances
+    const [firebaseApp, setFirebaseApp] = useState(null);
+    const [firestoreDb, setFirestoreDb] = useState(null);
+    const [firebaseAuth, setFirebaseAuth] = useState(null);
+
     // Firebase client-side configuration
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
-    // Initialize Firebase instances (will be available globally or passed down)
-    let app, db, auth;
-    if (Object.keys(firebaseConfig).length > 0) {
-        try {
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-            console.log("Firebase initialized successfully in App.jsx");
-        } catch (error) {
-            console.error("Error initializing Firebase in App.jsx:", error);
-        }
-    } else {
-        console.warn("Firebase config not found. Application may not function correctly.");
-    }
-
-    // Auth state listener
+    // Initialize Firebase once on component mount
     useEffect(() => {
-        if (!auth || !db) {
-            console.warn("Firebase Auth or Firestore not available. Cannot establish auth listener.");
-            setIsAuthReady(true);
+        if (Object.keys(firebaseConfig).length === 0) {
+            console.warn("Firebase config not found. Application may not function correctly.");
+            setIsAuthReady(true); // Allow app to proceed even if Firebase isn't configured
             return;
         }
 
-        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+        try {
+            const app = initializeApp(firebaseConfig);
+            const db = getFirestore(app);
+            const auth = getAuth(app);
+
+            setFirebaseApp(app);
+            setFirestoreDb(db);
+            setFirebaseAuth(auth);
+            console.log("Firebase initialized successfully in App.jsx (via useEffect)");
+        } catch (error) {
+            console.error("Error initializing Firebase in App.jsx:", error);
+            setIsAuthReady(true); // Mark as ready even on error to prevent infinite loading
+        }
+    }, [appId, JSON.stringify(firebaseConfig)]); // Re-run if config changes (unlikely in this context)
+
+    // Auth state listener (depends on firebaseAuth being set)
+    useEffect(() => {
+        if (!firebaseAuth || !firestoreDb) {
+            console.warn("Firebase Auth or Firestore not available for auth listener. Waiting for initialization.");
+            return;
+        }
+
+        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
             if (user) {
                 setCurrentUserId(user.uid);
                 // If coming from login/register, navigate to home/profile
@@ -811,18 +832,18 @@ const App = () => {
                 }
             } else {
                 setCurrentUserId(null);
-                // If not authenticated, always show login page
-                if (currentPage !== 'register') { // Allow staying on register if user is there
+                // If not authenticated, always show login page unless on register page
+                if (currentPage !== 'register') {
                     setCurrentPage('login');
                 }
             }
             setIsAuthReady(true);
             // Initialize analytics once auth is ready and we have a potential user ID
-            initializeAnalytics(db, auth, appId, user?.uid || 'anonymous');
+            initializeAnalytics(firestoreDb, firebaseAuth, appId, user?.uid || 'anonymous');
         });
 
         return () => unsubscribe();
-    }, [auth, db, appId, currentPage]); // Added currentPage to re-evaluate navigation logic
+    }, [firebaseAuth, firestoreDb, appId, currentPage]); // Depend on firebaseAuth and firestoreDb
 
     // Log page views when currentPage changes (after analytics is initialized)
     useEffect(() => {
@@ -836,9 +857,9 @@ const App = () => {
 
 
     const handleLogout = async () => {
-        if (auth) {
+        if (firebaseAuth) {
             try {
-                await auth.signOut();
+                await firebaseAuth.signOut();
                 console.log("User logged out.");
                 await logEvent('user_logout', { user_id: currentUserId }, true);
                 setCurrentUserId(null);
@@ -851,7 +872,7 @@ const App = () => {
     };
 
     const renderPage = useCallback(() => {
-        if (!isAuthReady) {
+        if (!isAuthReady || !firebaseApp || !firestoreDb || !firebaseAuth) {
             return (
                 <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
                     <div className="text-center py-20 text-xl text-indigo-600 flex items-center">
@@ -868,9 +889,9 @@ const App = () => {
         // Pass auth and db instances to child components
         switch (currentPage) {
             case 'login':
-                return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={auth} />;
+                return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={firebaseAuth} />;
             case 'register':
-                return <RegisterPage onRegisterSuccess={() => setCurrentPage('login')} onNavigateToLogin={() => setCurrentPage('login')} auth={auth} />;
+                return <RegisterPage onRegisterSuccess={() => setCurrentPage('login')} onNavigateToLogin={() => setCurrentPage('login')} auth={firebaseAuth} />;
             case 'home':
                 return (
                     <div className="text-center py-20 bg-gradient-to-br from-indigo-50 to-purple-100 min-h-[calc(100vh-80px)] flex flex-col justify-center items-center">
@@ -897,9 +918,9 @@ const App = () => {
                     </div>
                 );
             case 'analytics':
-                return <AnalyticsDashboard db={db} auth={auth} appId={appId} currentUserId={currentUserId} />;
+                return <AnalyticsDashboard db={firestoreDb} auth={firebaseAuth} appId={appId} currentUserId={currentUserId} />;
             case 'profile':
-                return <UserProfile userId={currentUserId} auth={auth} />;
+                return <UserProfile userId={currentUserId} auth={firebaseAuth} />;
             default:
                 return (
                     <div className="text-center py-20 text-red-500">
@@ -914,7 +935,7 @@ const App = () => {
                     </div>
                 );
         }
-    }, [currentPage, isAuthReady, currentUserId, db, auth, appId]); // Added db, auth to dependencies
+    }, [currentPage, isAuthReady, currentUserId, firebaseApp, firestoreDb, firebaseAuth, appId]);
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 font-inter">
