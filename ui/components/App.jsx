@@ -4,7 +4,6 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, on
 import { getFirestore, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
 
 // --- Analytics Tracker Functions ---
-// These will now use the dbInstance and authInstance passed from App component
 let dbInstance = null;
 let authInstance = null;
 let currentAppId = null;
@@ -49,7 +48,6 @@ const logEvent = async (eventType, eventDetails, success = null, errorMessage = 
 };
 
 // --- Login Page Component ---
-// Now receives 'auth' prop
 const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -58,19 +56,17 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleLogin = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
         try {
-            // Ensure auth is available
             if (!auth) {
-                throw new Error("Firebase Auth is not initialized.");
+                throw new Error("Firebase Auth is not initialized. Please refresh the page.");
             }
 
-            // 1. Call FastAPI /login endpoint to get custom token
             const response = await fetch(`${FASTAPI_BASE_URL}/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -86,12 +82,11 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
             const customToken = data.custom_token;
             const uid = data.uid;
 
-            // 2. Use custom token to sign in with Firebase Client SDK
             await signInWithCustomToken(auth, customToken);
 
             console.log("Logged in successfully with Firebase Client SDK:", uid);
             await logEvent('user_login', { email: email, uid: uid }, true);
-            onLoginSuccess(uid); // Notify parent App component of successful login
+            onLoginSuccess(uid);
 
         } catch (err) {
             console.error("Login error:", err);
@@ -160,7 +155,6 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
 };
 
 // --- Register Page Component ---
-// Now receives 'auth' prop
 const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -171,7 +165,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleRegister = async (e) => {
         e.preventDefault();
@@ -179,9 +173,8 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
         setError('');
         setMessage('');
         try {
-            // Ensure auth is available
             if (!auth) {
-                throw new Error("Firebase Auth is not initialized.");
+                throw new Error("Firebase Auth is not initialized. Please refresh the page.");
             }
 
             const response = await fetch(`${FASTAPI_BASE_URL}/register`, {
@@ -198,7 +191,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
             const data = await response.json();
             setMessage(data.message || 'Registration successful! Please log in.');
             await logEvent('user_registration', { email: email, username: username, uid: data.uid }, true);
-            onRegisterSuccess(); // Notify parent App component
+            onRegisterSuccess();
         } catch (err) {
             console.error("Registration error:", err);
             setError(err.message || 'An unexpected error occurred during registration.');
@@ -280,11 +273,10 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
 };
 
 // --- UserProfile Component ---
-// Now receives 'auth' prop
 const UserProfile = ({ userId, auth }) => {
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://super-fishstick-7vwq4pp6xrjvhppgw-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const [userData, setUserData] = useState({
         username: '',
@@ -308,7 +300,6 @@ const UserProfile = ({ userId, auth }) => {
             setLoading(false);
             return;
         }
-        // Ensure auth is available before trying to get ID token
         if (!auth || !auth.currentUser) {
             setError("Authentication not ready. Please wait or log in again.");
             setLoading(false);
@@ -319,7 +310,7 @@ const UserProfile = ({ userId, auth }) => {
         setError(null);
         setMessage('');
         try {
-            const idToken = await auth.currentUser?.getIdToken(true); // Get fresh ID token
+            const idToken = await auth.currentUser?.getIdToken(true);
             if (!idToken) {
                 throw new Error("No authentication token available. Please log in.");
             }
@@ -338,7 +329,7 @@ const UserProfile = ({ userId, auth }) => {
             }
 
             const data = await response.json();
-            setUserData(data.user || data); // Backend returns {"user": profile_data}
+            setUserData(data.user || data);
             await logEvent('user_profile_view', { user_id: userId, status: 'success' });
         } catch (err) {
             console.error("Error fetching user profile:", err);
@@ -381,7 +372,7 @@ const UserProfile = ({ userId, auth }) => {
                     phone: userData.phone,
                     address: userData.address,
                     bio: userData.bio,
-                    username: userData.username // Include username in update as it's editable
+                    username: userData.username
                 })
             });
 
@@ -394,7 +385,7 @@ const UserProfile = ({ userId, auth }) => {
             setMessage(data.message || 'Profile updated successfully!');
             setIsEditing(false);
             await logEvent('user_profile_update', { user_id: userId, status: 'success' });
-            fetchUserProfile(); // Re-fetch to get the latest data
+            fetchUserProfile();
         } catch (err) {
             console.error("Error updating user profile:", err);
             setError(err.message);
@@ -407,7 +398,7 @@ const UserProfile = ({ userId, auth }) => {
     const handleCancel = () => {
         setIsEditing(false);
         setMessage('Edit cancelled.');
-        fetchUserProfile(); // Discard changes by re-fetching
+        fetchUserProfile();
     };
 
     return (
@@ -445,7 +436,7 @@ const UserProfile = ({ userId, auth }) => {
                             id="email"
                             name="email"
                             value={userData.email}
-                            readOnly // Email is typically managed by Firebase Auth directly, not via profile update
+                            readOnly
                             className={`shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 bg-gray-100 cursor-not-allowed`}
                         />
                     </div>
@@ -502,7 +493,7 @@ const UserProfile = ({ userId, auth }) => {
                             id="tier"
                             name="tier"
                             value={userData.tier}
-                            readOnly // Tier is read-only, managed by admin
+                            readOnly
                             className="shadow appearance-none border rounded-md w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-gray-300 bg-gray-100 cursor-not-allowed"
                         />
                     </div>
@@ -553,7 +544,6 @@ const UserProfile = ({ userId, auth }) => {
 };
 
 // --- AnalyticsDashboard Component ---
-// Now receives 'db' and 'auth' props
 const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -618,7 +608,7 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
     };
 
     const handleApplyFilters = () => {
-        fetchAnalyticsEvents(); // Re-fetch with current filters
+        fetchAnalyticsEvents();
     };
 
     // Prepare data for charts (simplified, no recharts import here)
@@ -780,24 +770,24 @@ const AnalyticsDashboard = ({ db, auth, appId, currentUserId }) => {
 
 // --- Main App Component ---
 const App = () => {
-    const [currentPage, setCurrentPage] = useState('login'); // Start at login page
+    const [currentPage, setCurrentPage] = useState('login');
     const [currentUserId, setCurrentUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
+    const [firebaseError, setFirebaseError] = useState(null); // New state for Firebase init errors
 
-    // Use useState to hold Firebase instances
     const [firebaseApp, setFirebaseApp] = useState(null);
     const [firestoreDb, setFirestoreDb] = useState(null);
     const [firebaseAuth, setFirebaseAuth] = useState(null);
 
-    // Firebase client-side configuration
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
-    // Initialize Firebase once on component mount
+    // Effect for Firebase Initialization
     useEffect(() => {
         if (Object.keys(firebaseConfig).length === 0) {
-            console.warn("Firebase config not found. Application may not function correctly.");
-            setIsAuthReady(true); // Allow app to proceed even if Firebase isn't configured
+            console.error("Firebase config is empty. Cannot initialize Firebase.");
+            setFirebaseError("Firebase configuration is missing. Please ensure __firebase_config is properly set.");
+            setIsAuthReady(true); // Allow app to proceed to show error
             return;
         }
 
@@ -810,14 +800,17 @@ const App = () => {
             setFirestoreDb(db);
             setFirebaseAuth(auth);
             console.log("Firebase initialized successfully in App.jsx (via useEffect)");
+            setFirebaseError(null); // Clear any previous errors
         } catch (error) {
             console.error("Error initializing Firebase in App.jsx:", error);
-            setIsAuthReady(true); // Mark as ready even on error to prevent infinite loading
+            setFirebaseError(`Failed to initialize Firebase: ${error.message}. Check your Firebase config.`);
+            setIsAuthReady(true); // Mark as ready even on error to display the error message
         }
-    }, [appId, JSON.stringify(firebaseConfig)]); // Re-run if config changes (unlikely in this context)
+    }, [appId, JSON.stringify(firebaseConfig)]);
 
-    // Auth state listener (depends on firebaseAuth being set)
+    // Effect for Auth State Listener
     useEffect(() => {
+        // Only proceed if firebaseAuth and firestoreDb are successfully initialized
         if (!firebaseAuth || !firestoreDb) {
             console.warn("Firebase Auth or Firestore not available for auth listener. Waiting for initialization.");
             return;
@@ -837,13 +830,13 @@ const App = () => {
                     setCurrentPage('login');
                 }
             }
-            setIsAuthReady(true);
+            setIsAuthReady(true); // Auth state has been determined, so app is ready
             // Initialize analytics once auth is ready and we have a potential user ID
             initializeAnalytics(firestoreDb, firebaseAuth, appId, user?.uid || 'anonymous');
         });
 
         return () => unsubscribe();
-    }, [firebaseAuth, firestoreDb, appId, currentPage]); // Depend on firebaseAuth and firestoreDb
+    }, [firebaseAuth, firestoreDb, appId, currentPage]);
 
     // Log page views when currentPage changes (after analytics is initialized)
     useEffect(() => {
@@ -863,7 +856,7 @@ const App = () => {
                 console.log("User logged out.");
                 await logEvent('user_logout', { user_id: currentUserId }, true);
                 setCurrentUserId(null);
-                setCurrentPage('login'); // Redirect to login page after logout
+                setCurrentPage('login');
             } catch (error) {
                 console.error("Error logging out:", error);
                 await logEvent('user_logout', { user_id: currentUserId, error: error.message }, false, error.message);
@@ -872,7 +865,21 @@ const App = () => {
     };
 
     const renderPage = useCallback(() => {
-        if (!isAuthReady || !firebaseApp || !firestoreDb || !firebaseAuth) {
+        // If there was a Firebase initialization error, display it
+        if (firebaseError) {
+            return (
+                <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
+                    <div className="text-center py-20 text-xl text-red-600">
+                        <h2 className="text-3xl font-bold mb-4">Application Error</h2>
+                        <p>{firebaseError}</p>
+                        <p className="mt-4">Please ensure your Firebase configuration is correct and try again.</p>
+                    </div>
+                </div>
+            );
+        }
+
+        // Show loading spinner until auth state is determined
+        if (!isAuthReady) {
             return (
                 <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100">
                     <div className="text-center py-20 text-xl text-indigo-600 flex items-center">
@@ -886,7 +893,12 @@ const App = () => {
             );
         }
 
-        // Pass auth and db instances to child components
+        // If auth is ready but no user is logged in, and not on register page, show login
+        if (!currentUserId && currentPage !== 'register') {
+            return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={firebaseAuth} />;
+        }
+
+        // Render pages based on current state
         switch (currentPage) {
             case 'login':
                 return <LoginPage onLoginSuccess={() => setCurrentPage('home')} onNavigateToRegister={() => setCurrentPage('register')} auth={firebaseAuth} />;
@@ -935,7 +947,7 @@ const App = () => {
                     </div>
                 );
         }
-    }, [currentPage, isAuthReady, currentUserId, firebaseApp, firestoreDb, firebaseAuth, appId]);
+    }, [currentPage, isAuthReady, currentUserId, firebaseApp, firestoreDb, firebaseAuth, appId, firebaseError]); // Added firebaseError to dependencies
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 font-inter">
