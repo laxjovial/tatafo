@@ -384,18 +384,20 @@ async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to log analytics event: {e}")
 
 
-@app.get("/profile/{user_id}") # Changed endpoint to match frontend call
-async def get_user_profile_endpoint(user_id: str): # Removed Depends(get_current_user) for now for simpler testing
-    """Retrieves the profile of a specific user by ID."""
+@app.get("/profile/{user_id}")
+async def get_user_profile_endpoint(user_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Retrieves the profile of a specific user by ID, ensuring the requesting user is authenticated."""
+    # Ensure the authenticated user (current_user['uid']) matches the requested user_id
+    if current_user['uid'] != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to view this profile.")
+
     logger.info(f"User {user_id} requesting profile.")
     try:
         user_profile = await user_manager.get_user(user_id)
         if not user_profile:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
         
-        # Ensure 'email' is included in the top level of the returned profile
-        # as UserProfile.jsx expects it. Firestore stores it at the top level.
-        # If profile_data exists, merge its contents into the top level for frontend convenience.
+        # The frontend expects a flat structure, so ensure profile_data is merged
         if 'profile_data' in user_profile:
             user_profile.update(user_profile.pop('profile_data'))
 
@@ -408,6 +410,8 @@ async def get_user_profile_endpoint(user_id: str): # Removed Depends(get_current
         user_profile.setdefault('tier', 'free') # Default tier if not set
 
         return user_profile # Return the profile directly
+    except HTTPException:
+        raise # Re-raise HTTPExceptions
     except Exception as e:
         logger.error(f"Error retrieving profile for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -420,15 +424,17 @@ class UserProfileUpdate(BaseModel):
     bio: Optional[str] = None
     tier: Optional[str] = None # Tier is usually admin-managed, but included for completeness
 
-@app.put("/profile/update/{user_id}") # Changed endpoint to match frontend call
+@app.put("/profile/update/{user_id}")
 async def update_user_profile_endpoint(
     user_id: str,
     update_data: UserProfileUpdate,
-    # Re-add Depends(get_current_user) here once authentication is fully robust
-    # For now, keeping it simple for testing profile updates
-    # current_user: Dict[str, Any] = Depends(get_current_user) 
+    current_user: Dict[str, Any] = Depends(get_current_user) # Re-added authentication
 ):
     """Updates the profile of the current authenticated user."""
+    # Ensure the authenticated user (current_user['uid']) matches the target user_id
+    if current_user['uid'] != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to update this profile.")
+
     logger.info(f"User {user_id} updating profile.")
     # Convert Pydantic model to dictionary, excluding unset fields
     updates_dict = update_data.model_dump(exclude_unset=True)
@@ -702,4 +708,3 @@ async def get_analytics_events_endpoint(
             log_from_backend=True
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
