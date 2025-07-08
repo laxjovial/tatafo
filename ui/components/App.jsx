@@ -56,7 +56,7 @@ const LoginPage = ({ onLoginSuccess, onNavigateToRegister, auth }) => {
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://laughing-chainsaw-r4w9vppqxx563grx-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleLogin = async (e) => {
         e.preventDefault();
@@ -165,7 +165,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
 
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://laughing-chainsaw-r4w9vppqxx563grx-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const handleRegister = async (e) => {
         e.preventDefault();
@@ -276,7 +276,7 @@ const RegisterPage = ({ onRegisterSuccess, onNavigateToLogin, auth }) => {
 const UserProfile = ({ userId, auth }) => {
     // IMPORTANT: Replace this with your actual Codespace URL or deployed backend URL.
     // ENSURE IT DOES NOT HAVE A TRAILING SLASH. Example: "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"
-    const FASTAPI_BASE_URL = "https://friendly-doodle-x5x6qvv74vr6h655x-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
+    const FASTAPI_BASE_URL = "https://laughing-chainsaw-r4w9vppqxx563grx-8000.app.github.dev"; // <--- REMOVE TRAILING SLASH IF PRESENT
 
     const [userData, setUserData] = useState({
         username: '',
@@ -779,10 +779,6 @@ const App = () => {
     const [firestoreDb, setFirestoreDb] = useState(null);
     const [firebaseAuth, setFirebaseAuth] = useState(null);
 
-    // Debugging: Log the raw __firebase_config and __app_id
-    console.log("Raw __firebase_config:", typeof __firebase_config, __firebase_config);
-    console.log("Raw __app_id:", typeof __app_id, __app_id);
-
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     let firebaseConfig = {};
 
@@ -790,31 +786,41 @@ const App = () => {
         if (typeof __firebase_config !== 'undefined' && __firebase_config) {
             firebaseConfig = JSON.parse(__firebase_config);
         } else {
-            // TEMPORARY FALLBACK FOR LOCAL TESTING ONLY - REMOVE IN PRODUCTION
-            console.warn("Using fallback Firebase config. Ensure FIREBASE_CLIENT_CONFIG secret is set in Codespaces.");
+            // Fallback for when __firebase_config is not provided by the Canvas environment.
+            // This uses the configuration details you provided from your .env file.
+            console.warn("Using fallback Firebase config. __firebase_config was not provided by the environment.");
             firebaseConfig = {
-                "apiKey": "AIzaSyAmU1jL_OumyVv0XwE8yWnVl3UJuONCZ3E",
-                "authDomain": "tatafo-assistant.firebaseapp.com",
-                "projectId": "tatafo-assistant",
-                "storageBucket": "tatafo-assistant.firebasestorage.app",
-                "messagingSenderId": "308839803512",
-                "appId": "1:308839803512:web:e2a9328c49c50832f5db8d",
-                "measurementId": "G-5B5FJE8FJW"
+                apiKey: "AIzaSyAmU1jL_OumyVv0XwE8yWnVl3UJuONCZ3E",
+                authDomain: "tatafo-assistant.firebaseapp.com",
+                projectId: "tatafo-assistant",
+                storageBucket: "tatafo-assistant.appspot.com",
+                messagingSenderId: "308839803512",
+                appId: "1:308839803512:web:e2a9328c49c50832f5db8d"
             };
         }
     } catch (e) {
         console.error("Error parsing __firebase_config:", e);
-        setFirebaseError(`Error parsing Firebase configuration: ${e.message}. Ensure it's valid JSON.`);
-        // Don't return here, let the useEffect handle the initialization with potentially empty config
+        // If parsing fails, use the fallback config to prevent a crash.
+        setFirebaseError(`Error parsing Firebase configuration: ${e.message}. Using fallback config.`);
+        firebaseConfig = {
+            apiKey: "AIzaSyAmU1jL_OumyVv0XwE8yWnVl3UJuONCZ3E",
+            authDomain: "tatafo-assistant.firebaseapp.com",
+            projectId: "tatafo-assistant",
+            storageBucket: "tatafo-assistant.appspot.com",
+            messagingSenderId: "308839803512",
+            appId: "1:308839803512:web:e2a9328c49c50832f5db8d"
+        };
     }
 
 
     // Effect for Firebase Initialization
     useEffect(() => {
-        // If firebaseConfig is still empty after parsing/fallback, show error and mark ready
+        // Only attempt to initialize Firebase if firebaseConfig is populated
         if (Object.keys(firebaseConfig).length === 0) {
+            // This case should ideally be caught by the try-catch above,
+            // but as a safeguard, if config is still empty, set error and mark ready.
             console.error("Firebase config is empty. Cannot initialize Firebase.");
-            setFirebaseError("Firebase configuration is missing. Please ensure __firebase_config is properly set.");
+            setFirebaseError("Firebase configuration is missing. Please ensure __firebase_config is properly set or fallback is valid.");
             setIsAuthReady(true);
             return;
         }
@@ -828,11 +834,11 @@ const App = () => {
             setFirestoreDb(db);
             setFirebaseAuth(auth);
             console.log("Firebase initialized successfully in App.jsx (via useEffect)");
-            setFirebaseError(null);
+            setFirebaseError(null); // Clear any previous Firebase errors
         } catch (error) {
             console.error("Error initializing Firebase in App.jsx:", error);
             setFirebaseError(`Failed to initialize Firebase: ${error.message}. Check your Firebase config.`);
-            setIsAuthReady(true);
+            setIsAuthReady(true); // Mark auth ready even on error to stop loading spinner
         }
     }, [appId, JSON.stringify(firebaseConfig)]); // Depend on appId and stringified config for re-init if config changes
 
