@@ -778,6 +778,7 @@ const App = () => {
     const [firebaseApp, setFirebaseApp] = useState(null);
     const [firestoreDb, setFirestoreDb] = useState(null);
     const [firebaseAuth, setFirebaseAuth] = useState(null);
+    const [firebaseInitialized, setFirebaseInitialized] = useState(false); // New state for Firebase initialization
 
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     let firebaseConfig = {};
@@ -833,6 +834,7 @@ const App = () => {
             setFirebaseApp(app);
             setFirestoreDb(db);
             setFirebaseAuth(auth);
+            setFirebaseInitialized(true); // Mark Firebase as initialized
             console.log("Firebase initialized successfully in App.jsx (via useEffect)");
             setFirebaseError(null); // Clear any previous Firebase errors
         } catch (error) {
@@ -844,7 +846,8 @@ const App = () => {
 
     // Effect for Auth State Listener
     useEffect(() => {
-        if (!firebaseAuth || !firestoreDb) {
+        // Only set up the auth listener if Firebase is fully initialized
+        if (!firebaseInitialized || !firebaseAuth || !firestoreDb) {
             console.warn("Firebase Auth or Firestore not available for auth listener. Waiting for initialization.");
             return;
         }
@@ -866,7 +869,7 @@ const App = () => {
         });
 
         return () => unsubscribe();
-    }, [firebaseAuth, firestoreDb, appId, currentPage]);
+    }, [firebaseInitialized, firebaseAuth, firestoreDb, appId, currentPage]); // Add firebaseInitialized to dependencies
 
     // Log page views when currentPage changes (after analytics is initialized)
     useEffect(() => {
