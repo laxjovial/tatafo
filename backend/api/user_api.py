@@ -8,36 +8,29 @@ import logging
 from backend.models.user_models import UserProfile, UserUpdate
 
 # Import middleware for authentication and authorization
-# Assuming get_current_user and get_current_admin_user are now defined in auth_middleware.py
-from backend.middleware.auth_middleware import get_current_user, get_current_admin_user
-
-# Import FirestoreManager and UserManager
-from database.firestore_manager import firestore_manager
-from utils.user_manager import UserManager # We'll need UserManager for user profile updates
+# Now importing the dependency functions for current user, admin, UserManager and FirestoreManager
+from backend.middleware.auth_middleware import get_current_user, get_current_admin_user, get_firestore_manager_dependency, get_user_manager_dependency
 
 # Import Firebase Auth (for updating custom claims)
 from firebase_admin import auth
-from firebase_admin import exceptions as firebase_exceptions # Import Firebase exceptions
+from firebase_admin import exceptions as firebase_exceptions
 
 # Project imports for analytics
 from utils.analytics_tracker import log_event
+from utils.user_manager import UserManager # For type hinting in Depends
+from database.firestore_manager import FirestoreManager # For type hinting in Depends
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed logging during development
-
-# Initialize UserManager (assuming firestore_manager and cloud_storage_utils are globally available or passed)
-# For now, we'll make a direct instance, assuming firestore_manager is accessible.
-# cloud_storage_utils is not directly needed by UserManager here, but its constructor expects it.
-# This will be refined when main.py is updated to pass dependencies.
-_user_manager = UserManager(firestore_manager, None) # Pass None for cloud_storage_utils for now, will be fixed in main.py
 
 router = APIRouter()
 
 @router.get("/{user_id}", response_model=UserProfile)
 async def get_user_profile(
     user_id: str,
-    current_user: Annotated[UserProfile, Depends(get_current_user)] # Type-hint as UserProfile
+    current_user: Annotated[UserProfile, Depends(get_current_user)], # Type-hint as UserProfile
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
     Retrieves a user's profile by ID from Firestore.
@@ -61,7 +54,7 @@ async def get_user_profile(
 
     logger.info(f"User {current_user.user_id} requesting profile for {user_id}.")
     try:
-        user_data = await _user_manager.get_user(user_id) # Use UserManager to get user data
+        user_data = await user_manager.get_user(user_id) # Use injected UserManager to get user data
         if not user_data:
             await log_event(
                 'user_profile_retrieval',
@@ -107,7 +100,8 @@ async def get_user_profile(
 async def update_user_profile(
     user_id: str,
     user_update: UserUpdate,
-    current_user: Annotated[UserProfile, Depends(get_current_user)] # Type-hint as UserProfile
+    current_user: Annotated[UserProfile, Depends(get_current_user)], # Type-hint as UserProfile
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
     Updates a user's profile in Firestore and Firebase Auth custom claims.
@@ -138,7 +132,7 @@ async def update_user_profile(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields provided for update.")
 
     try:
-        existing_user_data = await _user_manager.get_user(user_id)
+        existing_user_data = await user_manager.get_user(user_id) # Use injected UserManager
         if not existing_user_data:
             await log_event(
                 'user_profile_update',
@@ -159,10 +153,7 @@ async def update_user_profile(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can change user roles.")
             if 'status' in update_data:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can change user account status.")
-            # Non-admins can change email, but Firebase Auth handles the primary email.
-            # If email is in update_data and it's different, we'll let UserManager handle it.
-            # UserManager should interact with Firebase Auth for email changes.
-        
+            
         # --- Email Update Handling ---
         # If email is being updated, UserManager should handle Firebase Auth update
         if 'email' in update_data and update_data['email'] != existing_user_data.get('email'):
@@ -187,8 +178,7 @@ async def update_user_profile(
             update_data.pop('email', None)
 
         # Update Firestore document using UserManager
-        # UserManager's update_user_profile should be robust enough to handle partial updates
-        result = await _user_manager.update_user_profile(user_id, update_data)
+        result = await user_manager.update_user_profile(user_id, update_data) # Use injected UserManager
         
         if not result["success"]:
             await log_event(
@@ -201,14 +191,8 @@ async def update_user_profile(
             )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
 
-        # If tier or roles are updated, also update Firebase Auth custom claims
-        # This is handled by UserManager.update_user_profile if it updates tier/roles
-        # But if it's a direct update here, we need to ensure custom claims are set.
-        # Assuming UserManager handles custom claims for tier/roles updates.
-        # If roles/tier were updated, UserManager should have handled revoking tokens.
-
         # Fetch updated user data to return the latest state
-        updated_user_data = await _user_manager.get_user(user_id)
+        updated_user_data = await user_manager.get_user(user_id) # Use injected UserManager
         # Ensure roles is a list and user_id is present for Pydantic model
         if isinstance(updated_user_data.get('roles'), str):
             updated_user_data['roles'] = updated_user_data['roles'].split(',')
@@ -239,7 +223,8 @@ async def update_user_profile(
 
 @router.get("/", response_model=List[UserProfile])
 async def get_all_users_api(
-    current_user: Annotated[UserProfile, Depends(get_current_admin_user)] # Type-hint as UserProfile
+    current_user: Annotated[UserProfile, Depends(get_current_admin_user)], # Type-hint as UserProfile
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
     Retrieves a list of all users from Firestore.
@@ -248,7 +233,7 @@ async def get_all_users_api(
     admin_uid = current_user.user_id
     logger.info(f"Admin user {admin_uid} requesting all user profiles.")
     try:
-        all_users_data = await _user_manager.get_all_user_profiles() # Use UserManager
+        all_users_data = await user_manager.get_all_user_profiles() # Use injected UserManager
         
         users_list = []
         for user_data in all_users_data:
@@ -278,4 +263,3 @@ async def get_all_users_api(
             log_from_backend=True
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch all user profiles: {e}")
-
