@@ -11,7 +11,7 @@ import asyncio
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
 from firebase_admin import exceptions as firebase_exceptions
-from pydantic import BaseModel, EmailStr, Field # Keep BaseModel for FrontendAnalyticsEvent if not moved yet
+from pydantic import BaseModel # Keep BaseModel for FrontendAnalyticsEvent if not moved yet
 from datetime import datetime, timezone
 
 # Project imports
@@ -24,14 +24,18 @@ from utils.date_parser import parse_date_to_yyyymmdd
 from utils.user_manager import UserManager, get_user_tier_capability # Keep get_user_tier_capability for direct use
 
 # Import Pydantic models from backend.models
-from backend.models.user_models import UserProfile, UserUpdate # Import UserProfile and UserUpdate
+from backend.models.user_models import UserProfile # Only UserProfile is directly used here
 
 # Import API routers
 from backend.api.auth_api import router as auth_router
-# from backend.api.user_api import router as user_router # Assuming user_api.py will be created/updated
+from backend.api.user_api import router as user_router
 # from backend.api.admin_api import router as admin_router # Assuming admin_api.py will be created/updated
 # from backend.api.tool_api import router as tool_router # Assuming tool_api.py will be created/updated
 # from backend.api.integrations_api import router as integrations_router # For user/global API management
+
+# Import middleware dependencies
+from backend.middleware.auth_middleware import get_current_user, get_current_admin_user
+from backend.middleware.auth_middleware import get_firestore_manager_dependency, get_user_manager_dependency
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -45,6 +49,15 @@ from domain_tools.weather_tools import WeatherTools
 from domain_tools.travel_tools import TravelTools
 from domain_tools.sports_tools import SportsTools
 from domain_tools.document_tools.document_tool import DocumentTools
+
+# Import shared tools that might be callable by the agent
+import shared_tools.python_interpreter_tool
+import shared_tools.chart_generation_tool
+import shared_tools.doc_summarizer
+import shared_tools.scrapper_tool
+import shared_tools.sentiment_analysis_tool
+import shared_tools.query_uploaded_docs_tool
+
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -92,29 +105,30 @@ if not firebase_admin._apps:
         raise
 
 # Initialize Firestore Manager
-db_client = firestore.client(firebase_app)
-firestore_manager = FirestoreManager(db_client) # Pass db_client to FirestoreManager
+# These instances are created once at app startup
+_db_client_instance = firestore.client(firebase_app)
+_firestore_manager_instance = FirestoreManager(_db_client_instance)
 logger.info("FirestoreManager initialized.")
 
 # Initialize Cloud Storage Utils Wrapper
-cloud_storage_utils = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
+_cloud_storage_utils_instance = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
 logger.info("CloudStorageUtilsWrapper initialized.")
 
 # Initialize UserManager with FirestoreManager and CloudStorageUtilsWrapper
-user_manager = UserManager(firestore_manager, cloud_storage_utils)
+_user_manager_instance = UserManager(_firestore_manager_instance, _cloud_storage_utils_instance)
 logger.info("UserManager initialized.")
 
 # Initialize Analytics Tracker (after UserManager as it might use user_manager for user_id)
 app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
 backend_service_user_id = "backend-service-user" # Use a service user ID for backend-initiated logs
-initialize_analytics(db_client, auth, app_id_for_analytics, backend_service_user_id)
+initialize_analytics(_db_client_instance, auth, app_id_for_analytics, backend_service_user_id)
 logger.info("Analytics Tracker initialized.")
 
 
 # Initialize Vector Utils Wrapper
-vector_utils = vector_utils_module.VectorUtilsWrapper(
-    firestore_manager=firestore_manager,
-    cloud_storage_utils=cloud_storage_utils,
+_vector_utils_instance = vector_utils_module.VectorUtilsWrapper(
+    firestore_manager=_firestore_manager_instance,
+    cloud_storage_utils=_cloud_storage_utils_instance,
     config_manager=config_manager
 )
 logger.info("VectorUtilsWrapper initialized.")
@@ -135,112 +149,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OAuth2PasswordBearer for token authentication
-# This scheme is used by FastAPI's Depends to extract the token from the Authorization header
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # tokenUrl is for docs, actual token verification happens below
+# --- Dependency Overrides ---
+# Override the dependency functions defined in auth_middleware.py
+# to provide the actual initialized instances.
+app.dependency_overrides[get_firestore_manager_dependency] = lambda: _firestore_manager_instance
+app.dependency_overrides[get_user_manager_dependency] = lambda: _user_manager_instance
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserProfile:
-    """
-    Authenticates the user using Firebase ID token (JWT) provided in the Authorization header.
-    Retrieves and returns their UserProfile, ensuring the account is active.
-    """
-    try:
-        # Verify the Firebase ID token
-        decoded_token = auth.verify_id_token(token)
-        uid = decoded_token['uid']
-        
-        # Retrieve user profile from Firestore using UserManager
-        user_data = await user_manager.get_user(uid) 
-
-        if not user_data:
-            # Log specific failure for user profile not found
-            await log_event(
-                'authentication_failure',
-                {'uid': uid, 'error_details': 'User profile not found in Firestore'},
-                user_id=uid,
-                success=False,
-                error_message="User profile not found.",
-                log_from_backend=True
-            )
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User profile not found.")
-        
-        # Check if account is disabled/suspended
-        if user_data.get('status') == 'disabled' or user_data.get('status') == 'suspended':
-            await log_event(
-                'authentication_failure',
-                {'uid': uid, 'error_details': f"Account status: {user_data.get('status')}"},
-                user_id=uid,
-                success=False,
-                error_message="Your account is currently disabled or suspended. Please contact support.",
-                log_from_backend=True
-            )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account is disabled or suspended. Please contact support.")
-
-        # Update last_login_at timestamp
-        await user_manager.update_last_login(uid)
-
-        # Return the user profile as a Pydantic model for type consistency
-        # Ensure 'uid' from Firebase is mapped to 'user_id' in UserProfile
-        user_data['user_id'] = uid 
-        return UserProfile(**user_data)
-    except firebase_exceptions.AuthError as e:
-        logger.error(f"Firebase ID Token verification failed: {e}", exc_info=True)
-        await log_event(
-            'authentication_failure',
-            {'error_details': str(e), 'firebase_code': e.code if hasattr(e, 'code') else 'N/A'},
-            user_id="unauthenticated",
-            success=False,
-            error_message=f"Invalid authentication credentials: {e.code}. Please log in again.",
-            log_from_backend=True
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {e.code}. Please log in again.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during authentication: {e}", exc_info=True)
-        await log_event(
-            'authentication_failure',
-            {'error_details': str(e)},
-            user_id="unauthenticated",
-            success=False,
-            error_message=f"An unexpected authentication error occurred: {str(e)}",
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Authentication error: {str(e)}")
-
-async def get_current_admin_user(current_user: UserProfile = Depends(get_current_user)):
-    """
-    Dependency to check if the current user is an admin.
-    Returns UserProfile if admin, otherwise raises 403.
-    """
-    # Check for 'admin' role or creator bypass
-    # Assuming 'creator' role implies full admin access
-    if "admin" not in current_user.roles and "creator" not in current_user.roles:
-        # Log authorization failure
-        await log_event(
-            'authorization_failure',
-            {'required_role': 'admin', 'user_roles': current_user.roles},
-            user_id=current_user.user_id,
-            success=False,
-            error_message="Admin access required",
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized. Admin access required.")
-    return current_user
 
 # Initialize DocumentTools first, as it's a dependency for other domain tools
-document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
+document_tools_instance = DocumentTools(_vector_utils_instance, _firestore_manager_instance, _cloud_storage_utils_instance, config_manager, log_event)
 
 # Initialize domain tool instances, passing necessary dependencies
 # These instances will be passed to the LLM service for tool calling
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager,
-        firestore_manager,
+        _firestore_manager_instance, # Pass the instance
         log_event,
-        document_tools_instance # Pass document_tools_instance if finance tools can leverage it
+        document_tools_instance
     ),
     "crypto_tools": CryptoTools(
         config_manager,
@@ -294,7 +220,7 @@ domain_tool_instances = {
     "doc_summarizer_tool": shared_tools.doc_summarizer.DocumentSummarizerTool(log_event),
     "scrapper_tool": shared_tools.scrapper_tool.ScrapperTool(log_event),
     "sentiment_analysis_tool": shared_tools.sentiment_analysis_tool.SentimentAnalysisTool(log_event),
-    "query_uploaded_docs_tool": shared_tools.query_uploaded_docs_tool.QueryUploadedDocsTool(vector_utils, firestore_manager, log_event)
+    "query_uploaded_docs_tool": shared_tools.query_uploaded_docs_tool.QueryUploadedDocsTool(_vector_utils_instance, _firestore_manager_instance, log_event)
 }
 
 
@@ -311,7 +237,7 @@ class FrontendAnalyticsEvent(BaseModel):
 
 # Include routers from other API files
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
-# app.include_router(user_router, prefix="/user", tags=["User Management"])
+app.include_router(user_router, prefix="/user", tags=["User Management"])
 # app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"])
 # app.include_router(tool_router, prefix="/tools", tags=["Tool Operations"])
 # app.include_router(integrations_router, prefix="/integrations", tags=["API Integrations"])
@@ -344,14 +270,12 @@ async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to log analytics event: {e}")
 
 
-# Moved /profile/{user_id} and /profile/update/{user_id} to user_api.py (will be created/updated next)
-# The Pydantic model UserProfileUpdate is now imported from user_models.py
-
 @app.post("/upload-document")
 async def upload_document_endpoint(
     file_name: str,
     file_content_base64: str, # Base64 encoded content of the file
-    current_user: UserProfile = Depends(get_current_user) # Use UserProfile type hint
+    current_user: UserProfile = Depends(get_current_user), # Use UserProfile type hint
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
     Uploads a document for the current user, processes it, and stores its vectors.
@@ -361,6 +285,7 @@ async def upload_document_endpoint(
     logger.info(f"User {user_id} attempting to upload document: {file_name}")
 
     # Use the get_user_tier_capability function from user_manager
+    # This now correctly uses the tier from the current_user (UserProfile)
     if not get_user_tier_capability(current_user.tier, 'document_upload_enabled', False):
         await log_event(
             'document_upload_attempt',
@@ -378,8 +303,8 @@ async def upload_document_endpoint(
             user_id=user_id,
             file_name=file_name,
             file_content_base64=file_content_base64,
-            firestore_manager=firestore_manager,
-            cloud_storage_utils=cloud_storage_utils,
+            firestore_manager=_firestore_manager_instance, # Use the globally initialized instance
+            cloud_storage_utils=_cloud_storage_utils_instance, # Use the globally initialized instance
             config_manager=config_manager,
             log_event_func=log_event # Pass the log_event function
         )
@@ -525,7 +450,3 @@ async def chat_with_agent_endpoint(
     )
     
     return {"response": response_message}
-
-# Moved /admin/users/{user_id}/roles-and-tier to admin_api.py (will be created/updated next)
-# Moved /admin/analytics/events to admin_api.py (will be created/updated next)
-
