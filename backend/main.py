@@ -43,6 +43,7 @@ from backend.middleware.auth_middleware import (
 # Import Services (for initialization and injection)
 from backend.services.admin_service import AdminService # Now importing AdminService
 from backend.services.api_usage_service import ApiUsageService # NEW: Import ApiUsageService
+from backend.services.llm_service import LLMService # NEW: Import LLMService
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -129,7 +130,7 @@ _vector_utils_instance = vector_utils_module.VectorUtilsWrapper(
 )
 logger.info("VectorUtilsWrapper initialized.")
 
-_api_usage_service_instance = ApiUsageService(_firestore_manager_instance, config_manager) # NEW: Initialize ApiUsageService
+_api_usage_service_instance = ApiUsageService(_firestore_manager_instance, config_manager, _user_manager_instance) # NEW: Pass _user_manager_instance to ApiUsageService
 logger.info("ApiUsageService initialized.")
 
 _admin_service_instance = AdminService( # NEW: Initialize AdminService with its dependencies
@@ -139,6 +140,12 @@ _admin_service_instance = AdminService( # NEW: Initialize AdminService with its 
     api_usage_service=_api_usage_service_instance
 )
 logger.info("AdminService initialized.")
+
+_llm_service_instance = LLMService( # NEW: Initialize LLMService with its dependencies
+    user_manager=_user_manager_instance,
+    api_usage_service=_api_usage_service_instance
+)
+logger.info("LLMService initialized.")
 
 
 # Initialize Analytics Tracker (after UserManager as it might use user_manager for user_id)
@@ -174,12 +181,22 @@ app.dependency_overrides[get_api_usage_service_dependency] = lambda: _api_usage_
 from backend.api.admin_api import get_admin_service_dependency # Import the dependency function from admin_api
 app.dependency_overrides[get_admin_service_dependency] = lambda: _admin_service_instance
 
+# Override LLMService dependency (for chat endpoint)
+# Assuming a get_llm_service_dependency will be created in an API file or common place
+async def get_llm_service_dependency() -> LLMService:
+    """Dependency to get the LLMService instance."""
+    raise NotImplementedError("LLMService dependency must be provided by main.py")
+
+app.dependency_overrides[get_llm_service_dependency] = lambda: _llm_service_instance
+
 
 # Initialize DocumentTools first, as it's a dependency for other domain tools
 document_tools_instance = DocumentTools(_vector_utils_instance, _firestore_manager_instance, _cloud_storage_utils_instance, config_manager, log_event)
 
 # Initialize domain tool instances, passing necessary dependencies
 # These instances will be passed to the LLM service for tool calling
+# Note: Tools themselves will use the LLMService for API checks, but their direct
+# instantiation here is for consistency if they have other internal dependencies.
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager,
@@ -360,7 +377,8 @@ async def upload_document_endpoint(
 @app.post("/agent/chat")
 async def chat_with_agent_endpoint(
     message: str,
-    current_user: UserProfile = Depends(get_current_user) # Use UserProfile type hint
+    current_user: UserProfile = Depends(get_current_user), # Use UserProfile type hint
+    llm_service: LLMService = Depends(get_llm_service_dependency) # NEW: Inject LLMService
 ):
     """
     Allows authenticated users to chat with the Intelli-Agent, leveraging available tools.
@@ -380,80 +398,40 @@ async def chat_with_agent_endpoint(
         log_from_backend=True
     )
 
-    response_message = f"Hello {current_user.username}! I received your message: '{message}'. " \
-                       "I'm currently under development, but I can tell you about some tools I have."
-
-    # Placeholder for future LangGraph integration and dynamic tool calling
-    # For now, keep simple conditional logic for demonstration
-    if "stock price" in message.lower():
-        try:
-            # Pass UserProfile object to the tool if it needs tier/roles for internal checks
-            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_context=current_user)
-            response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG'},
-                user_id=user_id,
-                success=True,
-                log_from_backend=True
-            )
-        except HTTPException as e:
-            response_message += f"\n\n(Tool Call Error: {e.detail['message'] if isinstance(e.detail, dict) else e.detail})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG', 'error': str(e.detail)},
-                user_id=user_id,
-                success=False,
-                error_message=str(e.detail),
-                log_from_backend=True
-            )
-        except Exception as e:
-            response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG', 'error': str(e)},
-                user_id=user_id,
-                success=False,
-                error_message=str(e),
-                log_from_backend=True
-            )
-    
-    elif "my documents" in message.lower() or "uploaded files" in message.lower():
-        try:
-            document_tools = domain_tool_instances["document_tools"]
-            # Pass UserProfile object to the tool for RBAC checks and logging
-            doc_query_result = await document_tools.document_query_uploaded_docs(
-                query_text="summarize key points from my latest report",
-                user_context=current_user
-            )
-            response_message += f"\n\n(Example Tool Call: Document Query Result: {doc_query_result})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'document_query_uploaded_docs'},
-                user_id=user_id,
-                success=True,
-                log_from_backend=True
-            )
-        except HTTPException as e:
-            response_message += f"\n\n(Tool Call Error: {e.detail['message'] if isinstance(e.detail, dict) else e.detail})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'document_query_uploaded_docs', 'error': str(e.detail)},
-                user_id=user_id,
-                success=False,
-                error_message=str(e.detail),
-                log_from_backend=True
-            )
-        except Exception as e:
-            response_message += f"\n\n(Example Tool Call Error: Could not query documents: {e})"
-            await log_event(
-                'tool_usage_example',
-                {'tool': 'document_query_uploaded_docs', 'error': str(e)},
-                user_id=user_id,
-                success=False,
-                error_message=str(e),
-                log_from_backend=True
-            )
+    # Use the injected LLMService to handle the chat with agent
+    try:
+        # Pass the full UserProfile object to the LLMService
+        response_message = await llm_service.chat_with_agent(
+            prompt=message,
+            chat_history=[], # For now, chat history is not fully managed here, but passed for agent context
+            user_profile=current_user, # Pass the UserProfile object
+            user_provided_temperature=None, # Example: can be passed from frontend
+            user_provided_llm_provider=None, # Example: can be passed from frontend
+            user_provided_model_name=None # Example: can be passed from frontend
+        )
+    except HTTPException as e:
+        logger.error(f"HTTPException during agent chat for user {user_id}: {e.detail}", exc_info=True)
+        await log_event(
+            'chat_response_failure',
+            {'message': message, 'error': e.detail},
+            user_id=user_id,
+            success=False,
+            error_message=e.detail,
+            log_from_backend=True
+        )
+        raise # Re-raise the HTTPException
+    except Exception as e:
+        logger.error(f"Unexpected error during agent chat for user {user_id}: {e}", exc_info=True)
+        response_message = f"An unexpected error occurred while processing your request: {e}"
+        await log_event(
+            'chat_response_failure',
+            {'message': message, 'error': str(e)},
+            user_id=user_id,
+            success=False,
+            error_message=str(e),
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
     # Log the chat response
     await log_event(
@@ -465,3 +443,4 @@ async def chat_with_agent_endpoint(
     )
     
     return {"response": response_message}
+
