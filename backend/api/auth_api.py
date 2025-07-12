@@ -1,19 +1,43 @@
 # backend/api/auth_api.py
 
 from fastapi import APIRouter, HTTPException, status, Depends
-from typing import Annotated # For FastAPI Depends type hinting
+from typing import Annotated, Dict, Any
+import logging
 
 # Import Pydantic models from our backend.models
-from backend.models.user_models import UserCreate, UserLogin, PasswordResetRequest, PasswordResetConfirm, ChangePassword
+# Assuming these models will be defined in user_models.py
+from backend.models.user_models import UserCreate, UserLogin, PasswordResetRequest, PasswordResetConfirm, ChangePassword, UserProfileUpdate
 
 # Import middleware for protected routes (e.g., change password)
-from backend.middleware.auth_middleware import get_current_active_user
+from backend.middleware.auth_middleware import get_current_active_user # This will be updated to get_current_user
+from backend.middleware.auth_middleware import get_current_user # Assuming this is the dependency for authenticated user
 
 # Import FirestoreManager
 from database.firestore_manager import firestore_manager
 
 # Import Firebase Auth (for creating users and setting custom claims)
 from firebase_admin import auth
+from firebase_admin import exceptions as firebase_exceptions # Import Firebase exceptions
+
+# Project imports for analytics and config
+from utils.analytics_tracker import log_event
+from config.config_manager import config_manager
+from utils.user_manager import UserManager # We'll need UserManager for user profile creation/updates
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed logging during development
+
+# Initialize UserManager (assuming db_client and cloud_storage_utils are available from main or passed)
+# For now, we'll instantiate it here, but in a larger app, it might be passed via dependency injection
+# or initialized once globally. For this file's scope, we'll make a direct instance.
+# NOTE: In a production setup, consider passing these dependencies more cleanly (e.g., via FastAPI's Depends)
+# or ensuring global availability after main.py init.
+# For now, we'll assume firestore_manager and config_manager are directly importable/available.
+# We'll refine this when we update main.py and potentially introduce a global app state.
+_db_client = firestore_manager.db_client # Access the db_client from the already initialized firestore_manager
+_cloud_storage_utils = None # Placeholder, will be properly initialized in main.py and passed if needed here
+_user_manager = UserManager(firestore_manager, _cloud_storage_utils) # Re-instantiate for this module's scope
 
 router = APIRouter()
 
@@ -21,145 +45,273 @@ router = APIRouter()
 async def register_user(user_data: UserCreate):
     """
     Registers a new user in Firebase Authentication and stores profile in Firestore.
+    Assigns default tier and roles (from config_manager) and logs the event.
     """
+    logger.debug(f"Attempting registration for email: {user_data.email}, username: {user_data.username}")
     try:
         # 1. Create user in Firebase Authentication
         user_record = auth.create_user(email=user_data.email, password=user_data.password, display_name=user_data.username)
         user_id = user_record.uid
 
-        # 2. Set custom claims for tier and roles (optional, can be done later by admin)
-        # For initial registration, assign default tier and roles
-        default_tier = "free" # Or from config_manager
-        default_roles = ["user"] # Or from config_manager
+        # 2. Set custom claims for tier and roles
+        # Fetch default tier and roles from config_manager for consistency
+        default_tier = config_manager.get("default_user_tier", "free")
+        default_roles = config_manager.get("default_user_roles", ["user"])
         auth.set_custom_user_claims(user_id, {'tier': default_tier, 'roles': default_roles})
+        logger.debug(f"Firebase user created with UID: {user_id}, assigned tier: {default_tier}, roles: {default_roles}")
         
-        # 3. Store user profile in Firestore (public 'users' collection)
-        user_profile_data = {
-            "username": user_data.username,
-            "email": user_data.email,
-            "tier": default_tier,
-            "roles": default_roles,
-            "created_at": firestore.SERVER_TIMESTAMP # Add timestamp
-        }
-        await firestore_manager.set_user_data(user_id, user_profile_data)
+        # 3. Store user profile in Firestore
+        # Use _user_manager to create the profile, which handles the Firestore interaction
+        await _user_manager.create_user_profile(
+            user_id=user_id,
+            email=user_data.email,
+            username=user_data.username,
+            initial_tier=default_tier,
+            initial_roles=default_roles
+        )
         
-        logger.info(f"User '{user_data.username}' ({user_data.email}) created with UID: {user_id}")
-        return {"message": "User registered successfully", "user_id": user_id}
-    except auth.EmailAlreadyExistsError:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User with this email already exists")
+        logger.info(f"User '{user_data.username}' ({user_data.email}) registered and profile created with UID: {user_id}")
+        await log_event(
+            'user_registered',
+            {'email': user_data.email, 'username': user_data.username, 'tier': default_tier, 'roles': default_roles},
+            user_id=user_id,
+            success=True,
+            log_from_backend=True
+        )
+        return {"message": "User registered successfully", "uid": user_id, "success": True}
+    except firebase_exceptions.FirebaseError as e:
+        logger.error(f"Firebase registration error for {user_data.email}: {e.code} - {e.cause}", exc_info=True)
+        error_message = e.code
+        display_message = f"Registration failed: {error_message}"
+        
+        if hasattr(e, 'message') and e.message:
+            display_message = e.message
+        elif error_message == 'auth/email-already-exists':
+            display_message = "Email already in use. Please use a different email or log in."
+        elif error_message == 'auth/weak-password':
+            display_message = "Password is too weak. Please choose a stronger password (at least 6 characters)."
+        
+        await log_event(
+            'user_registered',
+            {'email': user_data.email, 'username': user_data.username, 'error': str(e), 'firebase_code': error_message},
+            user_id="unauthenticated", # User ID might not be available if creation failed
+            success=False,
+            error_message=display_message,
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=display_message)
     except Exception as e:
-        logger.error(f"Error during user registration: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to register user: {e}")
+        logger.error(f"An unexpected error occurred during registration for email {user_data.email}: {e}", exc_info=True)
+        await log_event(
+            'user_registered',
+            {'email': user_data.email, 'username': user_data.username, 'error': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=str(e),
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
 @router.post("/login")
 async def login_user(credentials: UserLogin):
     """
-    Authenticates a user. This endpoint is typically handled by client-side Firebase SDK.
-    This server-side endpoint is a placeholder or for custom token generation.
-    For a real login, the client-side Firebase SDK would get an ID token, which is then verified by the backend.
+    Authenticates a user by verifying a Firebase ID Token provided by the client.
+    This is the secure way to handle login when using Firebase Auth client-side.
+    The client sends the ID token obtained from Firebase JS SDK after successful sign-in.
     """
-    # This endpoint is primarily for demonstration of backend integration.
-    # In a typical Streamlit + Firebase Auth setup, the Streamlit frontend
-    # uses Firebase JS SDK to sign in and gets an ID token, which it sends to the backend.
-    
-    # For testing, we can simulate a successful login if the email/password match a known user.
-    # In production, you would NOT expose password directly here.
-    
-    # A more realistic scenario for this endpoint:
-    # 1. Client sends email/password to Firebase JS SDK.
-    # 2. Firebase JS SDK returns an ID token.
-    # 3. Client sends this ID token to this backend endpoint.
-    # 4. Backend verifies the ID token using `auth.verify_id_token(id_token)`.
-    # 5. Backend then returns custom claims or a new session token.
+    logger.debug(f"Attempting login with Firebase ID Token.")
+    id_token = credentials.id_token # Assuming UserLogin now includes id_token
 
-    # For now, let's just return a placeholder token for known users for testing purposes.
-    # In a real app, this would involve a more secure token exchange.
-    user_id = credentials.email # Using email as user_id for mock/testing
-    user_data = await firestore_manager.get_user_data(user_id) # Try to fetch from Firestore
+    if not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Firebase ID token is required for login."
+        )
 
-    if not user_data:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials or user not found.")
+    try:
+        # Verify the ID token using Firebase Admin SDK
+        decoded_token = auth.verify_id_token(id_token)
+        uid = decoded_token['uid']
+        
+        # Optionally, check if the user is active/not disabled
+        user_data = await firestore_manager.get_user_data(uid)
+        if not user_data or user_data.get('status') == 'disabled':
+            await log_event(
+                'user_login_attempt',
+                {'uid': uid, 'reason': 'Account disabled or not found'},
+                user_id=uid,
+                success=False,
+                error_message="Account is disabled or not found. Please contact support.",
+                log_from_backend=True
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your account is disabled. Please contact support."
+            )
 
-    # IMPORTANT: In a real app, you would verify the password hash here,
-    # or rely on Firebase Auth's client-side SDK for password verification.
-    # This mock assumes successful verification.
-    
-    # Simulate ID token generation for mock
-    # In a real scenario, Firebase Admin SDK can create custom tokens,
-    # but for direct user login, client-side SDK is preferred.
-    mock_token = f"mock_jwt_token_for_{user_id.split('@')[0]}"
-    
-    logger.info(f"Simulated login for user {user_id}. Returning mock token.")
-    return {"message": "Login successful (simulated)", "access_token": mock_token, "token_type": "bearer", "user_id": user_id}
+        # Update last login time and potentially other user data via UserManager
+        await _user_manager.update_last_login(uid)
+
+        logger.info(f"User {uid} authenticated successfully via Firebase ID Token.")
+        await log_event(
+            'user_logged_in',
+            {'uid': uid},
+            user_id=uid,
+            success=True,
+            log_from_backend=True
+        )
+        return {"message": "Login successful", "uid": uid, "success": True}
+    except firebase_exceptions.AuthError as e:
+        logger.error(f"Firebase ID Token verification failed: {e}", exc_info=True)
+        await log_event(
+            'user_logged_in',
+            {'error': str(e), 'id_token_provided': bool(id_token)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=f"Authentication failed: {e.code}. Please ensure your token is valid and not expired.",
+            log_from_backend=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid authentication credentials: {e.code}. Please log in again."
+        )
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during login: {e}", exc_info=True)
+        await log_event(
+            'user_logged_in',
+            {'error': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=f"An unexpected error occurred: {str(e)}",
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @router.post("/request-password-reset")
-async def request_password_reset(request: PasswordResetRequest):
+async def request_password_reset(request_data: PasswordResetRequest):
     """
     Requests a password reset link for the given email using Firebase Auth.
+    Logs the event.
     """
+    logger.debug(f"Requesting password reset for email: {request_data.email}")
     try:
         # Firebase Admin SDK generates the link
-        reset_link = auth.generate_password_reset_link(request.email)
+        reset_link = auth.generate_password_reset_link(request_data.email)
         # In a real application, you would send this link via email.
-        logger.info(f"Generated password reset link for {request.email}: {reset_link}")
-        return {"message": "If the email is registered, a password reset link has been sent to your inbox."}
-    except auth.UserNotFoundError:
+        logger.info(f"Generated password reset link for {request_data.email}.")
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email},
+            user_id="unauthenticated", # User not authenticated yet
+            success=True,
+            log_from_backend=True
+        )
         # For security, always return a generic success message even if email not found
-        logger.warning(f"Attempted password reset for non-existent email: {request.email}")
+        return {"message": "If the email is registered, a password reset link has been sent to your inbox."}
+    except firebase_exceptions.UserNotFoundError:
+        logger.warning(f"Attempted password reset for non-existent email: {request_data.email}. Returning generic success.")
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email, 'error': 'User not found (handled gracefully)'},
+            user_id="unauthenticated",
+            success=True, # Still considered success from user's perspective for security
+            log_from_backend=True
+        )
         return {"message": "If the email is registered, a password reset link has been sent to your inbox."}
     except Exception as e:
-        logger.error(f"Error requesting password reset for {request.email}: {e}", exc_info=True)
+        logger.error(f"Error requesting password reset for {request_data.email}: {e}", exc_info=True)
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email, 'error': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=str(e),
+            log_from_backend=True
+        )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to request password reset: {e}")
 
 @router.post("/reset-password")
-async def reset_password(confirm: PasswordResetConfirm):
+async def reset_password(confirm_data: PasswordResetConfirm):
     """
     Resets user's password using a valid token (oobCode from Firebase).
+    Logs the event.
     """
+    logger.debug(f"Attempting password reset with token.")
     try:
         # Verify the password reset code and then confirm the reset
-        auth.confirm_password_reset(confirm.token, confirm.new_password)
+        auth.confirm_password_reset(confirm_data.token, confirm_data.new_password)
         logger.info(f"Password successfully reset using token (oobCode).")
+        await log_event(
+            'password_reset_confirmed',
+            {'token_provided': bool(confirm_data.token)},
+            user_id="unauthenticated", # User not authenticated yet
+            success=True,
+            log_from_backend=True
+        )
         return {"message": "Password reset successfully."}
     except Exception as e:
         logger.error(f"Error confirming password reset with token: {e}", exc_info=True)
+        await log_event(
+            'password_reset_confirmed',
+            {'token_provided': bool(confirm_data.token), 'error': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=f"Invalid or expired token: {e}",
+            log_from_backend=True
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid or expired token: {e}")
 
 @router.post("/change-password")
-async def change_password(data: ChangePassword, current_user: Annotated[dict, Depends(get_current_active_user)]):
+async def change_password(
+    data: ChangePassword,
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)] # Use get_current_user
+):
     """
     Allows a logged-in user to change their password using Firebase Auth.
+    This endpoint expects the client to have re-authenticated the user recently
+    or to provide a fresh ID token, as Firebase Admin SDK does not directly
+    support changing password with an old password for security reasons.
+    Logs the event.
     """
-    user_id = current_user["user_id"] # Get user_id from the authenticated token
+    user_id = current_user["uid"] # Get user_id from the authenticated token
+    logger.debug(f"User {user_id} attempting to change password.")
 
     try:
-        # Firebase Auth does not directly expose a "change password with old password" API for Admin SDK.
-        # This is typically handled client-side by re-authenticating the user with their old password
-        # and then calling `updatePassword` on the client-side user object.
-        
-        # For a server-side approach, you would need to:
-        # 1. Re-authenticate the user (e.g., via a custom token or verifying credentials).
-        # 2. Then update their password using `auth.update_user`.
-        
-        # For simplicity and to align with typical Firebase Auth flows,
-        # we'll simulate the update here, but note the real-world client-side flow.
-        
-        # Simulate old password verification (this would be a real hash comparison)
-        user_data = await firestore_manager.get_user_data(user_id)
-        if not user_data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-        
-        # In a real scenario, you'd compare hashed passwords or use Firebase client-side re-auth
-        # For this mock, we'll assume the old_password is correct if the user is authenticated.
-        # This part needs strong security review for production.
-        
+        # The client-side Firebase SDK would typically handle re-authentication
+        # before calling this endpoint, ensuring the user is verified.
+        # This backend endpoint then uses Firebase Admin SDK to update the password.
         auth.update_user(user_id, password=data.new_password)
+        
         logger.info(f"Password for user {user_id} changed successfully.")
+        await log_event(
+            'password_changed',
+            {'uid': user_id},
+            user_id=user_id,
+            success=True,
+            log_from_backend=True
+        )
         return {"message": "Password changed successfully."}
+    except firebase_exceptions.FirebaseError as e:
+        logger.error(f"Firebase error changing password for user {user_id}: {e}", exc_info=True)
+        await log_event(
+            'password_changed',
+            {'uid': user_id, 'error': str(e)},
+            user_id=user_id,
+            success=False,
+            error_message=f"Failed to change password: {e.code}",
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to change password: {e.code}")
     except Exception as e:
-        logger.error(f"Error changing password for user {user_id}: {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred changing password for user {user_id}: {e}", exc_info=True)
+        await log_event(
+            'password_changed',
+            {'uid': user_id, 'error': str(e)},
+            user_id=user_id,
+            success=False,
+            error_message=str(e),
+            log_from_backend=True
+        )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to change password: {e}")
-
-
 
