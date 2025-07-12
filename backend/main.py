@@ -29,13 +29,20 @@ from backend.models.user_models import UserProfile # Only UserProfile is directl
 # Import API routers
 from backend.api.auth_api import router as auth_router
 from backend.api.user_api import router as user_router
-# from backend.api.admin_api import router as admin_router # Assuming admin_api.py will be created/updated
+from backend.api.admin_api import router as admin_router # Now including admin_api
 # from backend.api.tool_api import router as tool_router # Assuming tool_api.py will be created/updated
 # from backend.api.integrations_api import router as integrations_router # For user/global API management
 
-# Import middleware dependencies
-from backend.middleware.auth_middleware import get_current_user, get_current_admin_user
-from backend.middleware.auth_middleware import get_firestore_manager_dependency, get_user_manager_dependency
+# Import middleware dependencies (for dependency overrides)
+from backend.middleware.auth_middleware import (
+    get_current_user, get_current_admin_user,
+    get_firestore_manager_dependency, get_user_manager_dependency,
+    get_api_usage_service_dependency # NEW: Import for ApiUsageService
+)
+
+# Import Services (for initialization and injection)
+from backend.services.admin_service import AdminService # Now importing AdminService
+from backend.services.api_usage_service import ApiUsageService # NEW: Import ApiUsageService
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -104,34 +111,41 @@ if not firebase_admin._apps:
         logger.error(f"FATAL: Error initializing Firebase Admin SDK: {e}", exc_info=True)
         raise
 
-# Initialize Firestore Manager
-# These instances are created once at app startup
+# Initialize Core Managers and Services (singletons for the app)
 _db_client_instance = firestore.client(firebase_app)
 _firestore_manager_instance = FirestoreManager(_db_client_instance)
 logger.info("FirestoreManager initialized.")
 
-# Initialize Cloud Storage Utils Wrapper
 _cloud_storage_utils_instance = cloud_storage_utils_module.CloudStorageUtilsWrapper(config_manager)
 logger.info("CloudStorageUtilsWrapper initialized.")
 
-# Initialize UserManager with FirestoreManager and CloudStorageUtilsWrapper
 _user_manager_instance = UserManager(_firestore_manager_instance, _cloud_storage_utils_instance)
 logger.info("UserManager initialized.")
 
-# Initialize Analytics Tracker (after UserManager as it might use user_manager for user_id)
-app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
-backend_service_user_id = "backend-service-user" # Use a service user ID for backend-initiated logs
-initialize_analytics(_db_client_instance, auth, app_id_for_analytics, backend_service_user_id)
-logger.info("Analytics Tracker initialized.")
-
-
-# Initialize Vector Utils Wrapper
 _vector_utils_instance = vector_utils_module.VectorUtilsWrapper(
     firestore_manager=_firestore_manager_instance,
     cloud_storage_utils=_cloud_storage_utils_instance,
     config_manager=config_manager
 )
 logger.info("VectorUtilsWrapper initialized.")
+
+_api_usage_service_instance = ApiUsageService(_firestore_manager_instance, config_manager) # NEW: Initialize ApiUsageService
+logger.info("ApiUsageService initialized.")
+
+_admin_service_instance = AdminService( # NEW: Initialize AdminService with its dependencies
+    firestore_manager=_firestore_manager_instance,
+    user_manager=_user_manager_instance,
+    cloud_storage_utils=_cloud_storage_utils_instance,
+    api_usage_service=_api_usage_service_instance
+)
+logger.info("AdminService initialized.")
+
+
+# Initialize Analytics Tracker (after UserManager as it might use user_manager for user_id)
+app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
+backend_service_user_id = "backend-service-user" # Use a service user ID for backend-initiated logs
+initialize_analytics(_db_client_instance, auth, app_id_for_analytics, backend_service_user_id)
+logger.info("Analytics Tracker initialized.")
 
 
 app = FastAPI(
@@ -154,6 +168,11 @@ app.add_middleware(
 # to provide the actual initialized instances.
 app.dependency_overrides[get_firestore_manager_dependency] = lambda: _firestore_manager_instance
 app.dependency_overrides[get_user_manager_dependency] = lambda: _user_manager_instance
+app.dependency_overrides[get_api_usage_service_dependency] = lambda: _api_usage_service_instance # NEW: Override for ApiUsageService
+
+# Override AdminService dependency (for admin_api.py)
+from backend.api.admin_api import get_admin_service_dependency # Import the dependency function from admin_api
+app.dependency_overrides[get_admin_service_dependency] = lambda: _admin_service_instance
 
 
 # Initialize DocumentTools first, as it's a dependency for other domain tools
@@ -164,7 +183,7 @@ document_tools_instance = DocumentTools(_vector_utils_instance, _firestore_manag
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager,
-        _firestore_manager_instance, # Pass the instance
+        _firestore_manager_instance,
         log_event,
         document_tools_instance
     ),
@@ -224,8 +243,7 @@ domain_tool_instances = {
 }
 
 
-# --- Pydantic Models for Request Bodies (Moved to models/user_models.py or other API-specific models) ---
-# FrontendAnalyticsEvent will be defined in a separate analytics_models.py or kept here for now
+# --- Pydantic Models for Request Bodies (FrontendAnalyticsEvent remains here for now) ---
 class FrontendAnalyticsEvent(BaseModel):
     event_type: str
     details: Dict[str, Any]
@@ -238,7 +256,7 @@ class FrontendAnalyticsEvent(BaseModel):
 # Include routers from other API files
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(user_router, prefix="/user", tags=["User Management"])
-# app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"])
+app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"]) # Now including admin_api
 # app.include_router(tool_router, prefix="/tools", tags=["Tool Operations"])
 # app.include_router(integrations_router, prefix="/integrations", tags=["API Integrations"])
 
@@ -246,8 +264,6 @@ app.include_router(user_router, prefix="/user", tags=["User Management"])
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the Intelli-Agent Backend! Visit /docs for API documentation."}
-
-# Removed duplicate /register and /login endpoints, now handled by auth_api.router
 
 @app.post("/log-frontend-analytics")
 async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
@@ -285,7 +301,6 @@ async def upload_document_endpoint(
     logger.info(f"User {user_id} attempting to upload document: {file_name}")
 
     # Use the get_user_tier_capability function from user_manager
-    # This now correctly uses the tier from the current_user (UserProfile)
     if not get_user_tier_capability(current_user.tier, 'document_upload_enabled', False):
         await log_event(
             'document_upload_attempt',
