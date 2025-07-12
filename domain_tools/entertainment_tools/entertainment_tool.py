@@ -46,7 +46,8 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
 
 class EntertainmentTools:
     """
-    A collection of tools for entertainment-related operations, including searching for movies and TV shows.
+    A collection of tools for comprehensive entertainment-related operations,
+    including searching for movies, TV shows, music, anime, and podcasts.
     It integrates with external APIs and provides fallback mechanisms.
     """
     def __init__(self, config_manager, log_event, document_tools):
@@ -181,7 +182,7 @@ class EntertainmentTools:
             api_error_message = None
             if raw_data.get("Response") == "False": # OMDBAPI specific error
                 api_error_message = f"API Error from {active_provider_name}: {raw_data.get('Error', 'Unknown error')}"
-            elif raw_data.get("status") == "error": # Generic error status
+            elif raw_data.get("status") == "error": # Generic error status (e.g., NewsAPI, some music APIs)
                 api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
             elif raw_data.get("Error"): # Generic error key
                 api_error_message = f"API Error from {active_provider_name}: {raw_data['Error']}"
@@ -298,7 +299,7 @@ class EntertainmentTools:
     async def entertainment_search_movies(self, title: str, year: Optional[str] = None, user_context: UserProfile = None) -> str:
         """
         Searches for movie information by title, optionally filtered by year.
-        Falls back to a generic message if API key is missing or API call fails.
+        Uses OMDBAPI.
 
         Args:
             title (str): The title of the movie to search for.
@@ -352,7 +353,7 @@ class EntertainmentTools:
     async def entertainment_search_tv_shows(self, title: str, user_context: UserProfile = None) -> str:
         """
         Searches for TV show information by title.
-        Falls back to a generic message if API key is missing or API call fails.
+        Uses OMDBAPI.
 
         Args:
             title (str): The title of the TV show to search for.
@@ -400,6 +401,160 @@ class EntertainmentTools:
                 return f"Could not retrieve complete live TV show information for '{title}'. The API call failed or returned incomplete data. Please ensure your API key is valid and try again."
         else:
             return f"Could not retrieve live TV show information for '{title}'. The API call failed or returned no data. Please ensure your API key is valid and try again."
+
+    @tool
+    async def entertainment_search_music_track(self, title: str, artist: Optional[str] = None, user_context: UserProfile = None) -> str:
+        """
+        Searches for music tracks by title, optionally filtered by artist.
+        Uses a hypothetical Music API.
+
+        Args:
+            title (str): The title of the music track.
+            artist (str, optional): The artist of the track.
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
+
+        Returns:
+            str: A formatted string of music track information, or an error/fallback message.
+        """
+        if user_context is None:
+            user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+        logger.info(f"Tool: entertainment_search_music_track called for title: '{title}', artist: '{artist}' by user: {user_context.user_id}")
+
+        if not get_user_tier_capability(user_context.user_id, 'entertainment_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+            return "Error: Access to entertainment tools is not enabled for your current tier."
+        
+        params = {"q": title}
+        if artist: params["artist"] = artist
+
+        api_data = await self._make_dynamic_api_request("music", "search_track", params, user_context)
+
+        if api_data and api_data.get("data"):
+            tracks = api_data["data"]
+            if tracks:
+                response_str = f"Music Tracks for '{title}' (by {artist if artist else 'any artist'}):\n"
+                for track in tracks[:3]: # Limit to top 3 for brevity
+                    track_title = track.get("title", "N/A")
+                    track_artist = track.get("artist", "N/A")
+                    album = track.get("album", "N/A")
+                    release_year = track.get("release_year", "N/A")
+                    duration = track.get("duration", "N/A")
+                    url = track.get("url", "#")
+                    response_str += (
+                        f"- Title: {track_title}\n"
+                        f"  Artist: {track_artist}\n"
+                        f"  Album: {album}\n"
+                        f"  Released: {release_year}\n"
+                        f"  Duration: {duration}\n"
+                        f"  URL: {url}\n\n"
+                    )
+                return response_str
+            else:
+                return f"No music tracks found for '{title}' (by {artist if artist else 'any artist'}). Please refine your search."
+        else:
+            return f"Could not retrieve music track information for '{title}'. The API call failed or returned no data. Please ensure your API key is valid and try again."
+
+    @tool
+    async def entertainment_search_anime(self, title: str, user_context: UserProfile = None) -> str:
+        """
+        Searches for anime series information by title.
+        Uses a hypothetical Anime API.
+
+        Args:
+            title (str): The title of the anime series.
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
+
+        Returns:
+            str: A formatted string of anime series information, or an error/fallback message.
+        """
+        if user_context is None:
+            user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+        logger.info(f"Tool: entertainment_search_anime called for title: '{title}' by user: {user_context.user_id}")
+
+        if not get_user_tier_capability(user_context.user_id, 'entertainment_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+            return "Error: Access to entertainment tools is not enabled for your current tier."
+        
+        params = {"q": title}
+
+        api_data = await self._make_dynamic_api_request("anime", "search_anime", params, user_context)
+
+        if api_data and api_data.get("data"):
+            animes = api_data["data"]
+            if animes:
+                response_str = f"Anime Series for '{title}':\n"
+                for anime in animes[:3]: # Limit to top 3 for brevity
+                    anime_title = anime.get("title", "N/A")
+                    synopsis = anime.get("synopsis", "N/A")
+                    genres = ", ".join(anime.get("genres", [])) if anime.get("genres") else "N/A"
+                    episodes = anime.get("episodes", "N/A")
+                    status = anime.get("status", "N/A")
+                    score = anime.get("score", "N/A")
+                    url = anime.get("url", "#")
+                    response_str += (
+                        f"- Title: {anime_title}\n"
+                        f"  Synopsis: {synopsis}\n"
+                        f"  Genres: {genres}\n"
+                        f"  Episodes: {episodes}\n"
+                        f"  Status: {status}\n"
+                        f"  Score: {score}\n"
+                        f"  URL: {url}\n\n"
+                    )
+                return response_str
+            else:
+                return f"No anime series found for '{title}'. Please refine your search."
+        else:
+            return f"Could not retrieve anime series information for '{title}'. The API call failed or returned no data. Please ensure your API key is valid and try again."
+
+    @tool
+    async def entertainment_search_podcast(self, query: str, user_context: UserProfile = None) -> str:
+        """
+        Searches for podcasts or podcast episodes by query.
+        Uses a hypothetical Podcast API.
+
+        Args:
+            query (str): The search query for podcasts (e.g., "true crime podcasts", "tech news episode").
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
+
+        Returns:
+            str: A formatted string of podcast information, or an error/fallback message.
+        """
+        if user_context is None:
+            user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+        logger.info(f"Tool: entertainment_search_podcast called for query: '{query}' by user: {user_context.user_id}")
+
+        if not get_user_tier_capability(user_context.user_id, 'entertainment_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+            return "Error: Access to entertainment tools is not enabled for your current tier."
+        
+        params = {"q": query}
+
+        api_data = await self._make_dynamic_api_request("podcast", "search_podcast", params, user_context)
+
+        if api_data and api_data.get("data"):
+            podcasts = api_data["data"]
+            if podcasts:
+                response_str = f"Podcasts for '{query}':\n"
+                for podcast in podcasts[:3]: # Limit to top 3 for brevity
+                    podcast_title = podcast.get("title", "N/A")
+                    description = podcast.get("description", "N/A")
+                    publisher = podcast.get("publisher", "N/A")
+                    genres = ", ".join(podcast.get("genres", [])) if podcast.get("genres") else "N/A"
+                    latest_episode_date = podcast.get("latest_episode_date", "N/A")
+                    url = podcast.get("url", "#")
+                    response_str += (
+                        f"- Title: {podcast_title}\n"
+                        f"  Description: {description}\n"
+                        f"  Publisher: {publisher}\n"
+                        f"  Genres: {genres}\n"
+                        f"  Latest Episode: {latest_episode_date}\n"
+                        f"  URL: {url}\n\n"
+                    )
+                return response_str
+            else:
+                return f"No podcasts found for '{query}'. Please refine your search."
+        else:
+            return f"Could not retrieve podcast information for '{query}'. The API call failed or returned no data. Please ensure your API key is valid and try again."
 
 
     # --- Existing Generic Tools (now methods of EntertainmentTools) ---
@@ -508,6 +663,9 @@ if __name__ == "__main__":
     class MockSecrets:
         def __init__(self):
             self.omdb_api_key = "MOCK_OMDB_API_KEY_LIVE"
+            self.music_api_key = "MOCK_MUSIC_API_KEY_LIVE"
+            self.anime_api_key = "MOCK_ANIME_API_KEY_LIVE"
+            self.podcast_api_key = "MOCK_PODCAST_API_KEY_LIVE"
             self.serpapi_api_key = "MOCK_SERPAPI_KEY_LIVE" # For scrape_web
             self.openai_api_key = "sk-mock-openai-key-12345" # For summarizer
             self.google_api_key = "AIzaSy-mock-google-key" # For summarizer
@@ -534,6 +692,9 @@ if __name__ == "__main__":
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
                     'entertainment': 'omdbapi',
+                    'music': 'mock_music_provider',
+                    'anime': 'mock_anime_provider',
+                    'podcast': 'mock_podcast_provider',
                     'web_search': 'serpapi',
                     'document_summarization_llm': 'openai'
                 },
@@ -568,7 +729,6 @@ if __name__ == "__main__":
                             "search_tv_shows": {
                                 "endpoint": "", # OMDB uses base_url for main endpoint
                                 "required_params": ["t", "type"],
-                                "response_path": [], # Root of response is the data
                                 "data_map": {
                                     "title": "Title",
                                     "year": "Year",
@@ -583,36 +743,70 @@ if __name__ == "__main__":
                         }
                     }
                 },
-                "web_search": { # Mock for web search (SerpAPI)
-                    "serpapi": {
-                        "base_url": "https://serpapi.com/search",
-                        "api_key_name": "serpapi_api_key",
-                        "api_key_param_name": "api_key",
+                "music": {
+                    "mock_music_provider": {
+                        "base_url": "http://mock-music-api.com/v1",
+                        "api_key_name": "music_api_key",
+                        "api_key_param_name": "apiKey",
                         "functions": {
-                            "scrape_web": { # This function name should match the tool name
+                            "search_track": {
+                                "endpoint": "/tracks",
                                 "required_params": ["q"],
-                                "optional_params": ["engine"],
-                                "response_path": ["organic_results"], # Example path for search results
-                                "data_map": { # Simplified mapping for search results
+                                "optional_params": ["artist"],
+                                "response_path": ["data"],
+                                "data_map": {
                                     "title": "title",
-                                    "link": "link",
-                                    "snippet": "snippet"
+                                    "artist": "artist_name",
+                                    "album": "album_title",
+                                    "release_year": "release_date",
+                                    "duration": "duration_ms",
+                                    "url": "preview_url"
                                 }
                             }
                         }
                     }
                 },
-                "document_summarization_llm": { # Mock for summarization LLM
-                    "openai": {
-                        "base_url": "https://api.openai.com/v1/chat/completions",
-                        "api_key_name": "openai_api_key",
+                "anime": {
+                    "mock_anime_provider": {
+                        "base_url": "http://mock-anime-api.com/v1",
+                        "api_key_name": "anime_api_key",
+                        "api_key_param_name": "apiKey",
                         "functions": {
-                            "summarize_document": { # This function name should match the tool name
-                                "endpoint": "", # No specific endpoint for chat completions
-                                "required_params": [],
-                                "optional_params": [],
-                                "response_path": ["choices", 0, "message", "content"],
-                                "data_map": {} # No specific mapping needed for direct content
+                            "search_anime": {
+                                "endpoint": "/anime",
+                                "required_params": ["q"],
+                                "response_path": ["results"],
+                                "data_map": {
+                                    "title": "title",
+                                    "synopsis": "synopsis",
+                                    "genres": "genres",
+                                    "episodes": "episodes",
+                                    "status": "status",
+                                    "score": "score",
+                                    "url": "url"
+                                }
+                            }
+                        }
+                    }
+                },
+                "podcast": {
+                    "mock_podcast_provider": {
+                        "base_url": "http://mock-podcast-api.com/v1",
+                        "api_key_name": "podcast_api_key",
+                        "api_key_param_name": "apiKey",
+                        "functions": {
+                            "search_podcast": {
+                                "endpoint": "/search",
+                                "required_params": ["q"],
+                                "response_path": ["podcasts"],
+                                "data_map": {
+                                    "title": "title_original",
+                                    "description": "description_original",
+                                    "publisher": "publisher_original",
+                                    "genres": "genre_ids", # Assuming a list of genre IDs
+                                    "latest_episode_date": "latest_pub_date_ms",
+                                    "url": "listennotes_url"
+                                }
                             }
                         }
                     }
@@ -651,12 +845,24 @@ if __name__ == "__main__":
         _mock_users = {
             "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
             "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
-            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
+            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", email="premium@example.com", "tier": "premium", "roles": ["user"]},
             "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
         }
         _rbac_capabilities = { # This now mirrors the _RBAC_CAPABILITIES_CONFIG in utils/user_manager.py
             'capabilities': {
                 'entertainment_tool_access': {
+                    'default': False,
+                    'roles': {'pro': True, 'premium': True, 'admin': True}
+                },
+                'music_tool_access': { # New capability for music
+                    'default': False,
+                    'roles': {'pro': True, 'premium': True, 'admin': True}
+                },
+                'anime_tool_access': { # New capability for anime
+                    'default': False,
+                    'roles': {'pro': True, 'premium': True, 'admin': True}
+                },
+                'podcast_tool_access': { # New capability for podcast
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
@@ -752,73 +958,99 @@ if __name__ == "__main__":
         original_requests_get = requests.get
 
         def mock_requests_get_dynamic(url, params=None, headers=None, timeout=None):
-            # Simulate OMDB API responses
+            # Simulate OMDB API responses (Movies/TV Shows)
             if "www.omdbapi.com" in url:
                 title = params.get("t", "").lower()
                 if "ai uprising" in title:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
                     mock_response.json.return_value = {
-                        "Title": "The AI Uprising",
-                        "Year": "2024",
-                        "Rated": "PG-13",
-                        "Released": "01 Jan 2024",
-                        "Runtime": "120 min",
-                        "Genre": "Sci-Fi, Action",
-                        "Director": "John Doe",
-                        "Writer": "Jane Smith",
-                        "Actors": "Actor A, Actor B",
-                        "Plot": "A thrilling tale of artificial intelligence gaining sentience and challenging humanity.",
-                        "Language": "English",
-                        "Country": "USA",
-                        "Awards": "N/A",
-                        "Poster": "https://m.media-amazon.com/images/M/MV5BMjQ0MTgyNjAxMV5BMl5BanBnXkFtZTgwNjUzMDkyODE@._V1_SX300.jpg",
-                        "Ratings": [{"Source": "Internet Movie Database", "Value": "8.5/10"}],
-                        "Metascore": "N/A",
-                        "imdbRating": "8.5",
-                        "imdbVotes": "1,234",
-                        "imdbID": "tt1234567",
-                        "Type": "movie",
-                        "DVD": "N/A",
-                        "BoxOffice": "N/A",
-                        "Production": "Mock Studios",
-                        "Website": "N/A",
-                        "Response": "True"
+                        "Title": "The AI Uprising", "Year": "2024", "Genre": "Sci-Fi, Action",
+                        "Director": "John Doe", "Plot": "AI gains sentience.", "imdbRating": "8.5",
+                        "Poster": "http://example.com/movie_poster.jpg", "Response": "True"
                     }
                     return mock_response
                 elif "quantum realm" in title and params.get("type") == "series":
                     mock_response = MagicMock()
                     mock_response.status_code = 200
                     mock_response.json.return_value = {
-                        "Title": "The Quantum Realm",
-                        "Year": "2022–",
-                        "Rated": "TV-MA",
-                        "Released": "01 Jan 2022",
-                        "Runtime": "50 min",
-                        "Genre": "Sci-Fi, Drama",
-                        "Director": "N/A",
-                        "Writer": "Mock Series Creator",
-                        "Actors": "Actor X, Actor Y",
-                        "Plot": "Scientists explore parallel universes with unexpected consequences.",
-                        "Language": "English",
-                        "Country": "USA",
-                        "Awards": "N/A",
-                        "Poster": "https://m.media-amazon.com/images/M/MV5BMjQ0MTgyNjAxMV5BMl5BanBnXkFtZTgwNjUzMDkyODE@._V1_SX300.jpg",
-                        "Ratings": [{"Source": "Internet Movie Database", "Value": "9.0/10"}],
-                        "Metascore": "N/A",
-                        "imdbRating": "9.0",
-                        "imdbVotes": "5,678",
-                        "imdbID": "tt7890123",
-                        "Type": "series",
-                        "totalSeasons": "2",
-                        "Response": "True"
+                        "Title": "The Quantum Realm", "Year": "2022–", "Genre": "Sci-Fi, Drama",
+                        "Writer": "Mock Series Creator", "Plot": "Scientists explore parallel universes.",
+                        "imdbRating": "9.0", "totalSeasons": "2", "Poster": "http://example.com/tv_poster.jpg", "Response": "True"
                     }
                     return mock_response
                 else:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
-                    mock_response.json.return_value = {"Response": "False", "Error": "Movie not found!"}
+                    mock_response.json.return_value = {"Response": "False", "Error": "Media not found!"}
                     return mock_response
+            
+            # Simulate Mock Music API responses
+            elif "mock-music-api.com" in url:
+                if "/tracks" in url:
+                    query = params.get("q", "").lower()
+                    artist = params.get("artist", "").lower()
+                    if "stairway to heaven" in query and "led zeppelin" in artist:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "data": [{
+                                "title": "Stairway to Heaven", "artist_name": "Led Zeppelin",
+                                "album_title": "Led Zeppelin IV", "release_date": "1971",
+                                "duration_ms": 482000, "preview_url": "http://mock.com/stairway_preview"
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"data": []}
+                        return mock_response
+
+            # Simulate Mock Anime API responses
+            elif "mock-anime-api.com" in url:
+                if "/anime" in url:
+                    query = params.get("q", "").lower()
+                    if "attack on titan" in query:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "results": [{
+                                "title": "Attack on Titan", "synopsis": "Humanity fights Titans.",
+                                "genres": ["Action", "Fantasy"], "episodes": 85,
+                                "status": "Finished Airing", "score": 9.1, "url": "http://mock.com/aot"
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"results": []}
+                        return mock_response
+
+            # Simulate Mock Podcast API responses
+            elif "mock-podcast-api.com" in url:
+                if "/search" in url:
+                    query = params.get("q", "").lower()
+                    if "true crime" in query:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {
+                            "podcasts": [{
+                                "title_original": "Mock True Crime Stories",
+                                "description_original": "Fascinating true crime tales.",
+                                "publisher_original": "Crime Network",
+                                "genre_ids": [100, 101],
+                                "latest_pub_date_ms": 1678886400000, # March 15, 2023
+                                "listennotes_url": "http://mock.com/truecrime_podcast"
+                            }]
+                        }
+                        return mock_response
+                    else:
+                        mock_response = MagicMock()
+                        mock_response.status_code = 200
+                        mock_response.json.return_value = {"podcasts": []}
+                        return mock_response
             
             # Simulate scrape_web's internal requests.get if needed (SerpAPI)
             if "serpapi.com/search" in url:
@@ -881,42 +1113,87 @@ if __name__ == "__main__":
             assert logged_data["success"] is True
             print("Test 1 Passed (and analytics logged success).")
 
-            # Test 2: entertainment_search_tv_shows (API failure - no data found)
-            print("\n--- Test 2: entertainment_search_tv_shows (API Failure) ---")
+            # Test 2: entertainment_search_tv_shows (success)
+            print("\n--- Test 2: entertainment_search_tv_shows (Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_tv_show = await entertainment_tools_instance.entertainment_search_tv_shows("NonExistentShow", user_context=mock_user_pro_profile)
-            print(f"TV Show Search Result (API Error): {result_tv_show}")
-            assert "Could not retrieve live TV show information for 'NonExistentShow'." in result_tv_show
+            result_tv_show = await entertainment_tools_instance.entertainment_search_tv_shows(title="The Quantum Realm", user_context=mock_user_pro_profile)
+            print(f"TV Show Search Result: {result_tv_show}")
+            assert "TV Show: The Quantum Realm (2022–)" in result_tv_show
+            assert "Seasons: 2" in result_tv_show
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
             args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
             assert logged_data["details"]["tool_name"] == "entertainment_search_tv_shows"
-            assert logged_data["success"] is False
-            assert "Movie not found!" in logged_data["error_message"] # OMDB API's error message
-            print("Test 2 Passed (and analytics logged failure).")
+            assert logged_data["success"] is True
+            print("Test 2 Passed (and analytics logged success).")
 
-            # Test 3: entertainment_search_movies (RBAC denied)
-            print("\n--- Test 3: entertainment_search_movies (RBAC Denied) ---")
+            # Test 3: entertainment_search_music_track (success)
+            print("\n--- Test 3: entertainment_search_music_track (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_music = await entertainment_tools_instance.entertainment_search_music_track(title="Stairway to Heaven", artist="Led Zeppelin", user_context=mock_user_pro_profile)
+            print(f"Music Track Search Result: {result_music}")
+            assert "Title: Stairway to Heaven" in result_music
+            assert "Artist: Led Zeppelin" in result_music
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "music_search_track"
+            assert logged_data["success"] is True
+            print("Test 3 Passed (and analytics logged success).")
+
+            # Test 4: entertainment_search_anime (success)
+            print("\n--- Test 4: entertainment_search_anime (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_anime = await entertainment_tools_instance.entertainment_search_anime(title="Attack on Titan", user_context=mock_user_pro_profile)
+            print(f"Anime Search Result: {result_anime}")
+            assert "Title: Attack on Titan" in result_anime
+            assert "Synopsis: Humanity fights Titans." in result_anime
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "anime_search_anime"
+            assert logged_data["success"] is True
+            print("Test 4 Passed (and analytics logged success).")
+
+            # Test 5: entertainment_search_podcast (success)
+            print("\n--- Test 5: entertainment_search_podcast (Success) ---")
+            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
+            result_podcast = await entertainment_tools_instance.entertainment_search_podcast(query="true crime", user_context=mock_user_pro_profile)
+            print(f"Podcast Search Result: {result_podcast}")
+            assert "Title: Mock True Crime Stories" in result_podcast
+            assert "Publisher: Crime Network" in result_podcast
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "podcast_search_podcast"
+            assert logged_data["success"] is True
+            print("Test 5 Passed (and analytics logged success).")
+
+            # Test 6: entertainment_search_movies (RBAC denied)
+            print("\n--- Test 6: entertainment_search_movies (RBAC Denied) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             result_movie_rbac_denied = await entertainment_tools_instance.entertainment_search_movies(title="Inception", user_context=mock_user_free_profile)
             print(f"Movie Search (Free User, RBAC Denied): {result_movie_rbac_denied}")
             assert "Error: Access to entertainment tools is not enabled for your current tier." in result_movie_rbac_denied
             # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
-            print("Test 3 Passed (RBAC correctly prevented call and no analytics logged).")
+            print("Test 6 Passed (RBAC correctly prevented call and no analytics logged).")
 
-            # Test 4: entertainment_search_web (generic tool)
-            print("\n--- Test 4: entertainment_search_web (Generic Tool) ---")
+            # Test 7: entertainment_search_web (generic tool)
+            print("\n--- Test 7: entertainment_search_web (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             result_web_search = await entertainment_tools_instance.entertainment_search_web("best sci-fi movies of all time", user_context=mock_user_pro_profile)
             print(f"Web Search Result: {result_web_search[:100]}...")
             assert "Search results for best sci-fi movies of all time" in result_web_search
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # Analytics for scrape_web is handled by its own internal logging or LLMService wrapper
-            print("Test 4 Passed.")
+            print("Test 7 Passed.")
 
-            # Test 5: entertainment_query_uploaded_docs (generic tool via DocumentTools)
-            print("\n--- Test 5: entertainment_query_uploaded_docs (Generic Tool via DocumentTools) ---")
+            # Test 8: entertainment_query_uploaded_docs (generic tool via DocumentTools)
+            print("\n--- Test 8: entertainment_query_uploaded_docs (Generic Tool via DocumentTools) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             result_doc_query = await entertainment_tools_instance.entertainment_query_uploaded_docs("my movie watch list", user_context=mock_user_pro_profile)
             print(f"Document Query Result: {result_doc_query}")
@@ -927,10 +1204,10 @@ if __name__ == "__main__":
             assert logged_data["event_type"] == "tool_usage"
             assert logged_data["details"]["tool_name"] == "document_query_uploaded_docs"
             assert logged_data["success"] is True
-            print("Test 5 Passed.")
+            print("Test 8 Passed.")
 
-            # Test 6: entertainment_summarize_document_by_path (generic tool via DocumentTools)
-            print("\n--- Test 6: entertainment_summarize_document_by_path (Generic Tool via DocumentTools) ---")
+            # Test 9: entertainment_summarize_document_by_path (generic tool via DocumentTools)
+            print("\n--- Test 9: entertainment_summarize_document_by_path (Generic Tool via DocumentTools) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             # Create a dummy file for summarization test
             test_user_pro_dir = Path("uploads") / mock_user_pro_profile.user_id
@@ -947,7 +1224,7 @@ if __name__ == "__main__":
             assert logged_data["event_type"] == "tool_usage"
             assert logged_data["details"]["tool_name"] == "document_summarize_document_by_path"
             assert logged_data["success"] is True
-            print("Test 6 Passed.")
+            print("Test 9 Passed.")
 
             print("\nAll entertainment_tool tests with live API simulation and analytics considerations completed.")
 
