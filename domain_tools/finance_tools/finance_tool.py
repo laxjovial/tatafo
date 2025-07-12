@@ -5,26 +5,32 @@ import requests
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from datetime import datetime, timedelta
-import asyncio
+from datetime import datetime, timedelta, timezone # Import timezone for consistent datetime objects
 
 # Import generic tools
 from langchain_core.tools import tool
+# Note: scrape_web, summarize_document are imported as functions, not classes,
+# so they are called directly. Their own internal analytics/RBAC should be handled.
 from shared_tools.scrapper_tool import scrape_web
-from shared_tools.doc_summarizer import summarize_document
+from shared_tools.doc_summarizer import summarize_document # This might need to be a method of DocumentTools
+from shared_tools.query_uploaded_docs_tool import query_uploaded_docs # Ensure this is available and callable
 
 # Import config_manager to access API configurations and secrets
 from config.config_manager import config_manager
-# Import user_manager for RBAC checks
+# Import user_manager for RBAC checks (get_user_tier_capability)
 from utils.user_manager import get_user_tier_capability
 # Import date_parser for date format flexibility
 from utils.date_parser import parse_date_to_yyyymmdd
 # Import analytics_tracker
-from utils import analytics_tracker # Import the module
+from utils import analytics_tracker # Import the module for direct logging
+
+# Import UserProfile for type hinting
+from backend.models.user_models import UserProfile
 
 logger = logging.getLogger(__name__)
 
 # --- Generic API Request Helper (copied for standalone tool file, ideally in shared utils) ---
+# This helper is designed to work with the structure defined in api_providers.yml
 
 def _get_nested_value(data: Dict[str, Any], path: List[str]):
     """Helper to get a value from a nested dictionary using a list of keys."""
@@ -32,7 +38,7 @@ def _get_nested_value(data: Dict[str, Any], path: List[str]):
     for key in path:
         if isinstance(current, dict) and key in current:
             current = current[key]
-        elif isinstance(current, list) and key.isdigit(): # Handle list indices
+        elif isinstance(current, list) and isinstance(key, str) and key.isdigit(): # Handle list indices
             try:
                 current = current[int(key)]
             except (IndexError, ValueError):
@@ -49,53 +55,24 @@ class FinanceTools:
     """
     def __init__(self, config_manager, firestore_manager, log_event, document_tools):
         self.config_manager = config_manager
-        self.firestore_manager = firestore_manager
-        self.log_event = log_event
+        self.firestore_manager = firestore_manager # Not directly used in these tool functions, but good for consistency
+        self.log_event = log_event # For direct logging if needed, but _make_dynamic_api_request handles tool usage
         self.document_tools = document_tools # For finance_query_uploaded_docs and finance_summarize_document_by_path
 
-        # --- Mock Data for Fallback ---
-        self._mock_finance_data = {
-            "stock_prices": {
-                "GOOG": {"symbol": "GOOG", "price": 170.00, "currency": "USD", "timestamp": datetime.now().isoformat()},
-                "AAPL": {"symbol": "AAPL", "price": 180.50, "currency": "USD", "timestamp": datetime.now().isoformat()},
-            },
-            "historical_data": {
-                "GOOG": [
-                    {"date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"), "open": 165.00, "high": 168.00, "low": 164.00, "close": 167.50, "volume": 1000000},
-                    {"date": (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d"), "open": 167.00, "high": 170.00, "low": 166.00, "close": 169.50, "volume": 1200000},
-                ]
-            },
-            "company_overview": {
-                "GOOG": {
-                    "symbol": "GOOG",
-                    "name": "Alphabet Inc.",
-                    "exchange": "NASDAQ",
-                    "sector": "Technology",
-                    "industry": "Internet Content & Information",
-                    "description": "Alphabet Inc. is an American multinational technology conglomerate holding company.",
-                    "market_cap": "2.2 Trillion USD"
-                }
-            },
-            "forex_rates": {
-                "USD_EUR": {"from_currency": "USD", "to_currency": "EUR", "rate": 0.92, "timestamp": datetime.now().isoformat()},
-                "EUR_GBP": {"from_currency": "EUR", "to_currency": "GBP", "rate": 0.85, "timestamp": datetime.now().isoformat()},
-            }
-        }
-
     async def _make_dynamic_api_request(
-        self, # Added self
+        self,
         domain: str,
         function_name: str,
         params: Dict[str, Any],
-        user_token: str
+        user_context: UserProfile # Changed from user_token to user_context
     ) -> Optional[Dict[str, Any]]:
         """
         Makes an API request to the dynamically configured provider for a given domain and function.
         Handles API key retrieval, request construction, and basic error handling.
         Returns parsed JSON data or None on failure (triggering mock fallback).
-        Logs tool usage analytics.
+        Logs tool usage analytics (via analytics_tracker).
         """
-        # Check if analytics is enabled for logging tool usage
+        user_id = user_context.user_id # Get user_id from UserProfile
         log_tool_usage_enabled = self.config_manager.get("analytics.log_tool_usage", False)
 
         # Get the default active API provider for the domain from data/config.yml
@@ -103,10 +80,10 @@ class FinanceTools:
         if not active_provider_name:
             logger.error(f"No default API provider configured for domain '{domain}'.")
             if log_tool_usage_enabled:
-                await analytics_tracker.log_tool_usage( # Use analytics_tracker directly
+                await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id, # Use user_id
                     success=False,
                     error_message=f"No default API provider configured for domain '{domain}'."
                 )
@@ -120,7 +97,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
                 )
@@ -142,7 +119,7 @@ class FinanceTools:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
-                        user_token=user_token,
+                        user_id=user_id,
                         success=False,
                         error_message="Amadeus API credentials or token endpoint missing."
                     )
@@ -163,7 +140,7 @@ class FinanceTools:
                         await analytics_tracker.log_tool_usage(
                             tool_name=f"{domain}_{function_name}",
                             tool_params=params,
-                            user_token=user_token,
+                            user_id=user_id,
                             success=False,
                             error_message="Failed to get Amadeus access token."
                         )
@@ -175,7 +152,7 @@ class FinanceTools:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
-                        user_token=user_token,
+                        user_id=user_id,
                         success=False,
                         error_message=f"Error getting Amadeus access token: {e}"
                     )
@@ -189,7 +166,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=f"Base URL not configured for '{active_provider_name}'."
                 )
@@ -202,7 +179,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
                 )
@@ -218,7 +195,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=f"Endpoint or function_param missing for '{function_name}'."
                 )
@@ -239,7 +216,7 @@ class FinanceTools:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
-                        user_token=user_token,
+                        user_id=user_id,
                         success=False,
                         error_message=error_msg
                     )
@@ -268,7 +245,7 @@ class FinanceTools:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
-                        user_token=user_token,
+                        user_id=user_id,
                         success=False,
                         error_message=error_msg
                     )
@@ -294,6 +271,9 @@ class FinanceTools:
                 api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
             elif raw_data.get("result") == "error": # ExchangeRate-API error
                 api_error_message = f"API Error from {active_provider_name}: {raw_data.get('error-type', 'Unknown ExchangeRate-API error')}"
+            elif raw_data.get("message") == "Not Found": # Generic "Not Found" message
+                api_error_message = f"API Error from {active_provider_name}: Resource not found."
+
 
             if api_error_message:
                 logger.error(api_error_message)
@@ -301,7 +281,7 @@ class FinanceTools:
                     await analytics_tracker.log_tool_usage(
                         tool_name=f"{domain}_{function_name}",
                         tool_params=params,
-                        user_token=user_token,
+                        user_id=user_id,
                         success=False,
                         error_message=api_error_message
                     )
@@ -320,7 +300,7 @@ class FinanceTools:
                         await analytics_tracker.log_tool_usage(
                             tool_name=f"{domain}_{function_name}",
                             tool_params=params,
-                            user_token=user_token,
+                            user_id=user_id,
                             success=False,
                             error_message=error_msg
                         )
@@ -336,7 +316,7 @@ class FinanceTools:
                     for mapped_key, original_key_path in data_map.items():
                         if isinstance(original_key_path, list): # Handle nested paths in data_map
                             mapped_item[mapped_key] = _get_nested_value(item, original_key_path)
-                        elif '.' in str(original_key_path): # Handle dot-separated paths in data_map
+                        elif isinstance(original_key_path, str) and '.' in original_key_path: # Handle dot-separated paths in data_map
                             mapped_item[mapped_key] = _get_nested_value(item, original_key_path.split('.'))
                         else: # Direct key or list index
                             if isinstance(original_key_path, int) and isinstance(item, list):
@@ -354,7 +334,7 @@ class FinanceTools:
                     for mapped_key, original_key_path in data_map.items():
                         if isinstance(original_key_path, list):
                             mapped_values[mapped_key] = _get_nested_value(values, original_key_path)
-                        elif '.' in str(original_key_path):
+                        elif isinstance(original_key_path, str) and '.' in original_key_path:
                             mapped_values[mapped_key] = _get_nested_value(values, original_key_path.split('.'))
                         else:
                             mapped_values[mapped_key] = values.get(original_key_path)
@@ -362,6 +342,9 @@ class FinanceTools:
                 final_result = {"data": processed_data}
             else: # For single object responses
                 # Special handling for CoinGecko simple price, where response is { "bitcoin": { "usd": 20000 } }
+                # Note: This is a finance tool, so CoinGecko logic should ideally be in crypto_tool.py
+                # Keeping it here for now as it was in the original _make_dynamic_api_request,
+                # but will move it to crypto_tool's _make_dynamic_api_request later.
                 if function_name == "get_crypto_price" and active_provider_name == "coingecko":
                     # params will contain 'ids' and 'vs_currencies'
                     crypto_id = params.get("ids", "").lower()
@@ -384,28 +367,23 @@ class FinanceTools:
                             await analytics_tracker.log_tool_usage(
                                 tool_name=f"{domain}_{function_name}",
                                 tool_params=params,
-                                user_token=user_token,
+                                user_id=user_id,
                                 success=False,
                                 error_message=error_msg
                             )
                         return None
-                
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
-                    elif '.' in str(original_key_path):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
-                    else:
-                        mapped_data[mapped_key] = data_to_map.get(original_key_path)
-                final_result = mapped_data
+                else: # General single object mapping
+                    for mapped_key, original_key_path in data_map.items():
+                        if isinstance(original_key_path, list):
+                            mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
+                        elif isinstance(original_key_path, str) and '.' in original_key_path:
+                            mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
+                        else:
+                            mapped_data[mapped_key] = data_to_map.get(original_key_path)
+                    final_result = mapped_data
 
-            if log_tool_usage_enabled:
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_token=user_token,
-                    success=True
-                )
+            # Analytics logging for successful API call is handled by LLMService's wrapped_tool_executor
+            # This _make_dynamic_api_request only logs failures or returns data.
             return final_result
 
         except requests.exceptions.Timeout:
@@ -415,7 +393,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=error_msg
                 )
@@ -427,9 +405,9 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
-                    error_message=e
+                    error_message=str(e) # Ensure error message is string
                 )
             return None
         except json.JSONDecodeError:
@@ -439,7 +417,7 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=error_msg
                 )
@@ -451,84 +429,110 @@ class FinanceTools:
                 await analytics_tracker.log_tool_usage(
                     tool_name=f"{domain}_{function_name}",
                     tool_params=params,
-                    user_token=user_token,
+                    user_id=user_id,
                     success=False,
                     error_message=error_msg
                 )
             return None
 
     @tool
-    async def finance_get_stock_price(self, symbol: str, user_token: str = "default") -> str:
+    async def finance_get_stock_price(self, symbol: str, user_context: UserProfile) -> str:
         """
         Retrieves the current stock price for a given stock symbol.
-        Falls back to mock data if API key is missing or API call fails.
+        Falls back to a generic message if API key is missing or API call fails.
 
         Args:
             symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
 
         Returns:
             str: A formatted string of the stock price, or an error/fallback message.
         """
-        logger.info(f"Tool: finance_get_stock_price called for symbol: '{symbol}' by user: {user_token}")
+        logger.info(f"Tool: finance_get_stock_price called for symbol: '{symbol}' by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+        # RBAC check is now performed by the LLMService's wrapped_tool_executor,
+        # but a redundant check here can act as a safeguard or for direct calls.
+        if not get_user_tier_capability(user_context.user_id, 'finance_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to finance tools is not enabled for your current tier."
         
         params = {"symbol": symbol}
-        api_data = await self._make_dynamic_api_request("finance", "get_stock_price", params, user_token)
+        api_data = await self._make_dynamic_api_request("finance", "get_stock_price", params, user_context)
 
         if api_data:
             try:
                 price = api_data.get("price")
-                currency = api_data.get("currency")
+                currency = api_data.get("currency", "USD") # Default to USD if not provided by API
                 timestamp = api_data.get("timestamp")
-                if price and currency:
-                    return f"The current price of {symbol} is {price} {currency} (as of {timestamp})."
+                if price:
+                    return f"The current price of {symbol.upper()} is {price} {currency} (as of {timestamp})."
                 else:
                     logger.warning(f"Live API data for {symbol} price is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live stock price for {symbol}. Falling back to mock data."
+                    return f"Could not retrieve complete live stock price for {symbol.upper()}. Please try again or check the symbol."
             except (ValueError, TypeError) as e:
                 logger.error(f"Error parsing live stock price data for {symbol}: {e}")
-                return f"Error parsing live data for {symbol}. Falling back to mock data."
-
-        # Fallback to mock data
-        mock_price = self._mock_finance_data.get("stock_prices", {}).get(symbol.upper())
-        if mock_price:
-            return f"The current price of {mock_price['symbol']} is {mock_price['price']} {mock_price['currency']} (Mock Data Fallback, as of {mock_price['timestamp']})."
+                return f"Error parsing live data for {symbol.upper()}. Please try again."
         else:
-            return f"Stock price for {symbol} not found. (API/Mock Fallback Failed)"
+            return f"Could not retrieve live stock price for {symbol.upper()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
 
     @tool
-    async def finance_get_historical_stock_prices(self, symbol: str, user_token: str = "default") -> str:
+    async def finance_get_historical_stock_prices(self, symbol: str, start_date: str, end_date: str, user_context: UserProfile) -> str:
         """
-        Retrieves historical daily stock prices for a given stock symbol.
-        Falls back to mock data if API key is missing or API call fails.
+        Retrieves historical daily stock prices for a given stock symbol within a date range.
+        Dates should be in YYYY-MM-DD format.
+        Falls back to a generic message if API key is missing or API call fails.
 
         Args:
             symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+            start_date (str): The start date for historical data (YYYY-MM-DD).
+            end_date (str): The end date for historical data (YYYY-MM-DD).
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
 
         Returns:
             str: A formatted string of historical stock prices, or an error/fallback message.
         """
-        logger.info(f"Tool: finance_get_historical_stock_prices called for symbol: '{symbol}' by user: {user_token}")
+        logger.info(f"Tool: finance_get_historical_stock_prices called for symbol: '{symbol}' from {start_date} to {end_date} by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_token, 'historical_data_access', False):
+        if not get_user_tier_capability(user_context.user_id, 'historical_data_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to historical data is not enabled for your current tier."
         
-        params = {"symbol": symbol}
-        api_data = await self._make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_token)
+        # Parse and validate dates
+        parsed_start_date = parse_date_to_yyyymmdd(start_date)
+        parsed_end_date = parse_date_to_yyyymmdd(end_date)
+
+        if not parsed_start_date or not parsed_end_date:
+            return "Error: Invalid date format. Please provide dates in YYYY-MM-DD format (e.g., '2023-01-01')."
+
+        params = {"symbol": symbol, "start_date": parsed_start_date, "end_date": parsed_end_date}
+        api_data = await self._make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_context)
 
         if api_data and api_data.get("data"):
             historical_prices = api_data["data"]
             if historical_prices:
-                response_str = f"Historical Prices for {symbol}:\n"
-                # Sort by date (assuming YYYY-MM-DD format) and take most recent 5
-                sorted_prices = sorted(historical_prices.items(), key=lambda item: item[0], reverse=True)[:5]
-                for date, data in sorted_prices:
+                response_str = f"Historical Prices for {symbol.upper()} from {parsed_start_date} to {parsed_end_date}:\n"
+                
+                # Convert dict of dicts to list of dicts for sorting if Alpha Vantage style
+                if isinstance(historical_prices, dict):
+                    # Filter by date range and convert to list
+                    filtered_prices = []
+                    for date_str, data in historical_prices.items():
+                        try:
+                            current_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                            if datetime.strptime(parsed_start_date, "%Y-%m-%d").date() <= current_date <= datetime.strptime(parsed_end_date, "%Y-%m-%d").date():
+                                filtered_prices.append({"date": date_str, **data})
+                        except ValueError:
+                            logger.warning(f"Skipping malformed date in historical data: {date_str}")
+                            continue
+                    historical_prices = filtered_prices
+
+                # Sort by date (assuming 'date' key exists) and take most recent 5
+                sorted_prices = sorted(historical_prices, key=lambda x: x.get('date', ''), reverse=True)[:5]
+                
+                if not sorted_prices:
+                    return f"No historical prices found for {symbol.upper()} within the specified date range ({parsed_start_date} to {parsed_end_date})."
+
+                for data in sorted_prices:
                     response_str += (
-                        f"  Date: {date}\n"
+                        f"  Date: {data.get('date', 'N/A')}\n"
                         f"    Open: {data.get('open', 'N/A')}\n"
                         f"    High: {data.get('high', 'N/A')}\n"
                         f"    Low: {data.get('low', 'N/A')}\n"
@@ -537,45 +541,30 @@ class FinanceTools:
                     )
                 return response_str
             else:
-                return f"No live historical prices found for {symbol}. Falling back to mock data."
-
-        # Fallback to mock data
-        mock_historical_data = self._mock_finance_data.get("historical_data", {}).get(symbol.upper())
-        if mock_historical_data:
-            response_str = f"Historical Prices for {symbol} (Mock Data Fallback):\n"
-            for data in mock_historical_data:
-                response_str += (
-                    f"  Date: {data['date']}\n"
-                    f"    Open: {data['open']}\n"
-                    f"    High: {data['high']}\n"
-                    f"    Low: {data['low']}\n"
-                    f"    Close: {data['close']}\n"
-                    f"    Volume: {data['volume']}\n"
-                )
-            return response_str
+                return f"No live historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
         else:
-            return f"Historical stock prices for {symbol} not found. (API/Mock Fallback Failed)"
+            return f"Could not retrieve live historical stock prices for {symbol.upper()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
 
     @tool
-    async def finance_get_company_overview(self, symbol: str, user_token: str = "default") -> str:
+    async def finance_get_company_overview(self, symbol: str, user_context: UserProfile) -> str:
         """
         Retrieves a company's overview, including its description, sector, and market capitalization.
-        Falls back to mock data if API key is missing or API call fails.
+        Falls back to a generic message if API key is missing or API call fails.
 
         Args:
             symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
-            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
 
         Returns:
             str: A formatted string of company overview information, or an error/fallback message.
         """
-        logger.info(f"Tool: finance_get_company_overview called for symbol: '{symbol}' by user: {user_token}")
+        logger.info(f"Tool: finance_get_company_overview called for symbol: '{symbol}' by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+        if not get_user_tier_capability(user_context.user_id, 'finance_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to finance tools is not enabled for your current tier."
         
         params = {"symbol": symbol}
-        api_data = await self._make_dynamic_api_request("finance", "get_company_overview", params, user_token)
+        api_data = await self._make_dynamic_api_request("finance", "get_company_overview", params, user_context)
 
         if api_data:
             try:
@@ -587,104 +576,101 @@ class FinanceTools:
 
                 if name and description:
                     return (
-                        f"Company Overview for {name} ({symbol}):\n"
-                        f"  Sector: {sector}\n"
-                        f"  Industry: {industry}\n"
-                        f"  Market Cap: {market_cap}\n"
+                        f"Company Overview for {name} ({symbol.upper()}):\n"
+                        f"  Sector: {sector if sector else 'N/A'}\n"
+                        f"  Industry: {industry if industry else 'N/A'}\n"
+                        f"  Market Cap: {market_cap if market_cap else 'N/A'}\n"
                         f"  Description: {description}"
                     )
                 else:
                     logger.warning(f"Live API data for {symbol} overview is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live company overview for {symbol}. Falling back to mock data."
+                    return f"Could not retrieve complete live company overview for {symbol.upper()}. Please try again or check the symbol."
             except (ValueError, TypeError) as e:
                 logger.error(f"Error parsing live company overview data for {symbol}: {e}")
-                return f"Error parsing live data for {symbol}. Falling back to mock data."
-
-        # Fallback to mock data
-        mock_overview = self._mock_finance_data.get("company_overview", {}).get(symbol.upper())
-        if mock_overview:
-            return (
-                f"Company Overview for {mock_overview['name']} ({mock_overview['symbol']}) (Mock Data Fallback):\n"
-                f"  Sector: {mock_overview['sector']}\n"
-                f"  Industry: {mock_overview['industry']}\n"
-                f"  Market Cap: {mock_overview['market_cap']}\n"
-                f"  Description: {mock_overview['description']}"
-            )
+                return f"Error parsing live data for {symbol.upper()}. Please try again."
         else:
-            return f"Company overview for {symbol} not found. (API/Mock Fallback Failed)"
+            return f"Could not retrieve live company overview for {symbol.upper()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
 
     @tool
-    async def finance_get_forex_exchange_rate(self, from_currency: str, to_currency: str, user_token: str = "default") -> str:
+    async def finance_get_forex_exchange_rate(self, from_currency: str, to_currency: str, user_context: UserProfile) -> str:
         """
         Retrieves the current exchange rate between two currencies.
-        Falls back to mock data if API key is missing or API call fails.
+        Falls back to a generic message if API key is missing or API call fails.
 
         Args:
             from_currency (str): The currency to convert from (e.g., "USD", "EUR").
             to_currency (str): The currency to convert to (e.g., "JPY", "GBP").
-            user_token (str, optional): The unique identifier for the user. Defaults to "default".
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
 
         Returns:
             str: A formatted string of the exchange rate, or an error/fallback message.
         """
-        logger.info(f"Tool: finance_get_forex_exchange_rate called for {from_currency} to {to_currency} by user: {user_token}")
+        logger.info(f"Tool: finance_get_forex_exchange_rate called for {from_currency} to {to_currency} by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_token, 'finance_tool_access', False):
+        if not get_user_tier_capability(user_context.user_id, 'finance_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to finance tools is not enabled for your current tier."
         
         params = {"from_currency": from_currency, "to_currency": to_currency}
-        api_data = await self._make_dynamic_api_request("finance", "get_forex_exchange_rate", params, user_token)
+        api_data = await self._make_dynamic_api_request("finance", "get_forex_exchange_rate", params, user_context)
 
         if api_data:
             try:
                 rate = api_data.get("rate")
                 timestamp = api_data.get("timestamp")
                 if rate:
-                    return f"The current exchange rate from {from_currency} to {to_currency} is {rate} (as of {timestamp})."
+                    # Format timestamp if it's a UTC string
+                    if timestamp and "UTC" in timestamp:
+                        try:
+                            dt_obj = datetime.strptime(timestamp, "%a, %d %b %Y %H:%M:%S %z")
+                            formatted_timestamp = dt_obj.strftime("%Y-%m-%d %H:%M:%S UTC")
+                        except ValueError:
+                            formatted_timestamp = timestamp # Fallback if parsing fails
+                    else:
+                        formatted_timestamp = timestamp if timestamp else 'N/A'
+
+                    return f"The current exchange rate from {from_currency.upper()} to {to_currency.upper()} is {rate} (as of {formatted_timestamp})."
                 else:
                     logger.warning(f"Live API data for {from_currency} to {to_currency} exchange rate is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live exchange rate for {from_currency} to {to_currency}. Falling back to mock data."
+                    return f"Could not retrieve complete live exchange rate for {from_currency.upper()} to {to_currency.upper()}. Please try again."
             except (ValueError, TypeError) as e:
                 logger.error(f"Error parsing live forex data for {from_currency} to {to_currency}: {e}")
-                return f"Error parsing live data for {from_currency} to {to_currency}. Falling back to mock data."
-
-        # Fallback to mock data
-        mock_rate_key = f"{from_currency.upper()}_{to_currency.upper()}"
-        mock_rate = self._mock_finance_data.get("forex_rates", {}).get(mock_rate_key)
-        if mock_rate:
-            return f"The current exchange rate from {mock_rate['from_currency']} to {mock_rate['to_currency']} is {mock_rate['rate']} (Mock Data Fallback, as of {mock_rate['timestamp']})."
+                return f"Error parsing live data for {from_currency.upper()} to {to_currency.upper()}. Please try again."
         else:
-            return f"Exchange rate for {from_currency} to {to_currency} not found. (API/Mock Fallback Failed)"
+            return f"Could not retrieve live exchange rate for {from_currency.upper()} to {to_currency.upper()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
 
 
     # --- Existing Generic Tools (now methods of FinanceTools) ---
+    # These functions wrap existing shared tools or DocumentTools methods.
+    # They will pass the user_context down if the wrapped tool supports it.
 
     @tool
-    def finance_search_web(self, query: str, user_token: str = "default", max_chars: int = 2000) -> str:
+    async def finance_search_web(self, query: str, user_context: UserProfile, max_chars: int = 2000) -> str:
         """
         Searches the web for finance-related information using a smart search fallback mechanism.
         This tool wraps the generic `scrape_web` tool, providing a finance-specific interface.
         
         Args:
             query (str): The finance-related search query (e.g., "latest stock market news", "explain cryptocurrency taxation").
-            user_token (str): The unique identifier for the user. Defaults to "default".
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
             max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
         
         Returns:
             str: A string containing relevant information from the web.
         """
-        logger.info(f"Tool: finance_search_web called with query: '{query}' for user: '{user_token}'")
-        return scrape_web(query=query, user_token=user_token, max_chars=max_chars)
+        logger.info(f"Tool: finance_search_web called with query: '{query}' for user: '{user_context.user_id}'")
+        # scrape_web is a standalone function, ensure it handles its own RBAC/logging if applicable
+        # For now, it's assumed LLMService wrapper handles its API limit check.
+        return await scrape_web(query=query, user_token=user_context.user_id, max_chars=max_chars) # Pass user_token for scrape_web's internal logging
 
     @tool
-    async def finance_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+    async def finance_query_uploaded_docs(self, query: str, user_context: UserProfile, export: Optional[bool] = False, k: int = 5) -> str:
         """
         Queries previously uploaded and indexed finance documents for a user using vector similarity search.
-        This tool wraps the generic `QueryUploadedDocs` tool, fixing the section to "finance".
+        This tool wraps the generic `DocumentTools.document_query_uploaded_docs` tool, fixing the section to "finance".
         
         Args:
             query (str): The search query to find relevant finance documents (e.g., "my investment portfolio details", "tax documents for 2023").
-            user_token (str): The unique identifier for the user. Defaults to "default".
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
             export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
             k (int): The number of top relevant documents to retrieve. Defaults to 5.
         
@@ -692,66 +678,77 @@ class FinanceTools:
             str: A string containing the combined content of the relevant document chunks,
                  or a message indicating no data/results found, or the export path if exported.
         """
-        logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_token}'")
+        logger.info(f"Tool: finance_query_uploaded_docs called with query: '{query}' for user: '{user_context.user_id}'")
         if not self.document_tools:
             return "Error: Document tools are not initialized. Cannot query uploaded documents."
         
-        # Call the actual query_uploaded_docs from the DocumentTools instance
+        # Call the actual document_query_uploaded_docs from the DocumentTools instance
         return await self.document_tools.document_query_uploaded_docs(
             query=query,
-            user_token=user_token,
+            user_context=user_context, # Pass user_context directly
             section="finance", # Specify the section for finance documents
             export=export,
             k=k
         )
 
     @tool
-    async def finance_summarize_document_by_path(self, file_path_str: str) -> str:
+    async def finance_summarize_document_by_path(self, file_path_str: str, user_context: UserProfile) -> str:
         """
         Summarizes a document related to finance (e.g., financial reports, market analysis) located at the given file path.
         The file path should be accessible by the system (e.g., in the 'uploads' directory).
-        This tool wraps the generic `summarize_document` tool.
+        This tool wraps the generic `DocumentTools.document_summarize_document_by_path` tool.
         
         Args:
             file_path_str (str): The full path to the document file to be summarized.
                                 Example: "uploads/default/finance/annual_report.pdf"
+            user_context (UserProfile): The user's profile for RBAC checks and logging.
         
         Returns:
             str: A concise summary of the document content.
         """
-        logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}'")
+        logger.info(f"Tool: finance_summarize_document_by_path called for file: '{file_path_str}' by user: '{user_context.user_id}'")
         if not self.document_tools:
             return "Error: Document tools are not initialized. Cannot summarize documents."
 
-        # Call the actual summarize_document_by_path from the DocumentTools instance
-        return await self.document_tools.document_summarize_document_by_path(file_path_str=file_path_str)
+        # Call the actual document_summarize_document_by_path from the DocumentTools instance
+        return await self.document_tools.document_summarize_document_by_path(
+            file_path_str=file_path_str,
+            user_context=user_context # Pass user_context directly
+        )
 
 
 # CLI Test (optional)
 if __name__ == "__main__":
     import asyncio
-    from unittest.mock import MagicMock, AsyncMock, patch
+    from unittest.mock import MagicMock, AsyncMock, patch, ANY # Import ANY for flexible assertions
     import shutil
     import os
-    import sys # Import sys for patching modules
+    import sys
     from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
     from database.firestore_manager import FirestoreManager # For mocking
     from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper # For mocking
     from shared_tools.vector_utils import VectorUtilsWrapper # For mocking
     from domain_tools.document_tools.document_tool import DocumentTools # For mocking
+    from backend.models.user_models import UserProfile # For mock user_context
 
     logging.basicConfig(level=logging.INFO)
+
+    # Mock UserProfile for testing
+    mock_user_pro_profile = UserProfile(user_id="mock_pro_token", username="ProUser", email="pro@example.com", tier="pro", roles=["user"])
+    mock_user_free_profile = UserProfile(user_id="mock_free_token", username="FreeUser", email="free@example.com", tier="free", roles=["user"])
+    mock_user_premium_profile = UserProfile(user_id="mock_premium_token", username="PremiumUser", email="premium@example.com", tier="premium", roles=["user"])
+    mock_user_admin_profile = UserProfile(user_id="mock_admin_token", username="AdminUser", email="admin@example.com", tier="admin", roles=["user", "admin"])
+
 
     # Mock Streamlit secrets and config_manager for local testing
     class MockSecrets:
         def __init__(self):
-            self.finance_api_key = "MOCK_FINANCE_API_KEY"
-            self.alphavantage_api_key = "MOCK_ALPHAVANTAGE_API_KEY"
-            self.exchangerate_api_key = "MOCK_EXCHANGERATE_API_KEY"
-            self.openai_api_key = "sk-mock-openai-key-12345"
-            self.google_api_key = "AIzaSy-mock-google-key"
-            self.firebase_config = "{}"
-            self.serpapi_api_key = "MOCK_SERPAPI_KEY" # For scrape_web
+            # These are the actual API keys that _make_dynamic_api_request will try to retrieve
+            self.alphavantage_api_key = "MOCK_ALPHAVANTAGE_API_KEY_LIVE"
+            self.exchangerate_api_key = "MOCK_EXCHANGERATE_API_KEY_LIVE"
+            self.serpapi_api_key = "MOCK_SERPAPI_KEY_LIVE" # For scrape_web
+            self.openai_api_key = "sk-mock-openai-key-12345" # For summarizer
+            self.google_api_key = "AIzaSy-mock-google-key" # For summarizer
 
         def get(self, key, default=None):
             return getattr(self, key, default)
@@ -774,7 +771,9 @@ if __name__ == "__main__":
                 'default_user_tier': 'free',
                 'default_user_roles': ['user'],
                 'api_defaults': { # Mock api_defaults
-                    'finance': 'alphavantage' # Using alphavantage for finance mock
+                    'finance': 'alphavantage', # Default to alphavantage for finance
+                    'web_search': 'serpapi', # Default for web search
+                    'document_summarization_llm': 'openai' # Default for summarizer
                 },
                 'analytics': { # Mock analytics settings
                     'enabled': True,
@@ -847,6 +846,40 @@ if __name__ == "__main__":
                             }
                         }
                     }
+                },
+                "web_search": { # Mock for web search (SerpAPI)
+                    "serpapi": {
+                        "base_url": "https://serpapi.com/search",
+                        "api_key_name": "serpapi_api_key",
+                        "api_key_param_name": "api_key",
+                        "functions": {
+                            "scrape_web": { # This function name should match the tool name
+                                "required_params": ["q"],
+                                "optional_params": ["engine"],
+                                "response_path": ["organic_results"], # Example path for search results
+                                "data_map": { # Simplified mapping for search results
+                                    "title": "title",
+                                    "link": "link",
+                                    "snippet": "snippet"
+                                }
+                            }
+                        }
+                    }
+                },
+                "document_summarization_llm": { # Mock for summarization LLM
+                    "openai": {
+                        "base_url": "https://api.openai.com/v1/chat/completions",
+                        "api_key_name": "openai_api_key",
+                        "functions": {
+                            "summarize_document": { # This function name should match the tool name
+                                "endpoint": "", # No specific endpoint for chat completions
+                                "required_params": [],
+                                "optional_params": [],
+                                "response_path": ["choices", 0, "message", "content"],
+                                "data_map": {} # No specific mapping needed for direct content
+                            }
+                        }
+                    }
                 }
             }
             self._is_loaded = True
@@ -875,7 +908,9 @@ if __name__ == "__main__":
             return self._api_providers_data.get(domain, {})
 
 
-    # Mock user_manager.get_current_user and get_user_tier_capability for testing RBAC
+    # Mock user_manager.get_user_tier_capability for testing RBAC
+    # This mock is for the standalone get_user_tier_capability function
+    # which is now imported directly by tools.
     class MockUserManager:
         _mock_users = {
             "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
@@ -883,7 +918,7 @@ if __name__ == "__main__":
             "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
             "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
         }
-        _rbac_capabilities = {
+        _rbac_capabilities = { # This now mirrors the _RBAC_CAPABILITIES_CONFIG in utils/user_manager.py
             'capabilities': {
                 'finance_tool_access': {
                     'default': False,
@@ -893,18 +928,12 @@ if __name__ == "__main__":
                     'default': False,
                     'roles': {'premium': True, 'admin': True}
                 },
+                'document_upload_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
                 'document_query_enabled': { # Added for document tool
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
-                'web_search_max_results': {
-                    'default': 2,
-                    'tiers': {'pro': 7, 'premium': 15}
-                },
-                'web_search_limit_chars': {
-                    'default': 500,
-                    'tiers': {'pro': 3000, 'premium': 10000}
-                },
+                'web_search_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
                 'summarization_enabled': { # For summarize_document
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
@@ -929,11 +958,13 @@ if __name__ == "__main__":
 
         # This mock is for the standalone get_user_tier_capability function
         # which is now imported directly by tools.
-        def get_user_tier_capability(self, user_token: Optional[str], capability_key: str, default_value: Any = None) -> Any:
-            user_info = self._mock_users.get(user_token, {})
-            user_id = user_info.get('user_id')
-            user_tier = user_info.get('tier', 'free')
-            user_roles = user_info.get('roles', [])
+        def get_user_tier_capability(self, user_id: str, capability_key: str, default_value: Any = None, user_tier: Optional[str] = None, user_roles: Optional[List[str]] = None) -> Any:
+            # If user_tier/user_roles are provided, use them directly (from UserProfile)
+            # Otherwise, try to look up from _mock_users
+            if user_tier is None or user_roles is None:
+                user_info = self._mock_users.get(user_id, {})
+                user_tier = user_info.get('tier', 'free')
+                user_roles = user_info.get('roles', [])
 
             if "admin" in user_roles:
                 if isinstance(default_value, bool): return True
@@ -959,8 +990,9 @@ if __name__ == "__main__":
     if not hasattr(st_mock, 'secrets'):
         st_mock.secrets = MockSecrets()
     
+    # Patch config_manager and user_manager in their respective modules
     sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
+    sys.modules['config.config_manager'].ConfigManager = MockConfigManager # Also patch the class if needed by other modules
     
     # Patch the standalone get_user_tier_capability function in utils.user_manager
     # This is crucial for the tools to use the mock during their CLI tests.
@@ -988,7 +1020,7 @@ if __name__ == "__main__":
         # Mock requests.get for external API calls
         original_requests_get = requests.get
 
-        def mock_requests_get_dynamic(url, params, headers, timeout):
+        def mock_requests_get_dynamic(url, params=None, headers=None, timeout=None):
             # Simulate hypothetical Alpha Vantage responses
             if "alphavantage.co" in url:
                 function = params.get("function")
@@ -1000,7 +1032,8 @@ if __name__ == "__main__":
                         "Global Quote": {
                             "01. symbol": symbol.upper(),
                             "05. price": "175.00",
-                            "07. latest trading day": datetime.now().strftime("%Y-%m-%d")
+                            "07. latest trading day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                            "8. currency": "USD"
                         }
                     }
                     return mock_response
@@ -1010,10 +1043,10 @@ if __name__ == "__main__":
                     mock_response.json.return_value = {
                         "Meta Data": {"2. Symbol": symbol.upper()},
                         "Time Series (Daily)": {
-                            (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"): {
+                            (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"): {
                                 "1. open": "160.00", "2. high": "162.00", "3. low": "159.00", "4. close": "161.50", "5. volume": "500000"
                             },
-                            (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"): {
+                            (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d"): {
                                 "1. open": "158.00", "2. high": "160.00", "3. low": "157.00", "4. close": "159.50", "5. volume": "450000"
                             }
                         }
@@ -1041,7 +1074,7 @@ if __name__ == "__main__":
             # Simulate hypothetical ExchangeRate-API responses
             if "exchangerate-api.com" in url and "/pair/" in url:
                 parts = url.split("/pair/")[1].split("/")
-                api_key = parts[0]
+                api_key = parts[0] # The API key is part of the path for this mock
                 from_currency = parts[1]
                 to_currency = parts[2]
                 mock_response = MagicMock()
@@ -1051,42 +1084,50 @@ if __name__ == "__main__":
                     "base_code": from_currency.upper(),
                     "target_code": to_currency.upper(),
                     "conversion_rate": 1.15, # Example rate
-                    "time_last_update_utc": datetime.now().isoformat()
+                    "time_last_update_utc": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %z") # Example format
                 }
                 return mock_response
 
             # Simulate scrape_web's internal requests.get if needed
-            if "google.com/search" in url or "example.com" in url: # Mock for scrape_web
+            if "serpapi.com/search" in url: # Mock for scrape_web using SerpAPI config
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.text = f"<html><body><h1>Search results for {params.get('q', 'finance')}</h1><p>Some finance related content from web search.</p></body></html>"
+                mock_response.json.return_value = {
+                    "organic_results": [
+                        {"title": "Mock Search Result 1", "link": "http://example.com/1", "snippet": f"Snippet for {params.get('q', 'finance')} result 1."},
+                        {"title": "Mock Search Result 2", "link": "http://example.com/2", "snippet": f"Snippet for {params.get('q', 'finance')} result 2."}
+                    ]
+                }
                 return mock_response
 
+            # Fallback to original requests.get if no mock matches
             return original_requests_get(url, params=params, headers=headers, timeout=timeout)
 
         requests.get = MagicMock(side_effect=mock_requests_get_dynamic)
 
-        test_user_pro = "mock_pro_token"
-        test_user_free = "mock_free_token"
-        test_user_premium = "mock_premium_token"
+        # Mock for summarize_document (from shared_tools.doc_summarizer)
+        class MockSummarizeDocumentLLM:
+            def invoke(self, messages: List[BaseMessage]) -> Any:
+                last_user_message = messages[-1].content if messages and isinstance(messages[-1], HumanMessage) else "No user message"
+                return AIMessage(content=f"Mocked LLM summary of: {last_user_message[:50]}...")
 
-        # Mock for summarize_document
-        class MockSummarizeDocument:
-            def __call__(self, text, user_token):
-                return f"Mocked summary of text for user {user_token}: {text[:50]}..."
-
-        # Patch summarize_document in the finance_tool module
-        original_summarize_document = sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document
-        sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document = MockSummarizeDocument()
+        # Patch the LLM used internally by doc_summarizer
+        # Assuming doc_summarizer has an internal _load_llm or takes an LLM instance
+        # For this test, we'll patch the create_react_agent's LLM if it uses that.
+        # More robust: patch the specific LLM class used by doc_summarizer.
+        # For now, let's assume doc_summarizer directly uses a mocked LLM or has its own mock.
+        # If doc_summarizer relies on _make_dynamic_api_request for its LLM calls, then
+        # the config_manager and requests.get mocks above will cover it.
+        # Let's directly patch the summarize_document function for simplicity in this test.
+        # Note: The actual summarize_document now uses config_manager for LLM setup.
+        # We need to ensure that the mocked config_manager provides the correct LLM config.
 
         # Mock FirestoreManager, CloudStorageUtilsWrapper, VectorUtilsWrapper, DocumentTools for init
         mock_firestore_manager = MagicMock(spec=FirestoreManager)
         mock_cloud_storage_utils = MagicMock(spec=CloudStorageUtilsWrapper)
         mock_vector_utils = MagicMock(spec=VectorUtilsWrapper)
         
-        # Mock log_event function
-        async def mock_log_event(*args, **kwargs):
-            print(f"Mock log_event called with: {args}, {kwargs}")
+        # Mock log_event function (already patched via analytics_tracker.initialize_analytics)
 
         # Create a mock DocumentTools instance
         mock_document_tools = MagicMock(spec=DocumentTools)
@@ -1097,52 +1138,48 @@ if __name__ == "__main__":
         finance_tools_instance = FinanceTools(
             config_manager=sys.modules['config.config_manager'].config_manager,
             firestore_manager=mock_firestore_manager,
-            log_event=mock_log_event,
+            log_event=analytics_tracker.log_event, # Pass the actual (mocked) log_event
             document_tools=mock_document_tools
         )
 
         async def run_finance_tests(finance_tools_instance): # Pass the instance to the test function
-            print("\n--- Testing finance_tool functions with Analytics ---")
+            print("\n--- Testing finance_tool functions with Live API Simulation and Analytics ---")
 
             # Test 1: finance_get_stock_price (success)
             print("\n--- Test 1: finance_get_stock_price (Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
-            result_price = await finance_tools_instance.finance_get_stock_price("GOOG", user_token=test_user_pro)
+            result_price = await finance_tools_instance.finance_get_stock_price("GOOG", user_context=mock_user_pro_profile)
             print(f"Stock Price: {result_price}")
-            assert "The current price of GOOG is 175.00" in result_price
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
-            logged_data = args[0]
-            assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "finance_get_stock_price"
-            assert logged_data["success"] is True
-            print("Test 1 Passed (and analytics logged success).")
+            assert "The current price of GOOG is 175.00 USD" in result_price
+            # Analytics log for success is handled by LLMService's wrapped_tool_executor, not directly here.
+            # So, mock_analytics_tracker_db.collection.return_value.add should NOT be called by _make_dynamic_api_request for success.
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called() 
+            print("Test 1 Passed (and analytics not logged directly by _make_dynamic_api_request for success).")
 
-            # Test 2: finance_get_historical_stock_prices (API failure - no data found)
-            print("\n--- Test 2: finance_get_historical_stock_prices (API Failure) ---")
+            # Test 2: finance_get_historical_stock_prices (API failure - rate limit simulation)
+            print("\n--- Test 2: finance_get_historical_stock_prices (API Failure - Rate Limit) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            # Temporarily modify mock_requests_get_dynamic to return no data for historical prices
-            def mock_requests_get_no_historical(url, params, headers, timeout):
+            # Temporarily modify mock_requests_get_dynamic to return a rate limit error for historical prices
+            def mock_requests_get_rate_limit(url, params=None, headers=None, timeout=None):
                 if "alphavantage.co" in url and params.get("function") == "TIME_SERIES_DAILY":
                     mock_response = MagicMock()
-                    mock_response.status_code = 200
+                    mock_response.status_code = 200 # Still 200, but with error message in body
                     mock_response.json.return_value = {"Note": "Thank you for using Alpha Vantage! Our standard API call frequency is 5 calls per minute and 500 calls per day. Please visit https://www.alphavantage.co/premium/ to upgrade your membership."}
                     return mock_response
-                return mock_requests_get_dynamic.side_effect(url, params, headers, timeout) # Call original side effect for others
+                return mock_requests_get_dynamic(url, params=params, headers=headers, timeout=timeout) # Call original side effect for others
             
-            # Need to re-assign the side_effect to the MagicMock
-            requests.get.side_effect = mock_requests_get_no_historical
+            requests.get.side_effect = mock_requests_get_rate_limit
 
-            result_historical = await finance_tools_instance.finance_get_historical_stock_prices("NONEXISTENT", user_token=test_user_premium)
+            result_historical = await finance_tools_instance.finance_get_historical_stock_prices("MSFT", "2024-01-01", "2024-01-05", user_context=mock_user_premium_profile)
             print(f"Historical Prices (API Error): {result_historical}")
-            assert "No live historical prices found for NONEXISTENT." in result_historical or "API rate limit hit" in result_historical
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
+            assert "Could not retrieve live historical stock prices for MSFT." in result_historical
+            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Analytics should be logged for failure
             args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
             assert logged_data["details"]["tool_name"] == "finance_get_historical_stock_prices"
             assert logged_data["success"] is False
-            assert "API rate limit hit" in logged_data["error_message"] or "Response path 'Time Series (Daily)' not found" in logged_data["error_message"]
+            assert "API rate limit hit for alphavantage" in logged_data["error_message"]
             print("Test 2 Passed (and analytics logged failure).")
 
             # Restore original mock_requests_get_dynamic
@@ -1151,7 +1188,7 @@ if __name__ == "__main__":
             # Test 3: finance_get_company_overview (RBAC denied)
             print("\n--- Test 3: finance_get_company_overview (RBAC Denied) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_overview_rbac_denied = await finance_tools_instance.finance_get_company_overview("MSFT", user_token=test_user_free)
+            result_overview_rbac_denied = await finance_tools_instance.finance_get_company_overview("MSFT", user_context=mock_user_free_profile)
             print(f"Company Overview (Free User, RBAC Denied): {result_overview_rbac_denied}")
             assert "Error: Access to finance tools is not enabled for your current tier." in result_overview_rbac_denied
             # No analytics log expected here because RBAC check happens before _make_dynamic_api_request
@@ -1164,16 +1201,11 @@ if __name__ == "__main__":
             # Temporarily set API default for finance to exchangerate_api for this test
             sys.modules['config.config_manager'].config_manager._config_data['api_defaults']['finance'] = 'exchangerate_api'
             
-            result_forex = await finance_tools_instance.finance_get_forex_exchange_rate("USD", "EUR", user_token=test_user_pro)
+            result_forex = await finance_tools_instance.finance_get_forex_exchange_rate("USD", "EUR", user_context=mock_user_pro_profile)
             print(f"Forex Rate: {result_forex}")
             assert "The current exchange rate from USD to EUR is 1.15" in result_forex
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
-            logged_data = args[0]
-            assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "finance_get_forex_exchange_rate"
-            assert logged_data["success"] is True
-            print("Test 4 Passed (and analytics logged success).")
+            mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # Analytics should NOT be logged for success here
+            print("Test 4 Passed (and analytics not logged directly by _make_dynamic_api_request for success).")
 
             # Reset API default for finance to alphavantage for subsequent tests
             sys.modules['config.config_manager'].config_manager._config_data['api_defaults']['finance'] = 'alphavantage'
@@ -1182,7 +1214,7 @@ if __name__ == "__main__":
             # Test 5: finance_search_web (generic tool)
             print("\n--- Test 5: finance_search_web (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_web_search = await finance_tools_instance.finance_search_web("impact of inflation on economy", user_token=test_user_pro)
+            result_web_search = await finance_tools_instance.finance_search_web("impact of inflation on economy", user_context=mock_user_pro_profile)
             print(f"Web Search Result: {result_web_search[:100]}...")
             assert "Search results for impact of inflation on economy" in result_web_search
             # Analytics for generic tools like scrape_web or summarize_document
@@ -1195,7 +1227,7 @@ if __name__ == "__main__":
             # Test 6: finance_query_uploaded_docs (generic tool)
             print("\n--- Test 6: finance_query_uploaded_docs (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_doc_query = await finance_tools_instance.finance_query_uploaded_docs("my investment portfolio", user_token=test_user_pro)
+            result_doc_query = await finance_tools_instance.finance_query_uploaded_docs("my investment portfolio", user_context=mock_user_pro_profile)
             print(f"Document Query Result: {result_doc_query}")
             assert "Mocked document query results for finance." in result_doc_query
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Now logged by DocumentTools mock
@@ -1211,11 +1243,12 @@ if __name__ == "__main__":
             print("\n--- Test 7: finance_summarize_document_by_path (Generic Tool) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             # Create a dummy file for summarization test
-            dummy_file_path = Path("uploads") / test_user_pro / "finance" / "financial_report.txt"
+            test_user_pro_dir = Path("uploads") / mock_user_pro_profile.user_id
+            dummy_file_path = test_user_pro_dir / "finance" / "financial_report.txt"
             dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
             dummy_file_path.write_text("This is a dummy financial report for testing summarization. It contains details about revenue and expenses.")
 
-            result_summarize = await finance_tools_instance.finance_summarize_document_by_path(str(dummy_file_path))
+            result_summarize = await finance_tools_instance.finance_summarize_document_by_path(str(dummy_file_path), user_context=mock_user_pro_profile)
             print(f"Summarize Result: {result_summarize}")
             assert "Mocked summary of dummy_file.txt" in result_summarize # Check for mock summary from DocumentTools
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Now logged by DocumentTools mock
@@ -1237,12 +1270,10 @@ if __name__ == "__main__":
         # Restore original requests.get
         requests.get = original_requests_get
 
-        # Restore original summarize_document (if patched)
-        sys.modules['domain_tools.finance_tools.finance_tool'].summarize_document = original_summarize_document
-
         # Clean up dummy files and directories
-        test_user_dirs = [Path("uploads") / test_user_pro, BASE_VECTOR_DIR / test_user_pro]
+        test_user_dirs = [Path("uploads") / mock_user_pro_profile.user_id, BASE_VECTOR_DIR / mock_user_pro_profile.user_id]
         for d in test_user_dirs:
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
+
