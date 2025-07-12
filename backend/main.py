@@ -11,7 +11,7 @@ import asyncio
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
 from firebase_admin import exceptions as firebase_exceptions
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field # Keep BaseModel for FrontendAnalyticsEvent if not moved yet
 from datetime import datetime, timezone
 
 # Project imports
@@ -21,7 +21,17 @@ from database.firestore_manager import FirestoreManager
 import shared_tools.cloud_storage_utils as cloud_storage_utils_module
 import shared_tools.vector_utils as vector_utils_module
 from utils.date_parser import parse_date_to_yyyymmdd
-from utils.user_manager import UserManager, get_user_tier_capability
+from utils.user_manager import UserManager, get_user_tier_capability # Keep get_user_tier_capability for direct use
+
+# Import Pydantic models from backend.models
+from backend.models.user_models import UserProfile, UserUpdate # Import UserProfile and UserUpdate
+
+# Import API routers
+from backend.api.auth_api import router as auth_router
+# from backend.api.user_api import router as user_router # Assuming user_api.py will be created/updated
+# from backend.api.admin_api import router as admin_router # Assuming admin_api.py will be created/updated
+# from backend.api.tool_api import router as tool_router # Assuming tool_api.py will be created/updated
+# from backend.api.integrations_api import router as integrations_router # For user/global API management
 
 # Import domain tools
 from domain_tools.finance_tools import FinanceTools
@@ -47,26 +57,31 @@ if not logger.handlers:
 
 
 # --- Firebase Admin SDK Initialization ---
+# Ensure Firebase is initialized only once
 if not firebase_admin._apps:
     try:
         firebase_credentials_json = os.environ.get("FIREBASE_CREDENTIALS")
         if not firebase_credentials_json:
-            logger.error("FIREBASE_CREDENTIALS environment variable not set. Using dummy credentials for local testing.")
+            logger.warning("FIREBASE_CREDENTIALS environment variable not set. Using dummy credentials for local testing.")
+            # Attempt to load from config_manager if available, otherwise use hardcoded mock
             firebase_config_str = config_manager.get_secret("firebase_config")
             firebase_config = json.loads(firebase_config_str) if firebase_config_str else {}
-            cred = credentials.Certificate({
+            
+            # Ensure all required fields for credentials.Certificate are present, even if mocked
+            cred_dict = {
                 "type": "service_account",
                 "project_id": firebase_config.get("projectId", "mock-project-id"),
-                "private_key_id": "mock-key-id",
-                "private_key": "-----BEGIN PRIVATE KEY-----\nMOCK_PRIVATE_KEY\n-----END PRIVATE KEY-----\n",
-                "client_email": "mock-client@mock-project-id.iam.gserviceaccount.com",
-                "client_id": "mock-client-id",
+                "private_key_id": os.environ.get("FIREBASE_PRIVATE_KEY_ID", "mock-key-id"),
+                "private_key": os.environ.get("FIREBASE_PRIVATE_KEY", "-----BEGIN PRIVATE KEY-----\nMOCK_PRIVATE_KEY\n-----END PRIVATE KEY-----\n").replace('\\n', '\n'), # Handle potential escaped newlines
+                "client_email": os.environ.get("FIREBASE_CLIENT_EMAIL", "mock-client@mock-project-id.iam.gserviceaccount.com"),
+                "client_id": os.environ.get("FIREBASE_CLIENT_ID", "mock-client-id"),
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/mock-client%40{firebase_config.get('projectId', 'mock-project-id')}.iam.gserviceaccount.com",
+                "client_x509_cert_url": os.environ.get("FIREBASE_CLIENT_X509_CERT_URL", f"https://www.googleapis.com/robot/v1/metadata/x509/mock-client%40{firebase_config.get('projectId', 'mock-project-id')}.iam.gserviceaccount.com"),
                 "universe_domain": "googleapis.com"
-            })
+            }
+            cred = credentials.Certificate(cred_dict)
         else:
             cred = credentials.Certificate(json.loads(firebase_credentials_json))
         
@@ -91,8 +106,7 @@ logger.info("UserManager initialized.")
 
 # Initialize Analytics Tracker (after UserManager as it might use user_manager for user_id)
 app_id_for_analytics = config_manager.get("app_id", "default-backend-app-id")
-# Use a service user ID for backend-initiated logs, actual user_id for user-specific logs
-backend_service_user_id = "backend-service-user" 
+backend_service_user_id = "backend-service-user" # Use a service user ID for backend-initiated logs
 initialize_analytics(db_client, auth, app_id_for_analytics, backend_service_user_id)
 logger.info("Analytics Tracker initialized.")
 
@@ -115,55 +129,100 @@ app = FastAPI(
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # In production, restrict this to your frontend's domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # OAuth2PasswordBearer for token authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# This scheme is used by FastAPI's Depends to extract the token from the Authorization header
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # tokenUrl is for docs, actual token verification happens below
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserProfile:
     """
-    Authenticates the user using Firebase ID token and retrieves their profile.
+    Authenticates the user using Firebase ID token (JWT) provided in the Authorization header.
+    Retrieves and returns their UserProfile, ensuring the account is active.
     """
     try:
+        # Verify the Firebase ID token
         decoded_token = auth.verify_id_token(token)
         uid = decoded_token['uid']
-        user_record = await user_manager.get_user(uid) # Use user_manager to get profile and update last_login_at
-        if not user_record:
+        
+        # Retrieve user profile from Firestore using UserManager
+        user_data = await user_manager.get_user(uid) 
+
+        if not user_data:
+            # Log specific failure for user profile not found
+            await log_event(
+                'authentication_failure',
+                {'uid': uid, 'error_details': 'User profile not found in Firestore'},
+                user_id=uid,
+                success=False,
+                error_message="User profile not found.",
+                log_from_backend=True
+            )
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User profile not found.")
         
-        user_record['uid'] = uid # Ensure uid is part of the returned dict
-        return user_record
-    except Exception as e:
-        logger.error(f"Authentication failed: {e}", exc_info=True)
-        # Log authentication failure
+        # Check if account is disabled/suspended
+        if user_data.get('status') == 'disabled' or user_data.get('status') == 'suspended':
+            await log_event(
+                'authentication_failure',
+                {'uid': uid, 'error_details': f"Account status: {user_data.get('status')}"},
+                user_id=uid,
+                success=False,
+                error_message="Your account is currently disabled or suspended. Please contact support.",
+                log_from_backend=True
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account is disabled or suspended. Please contact support.")
+
+        # Update last_login_at timestamp
+        await user_manager.update_last_login(uid)
+
+        # Return the user profile as a Pydantic model for type consistency
+        # Ensure 'uid' from Firebase is mapped to 'user_id' in UserProfile
+        user_data['user_id'] = uid 
+        return UserProfile(**user_data)
+    except firebase_exceptions.AuthError as e:
+        logger.error(f"Firebase ID Token verification failed: {e}", exc_info=True)
         await log_event(
             'authentication_failure',
-            {'error_details': str(e)},
-            user_id="unauthenticated", # No user_id available yet
+            {'error_details': str(e), 'firebase_code': e.code if hasattr(e, 'code') else 'N/A'},
+            user_id="unauthenticated",
             success=False,
-            error_message=str(e),
+            error_message=f"Invalid authentication credentials: {e.code}. Please log in again.",
             log_from_backend=True
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {e}",
+            detail=f"Invalid authentication credentials: {e.code}. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during authentication: {e}", exc_info=True)
+        await log_event(
+            'authentication_failure',
+            {'error_details': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=f"An unexpected authentication error occurred: {str(e)}",
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Authentication error: {str(e)}")
 
-async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def get_current_admin_user(current_user: UserProfile = Depends(get_current_user)):
     """
     Dependency to check if the current user is an admin.
+    Returns UserProfile if admin, otherwise raises 403.
     """
-    if "admin" not in current_user.get("roles", []):
+    # Check for 'admin' role or creator bypass
+    # Assuming 'creator' role implies full admin access
+    if "admin" not in current_user.roles and "creator" not in current_user.roles:
         # Log authorization failure
         await log_event(
             'authorization_failure',
-            {'required_role': 'admin', 'user_roles': current_user.get("roles", [])},
-            user_id=current_user.get('uid', 'N/A'),
+            {'required_role': 'admin', 'user_roles': current_user.roles},
+            user_id=current_user.user_id,
             success=False,
             error_message="Admin access required",
             log_from_backend=True
@@ -175,12 +234,13 @@ async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_curr
 document_tools_instance = DocumentTools(vector_utils, firestore_manager, cloud_storage_utils, config_manager, log_event)
 
 # Initialize domain tool instances, passing necessary dependencies
+# These instances will be passed to the LLM service for tool calling
 domain_tool_instances = {
     "finance_tools": FinanceTools(
         config_manager,
         firestore_manager,
         log_event,
-        document_tools_instance
+        document_tools_instance # Pass document_tools_instance if finance tools can leverage it
     ),
     "crypto_tools": CryptoTools(
         config_manager,
@@ -228,18 +288,18 @@ domain_tool_instances = {
         document_tools_instance
     ),
     "document_tools": document_tools_instance,
+    # Add shared tools here if they are directly callable by the agent
+    "python_interpreter_tool": shared_tools.python_interpreter_tool.PythonInterpreterTool(log_event),
+    "chart_generation_tool": shared_tools.chart_generation_tool.ChartGenerationTool(log_event),
+    "doc_summarizer_tool": shared_tools.doc_summarizer.DocumentSummarizerTool(log_event),
+    "scrapper_tool": shared_tools.scrapper_tool.ScrapperTool(log_event),
+    "sentiment_analysis_tool": shared_tools.sentiment_analysis_tool.SentimentAnalysisTool(log_event),
+    "query_uploaded_docs_tool": shared_tools.query_uploaded_docs_tool.QueryUploadedDocsTool(vector_utils, firestore_manager, log_event)
 }
 
-# --- Pydantic Models for Request Bodies ---
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6)
-    username: str
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
+# --- Pydantic Models for Request Bodies (Moved to models/user_models.py or other API-specific models) ---
+# FrontendAnalyticsEvent will be defined in a separate analytics_models.py or kept here for now
 class FrontendAnalyticsEvent(BaseModel):
     event_type: str
     details: Dict[str, Any]
@@ -249,119 +309,19 @@ class FrontendAnalyticsEvent(BaseModel):
 
 # --- API Endpoints ---
 
+# Include routers from other API files
+app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+# app.include_router(user_router, prefix="/user", tags=["User Management"])
+# app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"])
+# app.include_router(tool_router, prefix="/tools", tags=["Tool Operations"])
+# app.include_router(integrations_router, prefix="/integrations", tags=["API Integrations"])
+
+
 @app.get("/")
 async def read_root():
-    return {"message": "Welcome to the Intelli-Agent Backend!"}
+    return {"message": "Welcome to the Intelli-Agent Backend! Visit /docs for API documentation."}
 
-@app.post("/register")
-async def register_user_endpoint(request_data: RegisterRequest, request: Request):
-    """Registers a new user with Firebase Authentication and creates a user profile in Firestore."""
-    logger.debug(f"Attempting registration for email: {request_data.email}, username: {request_data.username}")
-    try:
-        user = auth.create_user(email=request_data.email, password=request_data.password)
-        logger.debug(f"Firebase user created: {user.uid}")
-        # Create user profile in Firestore
-        await user_manager.create_user_profile(user.uid, request_data.email, request_data.username)
-        
-        logger.info(f"User registered and profile created: {user.uid} with email {request_data.email}")
-        await log_event(
-            'user_registered',
-            {'email': request_data.email, 'username': request_data.username},
-            user_id=user.uid,
-            success=True,
-            log_from_backend=True
-        )
-        return {"message": "User registered successfully", "uid": user.uid, "success": True} # Added success: True
-    except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase registration error for {request_data.email}: {e.code} - {e.cause}", exc_info=True)
-        error_message = e.code
-        display_message = f"Firebase error: {error_message}"
-        
-        if hasattr(e, 'message') and e.message:
-            display_message = e.message
-        elif error_message == 'auth/email-already-exists':
-            display_message = "Email already in use. Please use a different email or log in."
-        elif error_message == 'auth/weak-password':
-            display_message = "Password is too weak. Please choose a stronger password (at least 6 characters)."
-        
-        await log_event(
-            'user_registered',
-            {'email': request_data.email, 'username': request_data.username, 'error': str(e), 'firebase_code': error_message},
-            user_id=None, # User ID might not be available if creation failed
-            success=False,
-            error_message=display_message,
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=display_message) # Raise HTTPException
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during registration for email {request_data.email}: {e}", exc_info=True)
-        await log_event(
-            'user_registered',
-            {'email': request_data.email, 'username': request_data.username, 'error': str(e)},
-            user_id=None,
-            success=False,
-            error_message=str(e),
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
-
-
-@app.post("/login")
-async def login_user_endpoint(request_data: LoginRequest, request: Request):
-    """
-    Authenticates a user and generates a custom Firebase token.
-    """
-    logger.debug(f"Attempting login for email: {request_data.email}")
-    try:
-        # Authenticate with Firebase Authentication (this typically happens client-side or via a more secure method)
-        # For this example, we assume we can get the user record by email
-        user_record = auth.get_user_by_email(request_data.email)
-        
-        # Create a custom token for the authenticated user
-        custom_token = auth.create_custom_token(user_record.uid).decode('utf-8')
-        logger.info(f"Custom token generated for user: {user_record.uid}")
-
-        # Log successful login
-        await log_event(
-            'user_logged_in',
-            {'email': request_data.email},
-            user_id=user_record.uid,
-            success=True,
-            log_from_backend=True
-        )
-        return {"message": "Login successful", "custom_token": custom_token, "uid": user_record.uid, "success": True}
-    except firebase_exceptions.FirebaseError as e:
-        logger.error(f"Firebase login error for {request_data.email}: {e.code} - {e.cause}", exc_info=True)
-        error_message = e.code
-        display_message = f"Firebase error: {error_message}"
-        
-        if hasattr(e, 'message') and e.message:
-            display_message = e.message
-        elif error_message == 'auth/user-not-found':
-            display_message = "No account found with that email. Please register or check your email."
-        elif error_message == 'auth/invalid-password':
-            display_message = "Invalid password. Please try again."
-        
-        await log_event(
-            'user_logged_in',
-            {'email': request_data.email, 'error': str(e), 'firebase_code': error_message},
-            user_id=None, # User ID might not be available if login failed
-            success=False,
-            error_message=display_message,
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=display_message) # Raise HTTPException
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during login for email {request_data.email}: {e}", exc_info=True)
-        await log_event(
-            'user_logged_in',
-            {'email': request_data.email, 'error': str(e)},
-            user_id=None,
-            success=False,
-            error_message=str(e),
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
+# Removed duplicate /register and /login endpoints, now handled by auth_api.router
 
 @app.post("/log-frontend-analytics")
 async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
@@ -384,154 +344,34 @@ async def log_frontend_analytics_endpoint(event_data: FrontendAnalyticsEvent):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to log analytics event: {e}")
 
 
-@app.get("/profile/{user_id}")
-async def get_user_profile_endpoint(user_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Retrieves the profile of a specific user by ID, ensuring the requesting user is authenticated."""
-    # Ensure the authenticated user (current_user['uid']) matches the requested user_id
-    if current_user['uid'] != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to view this profile.")
-
-    logger.info(f"User {user_id} requesting profile.")
-    try:
-        user_profile = await user_manager.get_user(user_id)
-        if not user_profile:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
-        
-        # The frontend expects a flat structure, so ensure profile_data is merged
-        if 'profile_data' in user_profile:
-            user_profile.update(user_profile.pop('profile_data'))
-
-        # Add default values for fields if they are missing
-        user_profile.setdefault('username', user_profile.get('email', '').split('@')[0])
-        user_profile.setdefault('email', user_profile.get('email', ''))
-        user_profile.setdefault('phone', 'N/A')
-        user_profile.setdefault('address', 'N/A')
-        user_profile.setdefault('bio', 'No bio provided.')
-        user_profile.setdefault('tier', 'free') # Default tier if not set
-
-        return user_profile # Return the profile directly
-    except HTTPException:
-        raise # Re-raise HTTPExceptions
-    except Exception as e:
-        logger.error(f"Error retrieving profile for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-class UserProfileUpdate(BaseModel):
-    username: Optional[str] = None
-    email: Optional[EmailStr] = None # Allow email update if needed, but Firebase handles primary email
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    bio: Optional[str] = None
-    tier: Optional[str] = None # Tier is usually admin-managed, but included for completeness
-
-@app.put("/profile/update/{user_id}")
-async def update_user_profile_endpoint(
-    user_id: str,
-    update_data: UserProfileUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_user) # Re-added authentication
-):
-    """Updates the profile of the current authenticated user."""
-    # Ensure the authenticated user (current_user['uid']) matches the target user_id
-    if current_user['uid'] != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to update this profile.")
-
-    logger.info(f"User {user_id} updating profile.")
-    # Convert Pydantic model to dictionary, excluding unset fields
-    updates_dict = update_data.model_dump(exclude_unset=True)
-    
-    if not updates_dict:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields provided for update.")
-
-    try:
-        # If 'email' is being updated, handle it via Firebase Auth first
-        if 'email' in updates_dict and updates_dict['email'] != (await user_manager.get_user(user_id)).get('email'):
-            try:
-                # This part would typically require re-authentication or a more secure flow
-                # For now, it's a direct Firebase Admin SDK call
-                auth.update_user(user_id, email=updates_dict['email'])
-                logger.info(f"Firebase Auth email updated for {user_id}")
-            except firebase_exceptions.FirebaseError as e:
-                logger.error(f"Firebase Auth email update failed for {user_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to update email in Firebase Auth: {e.code}")
-        
-        # Separate profile_data updates from top-level fields
-        profile_data_updates = {}
-        top_level_updates = {}
-
-        # Fields that should go into 'profile_data' sub-document
-        for field in ['phone', 'address', 'bio']:
-            if field in updates_dict:
-                profile_data_updates[field] = updates_dict.pop(field)
-        
-        # Fields that can be updated at the top level
-        for field in ['username', 'email', 'tier']: # 'email' is handled above, but included for clarity
-            if field in updates_dict:
-                top_level_updates[field] = updates_dict.pop(field)
-
-        # Update top-level fields
-        if top_level_updates:
-            result = await user_manager.update_user_profile(user_id, top_level_updates)
-            if not result["success"]:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
-
-        # Update profile_data sub-document if there are changes
-        if profile_data_updates:
-            # Firestore doesn't allow direct update of nested maps with dot notation for creation
-            # We need to get the current profile_data, update it, and then set the whole map
-            current_profile = await user_manager.get_user(user_id)
-            existing_profile_data = current_profile.get('profile_data', {})
-            existing_profile_data.update(profile_data_updates)
-            
-            result = await user_manager.update_user_profile(user_id, {"profile_data": existing_profile_data})
-            if not result["success"]:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
-
-        logger.info(f"User {user_id} profile updated successfully.")
-        await log_event(
-            'user_profile_updated',
-            {'fields': list(updates_dict.keys()) + list(profile_data_updates.keys())},
-            user_id=user_id,
-            success=True,
-            log_from_backend=True
-        )
-        return {"message": "Profile updated successfully", "success": True}
-    except HTTPException:
-        raise # Re-raise HTTPExceptions
-    except Exception as e:
-        logger.error(f"Failed to update profile for user {user_id}: {e}", exc_info=True)
-        await log_event(
-            'user_profile_updated',
-            {'error': str(e), 'fields': list(updates_dict.keys())},
-            user_id=user_id,
-            success=False,
-            error_message=str(e),
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+# Moved /profile/{user_id} and /profile/update/{user_id} to user_api.py (will be created/updated next)
+# The Pydantic model UserProfileUpdate is now imported from user_models.py
 
 @app.post("/upload-document")
 async def upload_document_endpoint(
     file_name: str,
     file_content_base64: str, # Base64 encoded content of the file
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: UserProfile = Depends(get_current_user) # Use UserProfile type hint
 ):
     """
     Uploads a document for the current user, processes it, and stores its vectors.
+    Checks user tier capability for document upload.
     """
-    user_id = current_user['uid']
+    user_id = current_user.user_id # Access user_id from UserProfile
     logger.info(f"User {user_id} attempting to upload document: {file_name}")
 
     # Use the get_user_tier_capability function from user_manager
-    if not get_user_tier_capability(user_id, 'document_upload_enabled', False):
+    if not get_user_tier_capability(current_user.tier, 'document_upload_enabled', False):
         await log_event(
             'document_upload_attempt',
-            {'file_name': file_name, 'reason': 'Capability not enabled'},
+            {'file_name': file_name, 'reason': 'Capability not enabled', 'tier': current_user.tier},
             user_id=user_id,
             success=False,
             error_message="Document upload is not enabled for your current tier.",
             log_from_backend=True
         )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Document upload is not enabled for your current tier.")
+        # Return 403 with a specific detail for frontend to redirect to upgrade page
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"message": "Document upload is not enabled for your current tier.", "code": "UPGRADE_REQUIRED"})
 
     try:
         result = await vector_utils_module.process_uploaded_document(
@@ -562,6 +402,8 @@ async def upload_document_endpoint(
                 log_from_backend=True
             )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
+    except HTTPException:
+        raise # Re-raise HTTPExceptions
     except Exception as e:
         logger.error(f"Error uploading document for user {user_id}: {e}", exc_info=True)
         await log_event(
@@ -578,47 +420,102 @@ async def upload_document_endpoint(
 @app.post("/agent/chat")
 async def chat_with_agent_endpoint(
     message: str,
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: UserProfile = Depends(get_current_user) # Use UserProfile type hint
 ):
     """
     Allows authenticated users to chat with the Intelli-Agent, leveraging available tools.
+    This endpoint will eventually integrate LangGraph and dynamic tool selection.
     """
-    user_id = current_user['uid']
-    user_tier = current_user.get('tier', 'free')
-    user_roles = current_user.get('roles', [])
+    user_id = current_user.user_id # Access user_id from UserProfile
+    user_tier = current_user.tier # Access user_tier from UserProfile
+    user_roles = current_user.roles # Access user_roles from UserProfile
     logger.info(f"Chat request from user {user_id} (Tier: {user_tier}, Roles: {user_roles}): {message}")
 
+    # Log the chat request
     await log_event(
         'chat_request',
-        {'message': message},
+        {'message': message, 'tier': user_tier},
         user_id=user_id,
         success=True,
         log_from_backend=True
     )
 
-    response_message = f"Hello {current_user.get('username', 'user')}! I received your message: '{message}'. " \
+    response_message = f"Hello {current_user.username}! I received your message: '{message}'. " \
                        "I'm currently under development, but I can tell you about some tools I have."
 
+    # Placeholder for future LangGraph integration and dynamic tool calling
+    # For now, keep simple conditional logic for demonstration
     if "stock price" in message.lower():
         try:
-            # Pass user_id as user_token to the tool for RBAC checks and logging
-            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_token=user_id)
+            # Pass UserProfile object to the tool if it needs tier/roles for internal checks
+            stock_price = await domain_tool_instances["finance_tools"].finance_get_stock_price(symbol="GOOG", user_context=current_user)
             response_message += f"\n\n(Example Tool Call: Google Stock Price: {stock_price})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG'},
+                user_id=user_id,
+                success=True,
+                log_from_backend=True
+            )
+        except HTTPException as e:
+            response_message += f"\n\n(Tool Call Error: {e.detail['message'] if isinstance(e.detail, dict) else e.detail})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG', 'error': str(e.detail)},
+                user_id=user_id,
+                success=False,
+                error_message=str(e.detail),
+                log_from_backend=True
+            )
         except Exception as e:
             response_message += f"\n\n(Example Tool Call Error: Could not get stock price: {e})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'finance_get_stock_price', 'symbol': 'GOOG', 'error': str(e)},
+                user_id=user_id,
+                success=False,
+                error_message=str(e),
+                log_from_backend=True
+            )
     
     elif "my documents" in message.lower() or "uploaded files" in message.lower():
         try:
             document_tools = domain_tool_instances["document_tools"]
-            # Pass user_id as user_token to the tool for RBAC checks and logging
+            # Pass UserProfile object to the tool for RBAC checks and logging
             doc_query_result = await document_tools.document_query_uploaded_docs(
                 query_text="summarize key points from my latest report",
-                user_token=user_id
+                user_context=current_user
             )
             response_message += f"\n\n(Example Tool Call: Document Query Result: {doc_query_result})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'document_query_uploaded_docs'},
+                user_id=user_id,
+                success=True,
+                log_from_backend=True
+            )
+        except HTTPException as e:
+            response_message += f"\n\n(Tool Call Error: {e.detail['message'] if isinstance(e.detail, dict) else e.detail})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'document_query_uploaded_docs', 'error': str(e.detail)},
+                user_id=user_id,
+                success=False,
+                error_message=str(e.detail),
+                log_from_backend=True
+            )
         except Exception as e:
             response_message += f"\n\n(Example Tool Call Error: Could not query documents: {e})"
+            await log_event(
+                'tool_usage_example',
+                {'tool': 'document_query_uploaded_docs', 'error': str(e)},
+                user_id=user_id,
+                success=False,
+                error_message=str(e),
+                log_from_backend=True
+            )
 
+    # Log the chat response
     await log_event(
         'chat_response',
         {'response': response_message},
@@ -629,82 +526,6 @@ async def chat_with_agent_endpoint(
     
     return {"response": response_message}
 
-class UserRoleUpdate(BaseModel):
-    new_tier: Optional[str] = None
-    roles: Optional[List[str]] = None
+# Moved /admin/users/{user_id}/roles-and-tier to admin_api.py (will be created/updated next)
+# Moved /admin/analytics/events to admin_api.py (will be created/updated next)
 
-@app.put("/admin/users/{user_id}/roles-and-tier")
-async def update_user_roles_and_tier_endpoint(
-    user_id: str, # This is the target user_id to update
-    update_data: UserRoleUpdate,
-    current_user: Dict[str, Any] = Depends(get_current_admin_user) # This is the admin user
-):
-    """Updates a user's tier and roles (admin only)."""
-    admin_uid = current_user['uid']
-    logger.info(f"Admin user {admin_uid} updating roles and tier for user {user_id}.")
-    
-    result = await user_manager.update_user_roles_and_tier(user_id, update_data.new_tier, update_data.roles)
-    
-    if result["success"]:
-        # The user_manager.update_user_roles_and_tier already logs an event.
-        # This log is for the admin action itself.
-        await log_event(
-            'admin_action_update_user_roles_tier',
-            {'target_user_uid': user_id, 'new_tier': update_data.new_tier, 'new_roles': update_data.roles},
-            user_id=admin_uid,
-            success=True,
-            log_from_backend=True
-        )
-        return {"success": True, "message": "User roles and tier updated successfully."}
-    else:
-        await log_event(
-            'admin_action_update_user_roles_tier',
-            {'target_user_uid': user_id, 'new_tier': update_data.new_tier, 'new_roles': update_data.roles, 'reason': result["message"]},
-            user_id=admin_uid,
-            success=False,
-            error_message=result["message"],
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
-
-@app.get("/admin/analytics/events")
-async def get_analytics_events_endpoint(
-    event_type: Optional[str] = None,
-    user_id: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: Dict[str, Any] = Depends(get_current_admin_user)
-):
-    """Retrieves analytics events with optional filters (admin only)."""
-    admin_uid = current_user['uid']
-    logger.info(f"Admin user {admin_uid} requesting analytics events.")
-    
-    parsed_start_date = parse_date_to_yyyymmdd(start_date) if start_date else None
-    parsed_end_date = parse_date_to_yyyymmdd(end_date) if end_date else None
-
-    try:
-        events = await firestore_manager.get_analytics_events(
-            event_type=event_type,
-            user_id=user_id, # This is the filter for events, not the admin's user_id
-            start_date=parsed_start_date,
-            end_date=parsed_end_date
-        )
-        await log_event(
-            'admin_action_get_analytics',
-            {'filters': {'event_type': event_type, 'target_user_id': user_id, 'start_date': start_date, 'end_date': end_date}},
-            user_id=admin_uid,
-            success=True,
-            log_from_backend=True
-        )
-        return {"success": True, "events": events}
-    except Exception as e:
-        logger.error(f"Error retrieving analytics events for admin {admin_uid}: {e}", exc_info=True)
-        await log_event(
-            'admin_action_get_analytics',
-            {'filters': {'event_type': event_type, 'target_user_id': user_id, 'start_date': start_date, 'end_date': end_date}, 'reason': str(e)},
-            user_id=admin_uid,
-            success=False,
-            error_message=str(e),
-            log_from_backend=True
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
