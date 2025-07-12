@@ -8,6 +8,23 @@ import asyncio
 # Import analytics_tracker for logging events
 from utils.analytics_tracker import log_event
 
+# Firebase imports for get_user_tier_capability (only for actual runtime, mocked in tests)
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore, auth as firebase_auth
+    from database.firestore_manager import FirestoreManager
+    from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper
+    from config.config_manager import config_manager
+except ImportError:
+    logger.warning("Firebase Admin SDK or related modules not found. `get_user_tier_capability` will use mock data for CLI tests.")
+    firebase_admin = None
+    firestore = None
+    firebase_auth = None
+    FirestoreManager = None
+    CloudStorageUtilsWrapper = None
+    config_manager = None
+
+
 logger = logging.getLogger(__name__)
 
 # --- RBAC Capabilities Configuration (Centralized) ---
@@ -25,19 +42,46 @@ _RBAC_CAPABILITIES_CONFIG = {
         'weather_tool_access': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
         'travel_tool_access': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
         'sports_tool_access': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        
+        # New/Updated Capabilities for Data and Charting
+        'historical_data_access': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        'data_analysis_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        'chart_generation_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        'chart_export_enabled': {'default': False, 'roles': {'premium': True, 'admin': True}}, # For exporting charts and document query results
+
         'document_upload_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
         'document_query_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        'document_query_max_results_k': {'default': 3, 'tiers': {'pro': 5, 'premium': 10, 'admin': 20}}, # Added for query_uploaded_docs
+        
         'web_search_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
         'web_search_max_results': {'default': 2, 'tiers': {'pro': 7, 'premium': 15}},
         'web_search_limit_chars': {'default': 500, 'tiers': {'pro': 3000, 'premium': 10000}},
-        'data_analysis_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        
         'summarization_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
-        'chart_generation_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
         'sentiment_analysis_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
+        
         'analytics_access': {'default': False, 'roles': {'admin': True}},
         'analytics_charts_enabled': {'default': False, 'roles': {'admin': True}},
         'analytics_user_specific_access': {'default': False, 'roles': {'admin': True}},
+
+        # LLM specific capabilities (for dynamic model loading)
+        'llm_temperature_control_enabled': {'default': False, 'roles': {'premium': True, 'admin': True}},
+        'llm_max_temperature': {'default': 1.0, 'tiers': {'premium': 0.8, 'admin': 1.0}},
+        'llm_model_selection_enabled': {'default': False, 'roles': {'premium': True, 'admin': True}},
+        'llm_default_provider': {'default': 'gemini', 'tiers': {'pro': 'gemini', 'premium': 'openai', 'admin': 'gemini'}},
+        'llm_default_model_name': {'default': 'gemini-1.5-flash', 'tiers': {'pro': 'gemini-1.5-flash', 'premium': 'gpt-4o', 'admin': 'gemini-1.5-flash'}},
+        'llm_default_temperature': {'default': 0.7, 'tiers': {'pro': 0.5, 'premium': 0.3, 'admin': 0.7}},
     }
+}
+
+# Tier Hierarchy (used for comparing tiers, e.g., if pro is "higher" than free)
+_TIER_HIERARCHY = {
+    "free": 0,
+    "user": 1, # Assuming 'user' is a base tier, can be merged with 'free' or be distinct
+    "basic": 2,
+    "pro": 3,
+    "premium": 4,
+    "admin": 99 # Admin is highest
 }
 
 class UserManager:
@@ -174,42 +218,46 @@ class UserManager:
         return result
 
 # --- Re-implemented get_user_tier_capability to fetch from Firestore ---
-async def get_user_tier_capability(user_id: str, capability_key: str, default_value: Any = None) -> Any:
+async def get_user_tier_capability(user_id: str, capability_key: str, default_value: Any = None, user_tier: Optional[str] = None, user_roles: Optional[List[str]] = None) -> Any:
     """
-    Determines user capabilities based on their actual tier and roles fetched from Firestore.
-    This function requires an initialized UserManager and FirestoreManager.
+    Determines user capabilities based on their actual tier and roles.
+    This function will attempt to fetch user profile from Firestore if user_tier/user_roles are not provided.
     """
-    # Import UserManager and FirestoreManager locally to avoid circular dependencies
-    # if this function is called very early in the app startup before full initialization.
-    # In a real app, you might pass these as arguments or use a global singleton pattern.
-    from database.firestore_manager import FirestoreManager
-    from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper
-    from config.config_manager import config_manager
+    # Use the global instances if they are already initialized (e.g., in a running FastAPI app)
+    # This avoids re-initializing Firebase Admin SDK in every call, which is problematic.
+    _firestore_manager = None
+    _cloud_storage_utils = None
+    _config_manager = None
 
-    # Re-instantiate UserManager and FirestoreManager if they aren't globally available
-    # (This is a simplified approach for this environment. In a larger app, you'd
-    # likely pass the already initialized instances or use FastAPI's dependency injection
-    # for this function if it were an endpoint dependency itself.)
-    try:
-        # Attempt to get the globally initialized instances if available
-        global_db_client = firestore.client(firebase_admin.get_app())
-        global_firestore_manager = FirestoreManager(global_db_client)
-        global_cloud_storage_utils = CloudStorageUtilsWrapper(config_manager)
-        manager = UserManager(global_firestore_manager, global_cloud_storage_utils)
-    except Exception:
-        # Fallback for testing or if Firebase app isn't initialized yet
-        logger.warning("Firebase app not fully initialized for get_user_tier_capability. Using mock data.")
-        # Fallback to the old mock logic if Firebase/Firestore isn't ready
-        return _RBAC_CAPABILITIES_CONFIG['capabilities'].get(capability_key, {}).get('default', default_value)
+    if firebase_admin and firebase_admin._apps and firestore and FirestoreManager and CloudStorageUtilsWrapper and config_manager:
+        try:
+            # Attempt to get the globally initialized instances
+            _firestore_manager = FirestoreManager(firestore.client(firebase_admin.get_app()))
+            _config_manager = config_manager # Use the globally instantiated config_manager
+            _cloud_storage_utils = CloudStorageUtilsWrapper(_config_manager) # Pass config_manager to it
+            manager = UserManager(_firestore_manager, _cloud_storage_utils)
+        except Exception as e:
+            logger.warning(f"Could not get global Firebase/Manager instances for get_user_tier_capability: {e}. Falling back to mock/default.")
+            manager = None # Ensure manager is None if initialization fails
+    else:
+        manager = None # No Firebase/Manager instances available
 
-
-    user_profile = await manager.get_user(user_id)
-    if not user_profile:
-        logger.warning(f"User profile not found for UID {user_id}. Returning default capability for {capability_key}.")
-        return _RBAC_CAPABILITIES_CONFIG['capabilities'].get(capability_key, {}).get('default', default_value)
-
-    user_tier = user_profile.get('tier', 'free')
-    user_roles = user_profile.get('roles', [])
+    # If user_tier/user_roles are provided, use them directly (e.g., from an authenticated UserProfile object)
+    if user_tier is None or user_roles is None:
+        if manager:
+            user_profile = await manager.get_user(user_id)
+            if not user_profile:
+                logger.warning(f"User profile not found for UID {user_id}. Returning default capability for {capability_key}.")
+                # Fallback to config default if user not found in Firestore
+                return _RBAC_CAPABILITIES_CONFIG['capabilities'].get(capability_key, {}).get('default', default_value)
+            user_tier = user_profile.get('tier', 'free')
+            user_roles = user_profile.get('roles', [])
+        else:
+            # Fallback for CLI tests or uninitialized Firebase: use mock data or default
+            logger.warning(f"UserManager not initialized. Using hardcoded mock/default for capability for {capability_key}.")
+            # This branch is primarily for local CLI tests where Firebase isn't running.
+            # In a deployed FastAPI app, manager should always be available.
+            return _RBAC_CAPABILITIES_CONFIG['capabilities'].get(capability_key, {}).get('default', default_value)
 
     capability_config = _RBAC_CAPABILITIES_CONFIG.get('capabilities', {}).get(capability_key)
     if not capability_config:
@@ -219,6 +267,7 @@ async def get_user_tier_capability(user_id: str, capability_key: str, default_va
     if "admin" in user_roles:
         if isinstance(capability_config.get('default'), bool): return True
         if isinstance(capability_config.get('default'), (int, float)): return float('inf')
+        return default_value # For other types, return default (e.g., string values)
 
     # Check roles first
     for role in user_roles:
@@ -239,14 +288,13 @@ if __name__ == "__main__":
     import sys
     import os
     import json
-    import firebase_admin # Import firebase_admin for the test setup
-    from firebase_admin import credentials, firestore, auth as firebase_auth
+    # firebase_admin and its submodules are imported conditionally at the top
 
     logging.basicConfig(level=logging.DEBUG)
 
     # Mock Firebase Admin SDK initialization for CLI test
     # This part is crucial for making the UserManager testable outside FastAPI
-    if not firebase_admin._apps:
+    if not (firebase_admin and firebase_admin._apps and "test-app-um" in firebase_admin._apps):
         # Create a dummy credential object for local testing
         dummy_cred_path = "/tmp/dummy_firebase_admin_cert_um.json"
         dummy_cred_content = {
@@ -267,6 +315,9 @@ if __name__ == "__main__":
         os.environ["FIREBASE_ADMIN_CERT"] = json.dumps(dummy_cred_content) # Set env var for initialization
 
         try:
+            # Ensure firebase_admin and credentials are imported for this block
+            import firebase_admin
+            from firebase_admin import credentials, firestore, auth as firebase_auth
             firebase_admin.initialize_app(credentials.Certificate(dummy_cred_path), name="test-app-um")
             logger.info("Firebase Admin SDK initialized for UserManager CLI test.")
         except ValueError as e:
@@ -280,6 +331,7 @@ if __name__ == "__main__":
         # Mock FirestoreManager and CloudStorageUtilsWrapper for UserManager tests
         mock_firestore_manager = MagicMock()
         mock_cloud_storage_utils = MagicMock()
+        mock_config_manager = MagicMock() # Mock config_manager for CloudStorageUtilsWrapper init
 
         # Configure mock_firestore_manager methods to be async mocks
         mock_firestore_manager.set_doc = AsyncMock(return_value=True)
@@ -380,9 +432,34 @@ if __name__ == "__main__":
             }
             
             # Patch the UserManager and FirestoreManager instances used inside get_user_tier_capability
-            with patch('utils.user_manager.UserManager', autospec=True) as MockUserManager:
-                MockUserManager.return_value.get_user = AsyncMock(return_value=mock_firestore_manager.get_doc.return_value)
+            # Also patch the global config_manager and CloudStorageUtilsWrapper for this specific test
+            with patch('utils.user_manager.UserManager', autospec=True) as MockUserManagerClass, \
+                 patch('utils.user_manager.FirestoreManager', autospec=True) as MockFirestoreManagerClass, \
+                 patch('utils.user_manager.CloudStorageUtilsWrapper', autospec=True) as MockCloudStorageUtilsWrapperClass, \
+                 patch('utils.user_manager.config_manager', autospec=True) as MockConfigManagerGlobal:
                 
+                # Configure the mocks
+                mock_firestore_instance = MockFirestoreManagerClass.return_value
+                mock_cloud_storage_instance = MockCloudStorageUtilsWrapperClass.return_value
+                mock_user_manager_instance = MockUserManagerClass.return_value
+
+                mock_firestore_instance.get_doc.return_value = {
+                    "uid": "user_with_pro_tier",
+                    "email": "pro@example.com",
+                    "username": "ProUser",
+                    "tier": "pro",
+                    "roles": ["user"],
+                    "created_at": datetime.now(timezone.utc),
+                    "last_login_at": datetime.now(timezone.utc),
+                    "profile_data": {}
+                }
+                mock_firestore_instance.update_doc = AsyncMock() # Mock update_doc if called by get_user
+                mock_user_manager_instance.get_user = AsyncMock(return_value=mock_firestore_instance.get_doc.return_value)
+                
+                # Mock the global config_manager's get method as it's used by CloudStorageUtilsWrapper
+                MockConfigManagerGlobal.get.return_value = "mock-bucket" # For cloud_storage_bucket_name
+                MockConfigManagerGlobal.get_secret.return_value = "mock-key" # For any secrets it might try to get
+
                 can_upload = await get_user_tier_capability("user_with_pro_tier", "document_upload_enabled")
                 print(f"User with pro tier can upload documents: {can_upload}")
                 assert can_upload is True
@@ -391,8 +468,13 @@ if __name__ == "__main__":
                 print(f"User with pro tier max web search results: {max_results}")
                 assert max_results == 7
 
+                # Test new historical_data_access capability
+                can_access_historical = await get_user_tier_capability("user_with_pro_tier", "historical_data_access")
+                print(f"User with pro tier can access historical data: {can_access_historical}")
+                assert can_access_historical is True
+
                 # Test admin capabilities
-                mock_firestore_manager.get_doc.return_value = {
+                mock_firestore_instance.get_doc.return_value = {
                     "uid": "admin_user_id",
                     "email": "admin@example.com",
                     "username": "Admin",
@@ -402,7 +484,7 @@ if __name__ == "__main__":
                     "last_login_at": datetime.now(timezone.utc),
                     "profile_data": {}
                 }
-                MockUserManager.return_value.get_user = AsyncMock(return_value=mock_firestore_manager.get_doc.return_value)
+                mock_user_manager_instance.get_user = AsyncMock(return_value=mock_firestore_instance.get_doc.return_value)
 
                 can_analytics = await get_user_tier_capability("admin_user_id", "analytics_access")
                 print(f"Admin can access analytics: {can_analytics}")
@@ -412,10 +494,16 @@ if __name__ == "__main__":
                 print(f"Admin max web search results: {admin_max_results}")
                 assert admin_max_results == float('inf')
 
+                admin_can_control_temp = await get_user_tier_capability("admin_user_id", "llm_temperature_control_enabled")
+                print(f"Admin can control LLM temperature: {admin_can_control_temp}")
+                assert admin_can_control_temp is True
+
+                admin_llm_model = await get_user_tier_capability("admin_user_id", "llm_default_model_name")
+                print(f"Admin default LLM model: {admin_llm_model}")
+                assert admin_llm_model == 'gemini-1.5-flash'
+
 
             print("\nAll UserManager tests completed.")
 
     if __name__ == "__main__":
         asyncio.run(run_tests())
-
-
