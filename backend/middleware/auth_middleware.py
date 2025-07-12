@@ -15,6 +15,7 @@ from backend.models.user_models import UserProfile
 from utils.analytics_tracker import log_event
 from database.firestore_manager import FirestoreManager # For type hinting in Depends
 from utils.user_manager import UserManager # For type hinting in Depends
+from backend.services.api_usage_service import ApiUsageService # For type hinting in Depends (will be created next)
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -22,12 +23,8 @@ logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed logging during develo
 
 
 # Dependency to provide FirestoreManager instance
-# This function will be called by FastAPI's dependency injection system
-# and main.py will need to provide the actual instance.
 async def get_firestore_manager_dependency() -> FirestoreManager:
     """Dependency to get the FirestoreManager instance."""
-    # This will be overridden by main.py's dependency override.
-    # It's here to provide a type hint and a placeholder.
     raise NotImplementedError("FirestoreManager dependency must be provided by main.py")
 
 # Dependency to provide UserManager instance
@@ -35,8 +32,14 @@ async def get_user_manager_dependency(
     firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency)
 ) -> UserManager:
     """Dependency to get the UserManager instance."""
-    # This will be overridden by main.py's dependency override.
     raise NotImplementedError("UserManager dependency must be provided by main.py")
+
+# NEW: Dependency to provide ApiUsageService instance
+async def get_api_usage_service_dependency(
+    firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency)
+) -> ApiUsageService:
+    """Dependency to get the ApiUsageService instance."""
+    raise NotImplementedError("ApiUsageService dependency must be provided by main.py")
 
 
 # The main authentication dependency
@@ -74,7 +77,6 @@ async def get_current_user(
         user_data = await user_manager.get_user(uid) 
 
         if not user_data:
-            # Log specific failure for user profile not found
             await log_event(
                 'authentication_failure',
                 {'uid': uid, 'error_details': 'User profile not found in Firestore'},
@@ -86,7 +88,6 @@ async def get_current_user(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User profile not found.")
         
         # Check if account is disabled/suspended
-        # The 'status' field is now part of the UserProfile model
         if user_data.get('status') == 'disabled' or user_data.get('status') == 'suspended':
             await log_event(
                 'authentication_failure',
@@ -109,7 +110,6 @@ async def get_current_user(
             success=True,
             log_from_backend=True
         )
-        # Ensure 'user_id' field is present for UserProfile Pydantic model
         user_data['user_id'] = uid 
         return UserProfile(**user_data)
     except firebase_exceptions.AuthError as e:
@@ -145,9 +145,7 @@ async def get_current_admin_user(current_user: UserProfile = Depends(get_current
     FastAPI dependency to get the currently authenticated user with 'admin' or 'creator' role.
     Returns UserProfile if authorized, otherwise raises 403.
     """
-    # Check for 'admin' role or 'creator' role (creator implies full admin access)
     if "admin" not in current_user.roles and "creator" not in current_user.roles:
-        # Log authorization failure
         await log_event(
             'authorization_failure',
             {'required_role': 'admin_or_creator', 'user_roles': current_user.roles},
@@ -165,4 +163,4 @@ async def get_current_admin_user(current_user: UserProfile = Depends(get_current
 #         await log_event(...)
 #         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized: Customer Care access required")
 #     return current_user
-  
+
