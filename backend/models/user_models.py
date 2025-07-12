@@ -88,3 +88,4 @@ class ChangePassword(BaseModel):
     # This backend endpoint just needs the new password.
     new_password: str = Field(..., min_length=8, description="User's new password.")
 
+ 
