@@ -15,13 +15,11 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     """
     Pydantic model for user login credentials.
-    For Firebase ID Token verification, only `id_token` is strictly needed by the backend.
-    Email/password are typically handled client-side by Firebase SDK.
+    For Firebase ID Token verification, `id_token` is the primary field expected by the backend.
+    Email and password are typically handled client-side by Firebase SDK, but included as Optional
+    for potential alternative/legacy auth flows if needed.
     """
-    # id_token is the Firebase ID Token obtained from the client-side SDK after successful authentication
     id_token: str = Field(..., description="Firebase ID Token obtained from client-side authentication.")
-    # email and password are made Optional as they are typically not sent directly to this endpoint
-    # if using id_token verification, but can be included for other auth flows if needed.
     email: Optional[EmailStr] = Field(None, description="User's email address (optional, for certain auth flows).")
     password: Optional[str] = Field(None, description="User's password (optional, for certain auth flows).")
 
@@ -29,12 +27,13 @@ class UserLogin(BaseModel):
 class UserProfile(BaseModel):
     """
     Pydantic model for a user's profile information (read-only or for display).
-    Includes fields for status and last login.
+    Includes fields for status and last login, and supports the new tier structure.
     """
     user_id: str = Field(..., description="Unique identifier for the user.")
     username: str = Field(..., description="User's display name.")
     email: EmailStr = Field(..., description="User's email address.")
-    tier: str = Field("free", description="User's subscription tier (e.g., 'free', 'basic', 'pro', 'premium', 'elite').")
+    # Updated description to reflect all defined tiers
+    tier: str = Field("free", description="User's subscription tier (e.g., 'free', 'basic', 'pro', 'elite', 'premium').")
     roles: List[str] = Field(["user"], description="List of roles assigned to the user (e.g., 'user', 'admin', 'customer_care').")
     status: str = Field("active", description="Account status (e.g., 'active', 'disabled', 'suspended').")
     created_at: Optional[datetime] = Field(None, description="Timestamp when the user account was created.")
@@ -57,6 +56,7 @@ class UserUpdate(BaseModel):
     """
     Pydantic model for updating an existing user's profile.
     All fields are optional, allowing partial updates.
+    Includes status for admin management.
     """
     username: Optional[str] = Field(None, min_length=3, max_length=50, description="New username for the user.")
     email: Optional[EmailStr] = Field(None, description="New email address for the user.")
