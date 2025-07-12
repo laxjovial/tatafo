@@ -5,44 +5,33 @@ from typing import Annotated, Dict, Any
 import logging
 
 # Import Pydantic models from our backend.models
-# Assuming these models will be defined in user_models.py
-from backend.models.user_models import UserCreate, UserLogin, PasswordResetRequest, PasswordResetConfirm, ChangePassword, UserProfileUpdate
+from backend.models.user_models import UserCreate, UserLogin, PasswordResetRequest, PasswordResetConfirm, ChangePassword
 
 # Import middleware for protected routes (e.g., change password)
-from backend.middleware.auth_middleware import get_current_active_user # This will be updated to get_current_user
-from backend.middleware.auth_middleware import get_current_user # Assuming this is the dependency for authenticated user
-
-# Import FirestoreManager
-from database.firestore_manager import firestore_manager
+# Now importing the dependency functions for UserManager and FirestoreManager
+from backend.middleware.auth_middleware import get_current_user, get_firestore_manager_dependency, get_user_manager_dependency
 
 # Import Firebase Auth (for creating users and setting custom claims)
 from firebase_admin import auth
-from firebase_admin import exceptions as firebase_exceptions # Import Firebase exceptions
+from firebase_admin import exceptions as firebase_exceptions
 
 # Project imports for analytics and config
 from utils.analytics_tracker import log_event
 from config.config_manager import config_manager
-from utils.user_manager import UserManager # We'll need UserManager for user profile creation/updates
+from utils.user_manager import UserManager # For type hinting in Depends
+from database.firestore_manager import FirestoreManager # For type hinting in Depends
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed logging during development
 
-# Initialize UserManager (assuming db_client and cloud_storage_utils are available from main or passed)
-# For now, we'll instantiate it here, but in a larger app, it might be passed via dependency injection
-# or initialized once globally. For this file's scope, we'll make a direct instance.
-# NOTE: In a production setup, consider passing these dependencies more cleanly (e.g., via FastAPI's Depends)
-# or ensuring global availability after main.py init.
-# For now, we'll assume firestore_manager and config_manager are directly importable/available.
-# We'll refine this when we update main.py and potentially introduce a global app state.
-_db_client = firestore_manager.db_client # Access the db_client from the already initialized firestore_manager
-_cloud_storage_utils = None # Placeholder, will be properly initialized in main.py and passed if needed here
-_user_manager = UserManager(firestore_manager, _cloud_storage_utils) # Re-instantiate for this module's scope
-
 router = APIRouter()
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register_user(user_data: UserCreate):
+async def register_user(
+    user_data: UserCreate,
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
+):
     """
     Registers a new user in Firebase Authentication and stores profile in Firestore.
     Assigns default tier and roles (from config_manager) and logs the event.
@@ -61,8 +50,8 @@ async def register_user(user_data: UserCreate):
         logger.debug(f"Firebase user created with UID: {user_id}, assigned tier: {default_tier}, roles: {default_roles}")
         
         # 3. Store user profile in Firestore
-        # Use _user_manager to create the profile, which handles the Firestore interaction
-        await _user_manager.create_user_profile(
+        # Use injected user_manager to create the profile
+        await user_manager.create_user_profile(
             user_id=user_id,
             email=user_data.email,
             username=user_data.username,
@@ -113,7 +102,10 @@ async def register_user(user_data: UserCreate):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
 @router.post("/login")
-async def login_user(credentials: UserLogin):
+async def login_user(
+    credentials: UserLogin,
+    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
+):
     """
     Authenticates a user by verifying a Firebase ID Token provided by the client.
     This is the secure way to handle login when using Firebase Auth client-side.
@@ -134,7 +126,7 @@ async def login_user(credentials: UserLogin):
         uid = decoded_token['uid']
         
         # Optionally, check if the user is active/not disabled
-        user_data = await firestore_manager.get_user_data(uid)
+        user_data = await user_manager.get_user(uid)
         if not user_data or user_data.get('status') == 'disabled':
             await log_event(
                 'user_login_attempt',
@@ -150,7 +142,7 @@ async def login_user(credentials: UserLogin):
             )
 
         # Update last login time and potentially other user data via UserManager
-        await _user_manager.update_last_login(uid)
+        await user_manager.update_last_login(uid)
 
         logger.info(f"User {uid} authenticated successfully via Firebase ID Token.")
         await log_event(
@@ -313,5 +305,5 @@ async def change_password(
             error_message=str(e),
             log_from_backend=True
         )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to change password: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
