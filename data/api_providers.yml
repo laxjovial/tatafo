@@ -5,29 +5,31 @@
 # It allows for dynamic selection and mapping of API responses.
 
 # Structure:
-# {domain_name}:
-#   {provider_name}:
-#     base_url: "..."
-#     api_key_name: "name_of_key_in_secrets_toml" # Key to retrieve from st.secrets
-#     api_secret_name: "name_of_secret_in_secrets_toml" # Optional, for OAuth-like APIs (e.g., Amadeus)
-#     token_endpoint: "..." # Optional, for OAuth-like APIs
-#     functions:
-#       {tool_function_name}: # e.g., "get_stock_price"
-#         endpoint: "/path/to/endpoint" # Relative path to base_url
-#         function_param: "FUNCTION_NAME" # For APIs that use a 'function' query param (e.g., Alpha Vantage)
-#         path_params: ["param1", "param2"] # For APIs with path parameters (e.g., /coins/{id}/markets)
-#         required_params: ["param_name"] # List of parameters required by the API endpoint
-#         optional_params: ["param_name"] # List of optional parameters
-#         response_path: ["path", "to", "data"] # List of keys to navigate to the actual data in the JSON response
-#         data_map: # Maps API response keys to standardized internal keys
-#           internal_key: "api_response_key"
-#           another_internal_key: ["nested", "api", "key"] # Can be nested path
+# api_providers:
+#   {domain_name}:
+#     {provider_name}:
+#       base_url: "..."
+#       api_key_name: "name_of_key_in_secrets_toml" # Key to retrieve from st.secrets
+#       api_secret_name: "name_of_secret_in_secrets_toml" # Optional, for OAuth-like APIs (e.g., Amadeus)
+#       token_endpoint: "..." # Optional, for OAuth-like APIs
+#       functions:
+#         {tool_function_name}: # e.g., "get_stock_price"
+#           endpoint: "/path/to/endpoint" # Relative path to base_url
+#           function_param: "FUNCTION_NAME" # For APIs that use a 'function' query param (e.g., Alpha Vantage)
+#           path_params: ["param1", "param2"] # For APIs with path parameters (e.g., /coins/{id}/markets)
+#           required_params: ["param_name"] # List of parameters required by the API endpoint
+#           optional_params: ["param_name"] # List of optional parameters
+#           response_path: ["path", "to", "data"] # List of keys to navigate to the actual data in the JSON response
+#           data_map: # Maps API response keys to standardized internal keys
+#             internal_key: "api_response_key"
+#             another_internal_key: ["nested", "api", "key"] # Can be nested path
 
 api_providers:
   finance:
     alphavantage:
       base_url: "https://www.alphavantage.co/query"
       api_key_name: "alphavantage_api_key"
+      api_key_param_name: "apikey"
       functions:
         get_stock_price:
           function_param: "GLOBAL_QUOTE"
@@ -72,6 +74,29 @@ api_providers:
           data_map:
             symbol: "1. symbol"
             name: "2. name"
+    mock_premium_finance_api: # Hypothetical premium finance API
+      base_url: "https://api.mockpremiumfinance.com/v1"
+      api_key_name: "mock_premium_finance_api_key"
+      functions:
+        get_detailed_stock_data:
+          endpoint: "/stocks/{symbol}/details"
+          path_params: ["symbol"]
+          required_params: []
+          response_path: ["data"]
+          data_map:
+            company_name: "name"
+            market_cap: "marketCap"
+            pe_ratio: "peRatio"
+        get_historical_stock_prices: # More detailed historical data
+          endpoint: "/stocks/{symbol}/history"
+          path_params: ["symbol"]
+          required_params: ["start_date", "end_date"]
+          response_path: ["data", "prices"]
+          data_map:
+            date: "date"
+            open: "open"
+            close: "close"
+            volume: "volume"
 
   crypto:
     coingecko:
@@ -108,6 +133,27 @@ api_providers:
             id: "id"
             symbol: "symbol"
             name: "name"
+    mock_premium_crypto_api: # Hypothetical premium crypto API
+      base_url: "https://api.mockpremiumcrypto.com/v1"
+      api_key_name: "mock_premium_crypto_api_key"
+      functions:
+        get_detailed_crypto_data:
+          endpoint: "/crypto/{symbol}/details"
+          path_params: ["symbol"]
+          required_params: []
+          response_path: ["data"]
+          data_map:
+            name: "name"
+            market_cap_rank: "marketCapRank"
+            circulating_supply: "circulatingSupply"
+        get_historical_crypto_prices: # More granular historical data
+          endpoint: "/crypto/{symbol}/history"
+          path_params: ["symbol"]
+          required_params: ["start_date", "end_date", "interval"]
+          response_path: ["data", "prices"]
+          data_map:
+            timestamp: "timestamp"
+            price_usd: "priceUsd"
 
   news:
     newsapi:
@@ -125,9 +171,22 @@ api_providers:
             url: "url"
             source_name: ["source", "name"]
             published_at: "publishedAt"
+    mock_premium_news_api: # Hypothetical premium news API with more historical depth
+      base_url: "https://api.mockpremiumnews.com/v1"
+      api_key_name: "mock_premium_news_api_key"
+      functions:
+        get_historical_news_by_topic:
+          endpoint: "/news/historical"
+          required_params: ["query", "start_date", "end_date"]
+          optional_params: ["sort", "limit"]
+          response_path: ["articles"]
+          data_map:
+            title: "title"
+            published_date: "publishedDate"
+            summary: "summary"
+            sentiment: "sentiment" # Hypothetical sentiment score
 
   medical:
-    # Example for a hypothetical medical API
     health_api:
       base_url: "https://api.example.com/health"
       api_key_name: "health_api_key"
@@ -135,7 +194,7 @@ api_providers:
         get_drug_info:
           endpoint: "/drugs"
           required_params: ["name"]
-          response_path: ["data", 0] # Assuming first result is most relevant
+          response_path: ["data", 0]
           data_map:
             drug_name: "name"
             description: "description"
@@ -148,9 +207,20 @@ api_providers:
             symptom_name: "name"
             causes: "causes"
             treatment: "treatment"
+    mock_premium_medical_api: # Hypothetical premium medical API with historical data
+      base_url: "https://api.mockpremiummedical.com/v1"
+      api_key_name: "mock_premium_medical_api_key"
+      functions:
+        get_historical_disease_prevalence:
+          endpoint: "/epidemiology/prevalence"
+          required_params: ["disease", "region", "start_year", "end_year"]
+          response_path: ["data", "trends"]
+          data_map:
+            year: "year"
+            prevalence_rate: "rate"
+            region: "region"
 
   legal:
-    # Example for a hypothetical legal API
     legal_data_api:
       base_url: "https://api.example.com/legal"
       api_key_name: "legal_api_key"
@@ -172,9 +242,20 @@ api_providers:
             summary: "summary"
             court: "court"
             date: "date"
+    mock_premium_legal_api: # Hypothetical premium legal API with historical case data
+      base_url: "https://api.mockpremiumlegal.com/v1"
+      api_key_name: "mock_premium_legal_api_key"
+      functions:
+        get_historical_case_outcomes:
+          endpoint: "/cases/outcomes"
+          required_params: ["case_type", "jurisdiction", "start_date", "end_date"]
+          response_path: ["data", "outcomes"]
+          data_map:
+            date: "date"
+            outcome: "outcome"
+            count: "count"
 
   education:
-    # Example for a hypothetical education API
     academic_api:
       base_url: "https://api.example.com/academic"
       api_key_name: "academic_api_key"
@@ -196,9 +277,21 @@ api_providers:
             date: "date"
             summary: "summary"
             key_figures: "figures"
+    mock_premium_education_api: # Hypothetical premium education API with historical enrollment data
+      base_url: "https://api.mockpremiumeducation.com/v1"
+      api_key_name: "mock_premium_education_api_key"
+      functions:
+        get_historical_enrollment_trends:
+          endpoint: "/enrollment/trends"
+          required_params: ["subject", "country", "start_year", "end_year"]
+          response_path: ["data", "trends"]
+          data_map:
+            year: "year"
+            enrollment_count: "count"
+            subject: "subject"
 
   entertainment:
-    themoviedb: # Example: TMDb for movies
+    themoviedb:
       base_url: "https://api.themoviedb.org/3"
       api_key_name: "themoviedb_api_key"
       functions:
@@ -206,22 +299,22 @@ api_providers:
           endpoint: "/search/movie"
           required_params: ["query"]
           optional_params: ["language"]
-          response_path: ["results", 0] # Get first result
+          response_path: ["results", 0]
           data_map:
             title: "title"
             overview: "overview"
             release_date: "release_date"
             vote_average: "vote_average"
             poster_path: "poster_path"
-    omdbapi: # Example: OMDBAPI for movies (simpler)
+    omdbapi:
       base_url: "http://www.omdbapi.com"
       api_key_name: "omdbapi_api_key"
       functions:
         get_movie_details:
-          endpoint: "" # Base URL is the endpoint
-          required_params: ["t"] # 't' for title search
+          endpoint: ""
+          required_params: ["t"]
           optional_params: ["y", "plot", "r"]
-          response_path: [] # Root level response
+          response_path: []
           data_map:
             title: "Title"
             year: "Year"
@@ -229,6 +322,19 @@ api_providers:
             director: "Director"
             genre: "Genre"
             imdb_rating: "imdbRating"
+    mock_premium_entertainment_api: # Hypothetical premium entertainment API with historical box office
+      base_url: "https://api.mockpremiumentertainment.com/v1"
+      api_key_name: "mock_premium_entertainment_api_key"
+      functions:
+        get_historical_box_office:
+          endpoint: "/movies/{movie_id}/box_office_history"
+          path_params: ["movie_id"]
+          required_params: ["start_date", "end_date"]
+          response_path: ["data", "history"]
+          data_map:
+            date: "date"
+            gross_revenue: "gross"
+            country: "country"
 
   weather:
     openweathermap:
@@ -237,7 +343,7 @@ api_providers:
       functions:
         get_current_weather:
           endpoint: "/weather"
-          required_params: ["q"] # 'q' for city name
+          required_params: ["q"]
           optional_params: ["units"]
           response_path: []
           data_map:
@@ -248,19 +354,32 @@ api_providers:
             humidity: ["main", "humidity"]
             wind_speed: ["wind", "speed"]
         get_weather_forecast:
-          endpoint: "/forecast/daily" # For 16-day daily forecast (free tier limited to 5 days)
-          required_params: ["q", "cnt"] # 'cnt' for number of days
+          endpoint: "/forecast/daily"
+          required_params: ["q", "cnt"]
           optional_params: ["units"]
           response_path: ["list"]
           data_map:
-            date: "dt" # Unix timestamp
+            date: "dt"
             temp_day: ["temp", "day"]
             temp_min: ["temp", "min"]
             temp_max: ["temp", "max"]
             description: ["weather", 0, "description"]
+    mock_premium_weather_api: # Hypothetical premium weather API with more historical depth
+      base_url: "https://api.mockpremiumweather.com/v1"
+      api_key_name: "mock_premium_weather_api_key"
+      functions:
+        get_historical_weather:
+          endpoint: "/history"
+          required_params: ["location", "start_date", "end_date"]
+          response_path: ["data", "daily"]
+          data_map:
+            date: "date"
+            avg_temp_celsius: "avg_temp_c"
+            min_temp_celsius: "min_temp_c"
+            max_temp_celsius: "max_temp_c"
+            precipitation_mm: "total_precip_mm"
 
   travel:
-    # Example for a hypothetical travel API (Amadeus for flights, Booking.com for hotels)
     amadeus:
       base_url: "https://test.api.amadeus.com/v2" # Test environment
       api_key_name: "amadeus_client_id" # Amadeus uses client_id as "API Key"
@@ -295,6 +414,20 @@ api_providers:
             price_per_night: "price_per_night"
             rating: "rating"
             url: "url"
+    mock_historical_travel_api: # Hypothetical API for historical travel prices (e.g., airline specific)
+      base_url: "https://api.mocktravelhistory.com/v1"
+      api_key_name: "mock_historical_travel_api_key"
+      functions:
+        get_historical_flight_prices:
+          endpoint: "/flights/history"
+          required_params: ["airline_code", "origin", "destination", "start_date", "end_date"]
+          response_path: ["data", "prices"]
+          data_map:
+            date: "date"
+            average_price: "avg_price"
+            min_price: "min_price"
+            max_price: "max_price"
+            airline: "airline_code"
 
   sports:
     thesportsdb:
@@ -314,8 +447,6 @@ api_providers:
             nationality: "strNationality"
             position: "strPosition"
             description: "strDescriptionEN"
-            # Note: TheSportsDB has very limited structured stats.
-            # More detailed stats would require a premium API like Sportradar.
         get_team_stats:
           endpoint: "/{api_key}/searchteams.php"
           path_params: ["api_key"]
@@ -328,7 +459,6 @@ api_providers:
             sport: "strSport"
             country: "strCountry"
             description: "strDescriptionEN"
-            # Again, limited stats in free tier.
         get_league_info:
           endpoint: "/{api_key}/searchleagues.php"
           path_params: ["api_key"]
@@ -340,4 +470,17 @@ api_providers:
             sport: "strSport"
             country: "strCountry"
             description: "strDescriptionEN"
-            # No direct "current champion" or "top scorer" in free API, would need more calls.
+    mock_premium_sports_api: # Hypothetical premium sports API with historical game data
+      base_url: "https://api.mockpremiumsports.com/v1"
+      api_key_name: "mock_premium_sports_api_key"
+      functions:
+        get_historical_game_results:
+          endpoint: "/games/history"
+          required_params: ["team_name", "start_date", "end_date"]
+          response_path: ["data", "games"]
+          data_map:
+            date: "date"
+            opponent: "opponent"
+            score: "score"
+            outcome: "outcome"
+            league: "league"
