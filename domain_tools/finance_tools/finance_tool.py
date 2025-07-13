@@ -479,7 +479,7 @@ class FinanceTools:
         """
         Retrieves historical daily stock prices for a given stock symbol within a date range.
         Dates should be in YYYY-MM-DD format.
-        Falls back to a generic message if API key is missing or API call fails.
+        This tool now uses the shared historical_data_tool.
 
         Args:
             symbol (str): The stock symbol (e.g., "AAPL", "GOOG").
@@ -492,43 +492,30 @@ class FinanceTools:
         """
         logger.info(f"Tool: finance_get_historical_stock_prices called for symbol: '{symbol}' from {start_date} to {end_date} by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_context.user_id, 'historical_data_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
-            return "Error: Access to historical data is not enabled for your current tier."
+        # Use the historical_data_tool to get the data
+        from shared_tools.historical_data_tool import HistoricalDataTools
         
-        # Parse and validate dates
-        parsed_start_date = parse_date_to_yyyymmdd(start_date)
-        parsed_end_date = parse_date_to_yyyymmdd(end_date)
+        historical_data_json = await HistoricalDataTools.historical_get_data(
+            domain="historical_finance",
+            identifier=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            user_context=user_context
+        )
 
-        if not parsed_start_date or not parsed_end_date:
-            return "Error: Invalid date format. Please provide dates in YYYY-MM-DD format (e.g., '2023-01-01')."
+        if historical_data_json.startswith("Error:"):
+            return historical_data_json
 
-        params = {"symbol": symbol, "start_date": parsed_start_date, "end_date": parsed_end_date}
-        api_data = await self._make_dynamic_api_request("finance", "get_historical_stock_prices", params, user_context)
-
-        if api_data and api_data.get("data"):
-            historical_prices = api_data["data"]
+        try:
+            historical_prices = json.loads(historical_data_json)
             if historical_prices:
-                response_str = f"Historical Prices for {symbol.upper()} from {parsed_start_date} to {parsed_end_date}:\n"
+                response_str = f"Historical Prices for {symbol.upper()} from {start_date} to {end_date}:\n"
                 
-                # Convert dict of dicts to list of dicts for sorting if Alpha Vantage style
-                if isinstance(historical_prices, dict):
-                    # Filter by date range and convert to list
-                    filtered_prices = []
-                    for date_str, data in historical_prices.items():
-                        try:
-                            current_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                            if datetime.strptime(parsed_start_date, "%Y-%m-%d").date() <= current_date <= datetime.strptime(parsed_end_date, "%Y-%m-%d").date():
-                                filtered_prices.append({"date": date_str, **data})
-                        except ValueError:
-                            logger.warning(f"Skipping malformed date in historical data: {date_str}")
-                            continue
-                    historical_prices = filtered_prices
-
                 # Sort by date (assuming 'date' key exists) and take most recent 5
                 sorted_prices = sorted(historical_prices, key=lambda x: x.get('date', ''), reverse=True)[:5]
                 
                 if not sorted_prices:
-                    return f"No historical prices found for {symbol.upper()} within the specified date range ({parsed_start_date} to {parsed_end_date})."
+                    return f"No historical prices found for {symbol.upper()} within the specified date range ({start_date} to {end_date})."
 
                 for data in sorted_prices:
                     response_str += (
@@ -541,9 +528,9 @@ class FinanceTools:
                     )
                 return response_str
             else:
-                return f"No live historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
-        else:
-            return f"Could not retrieve live historical stock prices for {symbol.upper()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
+                return f"No historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
+        except json.JSONDecodeError:
+            return "Error: Could not parse historical data from the shared tool."
 
     @tool
     async def finance_get_company_overview(self, symbol: str, user_context: UserProfile) -> str:
