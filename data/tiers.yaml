@@ -1,30 +1,39 @@
 # data/tiers.yaml
 
 # This file defines the different user tiers and their hierarchical levels.
-# This serves as initial seed data for the Firestore-based dynamic tier management.
+# These levels are used for comparison (e.g., if one tier is "higher" than another).
 
 tiers:
-  free:
+  visitors:
     level: 0
-    description: "Basic access with limited features."
-  user: # A base tier for registered users, might have slightly more than 'free'
-    level: 1
-    description: "Registered user with access to general features."
-  basic: # An entry-level paid tier, if applicable
-    level: 2
-    description: "Enhanced access with more capabilities."
+    description: "Unregistered users with very limited access."
+  free:
+    level: 5
+    description: "Registered users with basic, free features."
+  basic:
+    level: 10
+    description: "Entry-level paid tier with enhanced features."
+  standard:
+    level: 20
+    description: "Mid-tier paid plan with more advanced capabilities and higher limits."
   pro:
-    level: 3
-    description: "Professional tier with advanced tools and higher limits."
-  premium:
-    level: 4
-    description: "Premium tier with full access to most features and highest limits."
+    level: 30
+    description: "Professional tier with specialized tools and significant limits."
+  elite: # Parallel to Premium, for specific high-value users
+    level: 40
+    description: "High-tier plan with premium features, often tailored for specific use cases."
+  premium: # Parallel to Elite, for general high-value users
+    level: 40
+    description: "Top-tier general plan with full access to most features and highest limits."
+  enterprise:
+    level: 50
+    description: "Custom solutions for organizations with dedicated support and unlimited access."
   admin:
-    level: 99 # Highest level, typically grants all capabilities
-    description: "Administrator access with full control over users and configurations."
-  dev: # New tier for developers, useful for testing specific features
+    level: 99 # Highest level, typically grants all capabilities and administrative access
+    description: "Administrator access with full control over users, configurations, and analytics."
+  dev: # For developers, useful for testing specific features
     level: 90
-    description: "Developer access for testing and debugging advanced features."
+    description: "Developer access for testing and debugging advanced features, often with elevated permissions."
 
 # The actual capabilities for each tier are defined in rbac_capabilities.yaml
 # and managed dynamically via the admin panel.
