@@ -39,85 +39,60 @@ class ConfigManager:
 
         # Load config.yml
         config_path = Path("data/config.yml")
-        if not config_path.exists():
-            logger.warning(f"Configuration file not found at {config_path}. Using default empty config.")
-            self._config_data = {}
-        else:
+        if config_path.exists():
             try:
-                with open(config_path, "r") as f:
-                    self._config_data = yaml.safe_load(f) or {}
-                logger.info(f"Configuration loaded from {config_path}")
+                with open(config_path, 'r') as f:
+                    self._config_data = yaml.safe_load(f)
+                logger.info(f"Loaded config from {config_path}")
             except Exception as e:
                 logger.error(f"Error loading config.yml: {e}")
-                self._config_data = {} # Fallback to empty config on error
-        
+                self._config_data = {} # Ensure it's a dict even on failure
+        else:
+            logger.warning(f"config.yml not found at {config_path}. Using default empty config.")
+            self._config_data = {}
+
         # Load api_providers.yml
         api_providers_path = Path("data/api_providers.yml")
-        if not api_providers_path.exists():
-            logger.warning(f"API Providers configuration file not found at {api_providers_path}. API integrations may not work.")
-            self._api_providers_data = {}
-        else:
+        if api_providers_path.exists():
             try:
-                with open(api_providers_path, "r") as f:
-                    self._api_providers_data = yaml.safe_load(f).get('api_providers', {}) or {}
-                logger.info(f"API Providers configuration loaded from {api_providers_path}")
+                with open(api_providers_path, 'r') as f:
+                    self._api_providers_data = yaml.safe_load(f)
+                logger.info(f"Loaded API providers from {api_providers_path}")
             except Exception as e:
                 logger.error(f"Error loading api_providers.yml: {e}")
-                self._api_providers_data = {} # Fallback to empty on error
+                self._api_providers_data = {} # Ensure it's a dict even on failure
+        else:
+            logger.warning(f"api_providers.yml not found at {api_providers_path}. Using default empty API providers.")
+            self._api_providers_data = {}
 
-        # Attempt to load Streamlit secrets first (for Streamlit apps)
-        streamlit_secrets_loaded = False
-        try:
-            import streamlit as st
-            if hasattr(st, 'secrets') and st.secrets: # Check if st.secrets exists and is not empty
-                self._secrets_data = {k: v for k, v in st.secrets.items()}
-                logger.info("Streamlit secrets loaded.")
-                streamlit_secrets_loaded = True
-            else:
-                logger.info("Streamlit secrets object not found or empty. Running outside Streamlit context or secrets not configured via Streamlit.")
-        except ImportError:
-            logger.info("Streamlit not found. Assuming backend context or standalone script.")
-        except Exception as e:
-            logger.warning(f"Could not load Streamlit secrets: {e}")
-
-        # If Streamlit secrets didn't load, try loading from .streamlit/secrets.toml directly
-        if not streamlit_secrets_loaded:
-            secrets_toml_path = Path(".streamlit/secrets.toml")
-            if secrets_toml_path.exists():
-                try:
-                    # Load secrets from the TOML file
-                    parsed_secrets = toml.load(secrets_toml_path)
-                    # Flatten the dictionary to match how st.secrets would present it
-                    # This handles sections like [openai] and [google]
-                    flattened_secrets = {}
-                    for k, v in parsed_secrets.items():
-                        if isinstance(v, dict):
-                            for sub_k, sub_v in v.items():
-                                flattened_secrets[f"{k}_{sub_k}"] = sub_v # e.g., openai_api_key
-                        else:
-                            flattened_secrets[k] = v
-                    self._secrets_data.update(flattened_secrets)
-                    logger.info(f"Secrets loaded directly from {secrets_toml_path}.")
-                except Exception as e:
-                    logger.error(f"Error loading secrets from {secrets_toml_path}: {e}")
-            else:
-                logger.warning(f"No secrets found. Valid paths for a secrets.toml file: {secrets_toml_path}")
-
+        # Attempt to load secrets from secrets.toml if not using Streamlit's st.secrets
+        secrets_path = Path(".streamlit/secrets.toml")
+        if secrets_path.exists():
+            try:
+                with open(secrets_path, 'r') as f:
+                    self._secrets_data = toml.load(f)
+                logger.info(f"Loaded secrets from {secrets_path}")
+            except Exception as e:
+                logger.warning(f"Error loading secrets.toml: {e}. Secrets will be accessed via st.secrets if available.")
+                self._secrets_data = {}
+        else:
+            logger.info(f"secrets.toml not found at {secrets_path}. Secrets will be accessed via st.secrets if available.")
+            self._secrets_data = {}
 
         self._is_loaded = True
 
     def get(self, key: str, default: Any = None) -> Any:
         """
-        Retrieves a configuration value using a dot-separated key (e.g., "llm.model_name").
+        Retrieves a configuration value using a dot-separated key (e.g., "llm.default_model_name").
         """
         parts = key.split('.')
-        value = self._config_data
+        current_config = self._config_data
         for part in parts:
-            if isinstance(value, dict) and part in value:
-                value = value[part]
+            if isinstance(current_config, dict) and part in current_config:
+                current_config = current_config[part]
             else:
                 return default
-        return value
+        return current_config
 
     def get_secret(self, key: str, default: Any = None) -> Any:
         """
@@ -125,10 +100,18 @@ class ConfigManager:
         Prioritizes loaded Streamlit secrets (if available), otherwise looks in _secrets_data.
         Note: For secrets loaded directly from .toml, keys will be flattened (e.g., 'openai_api_key').
         """
+        # In a Streamlit environment, st.secrets is the primary source
+        try:
+            import streamlit as st
+            if hasattr(st, 'secrets') and key in st.secrets:
+                return st.secrets[key]
+        except ImportError:
+            pass # Not in a Streamlit environment
+
         if key in self._secrets_data:
             return self._secrets_data[key]
         
-        logger.warning(f"Secret '{key}' not found in loaded secrets. Returning default.")
+        logger.warning(f"Secret '{key}' not found in loaded secrets or st.secrets. Returning default.")
         return default
 
     def set_secret(self, key: str, value: Any):
@@ -155,3 +138,175 @@ class ConfigManager:
 
 # Instantiate the ConfigManager as a singleton
 config_manager = ConfigManager()
+
+
+# CLI Test (optional)
+if __name__ == "__main__":
+    import os
+    import shutil
+    import json
+    from unittest.mock import MagicMock, patch
+
+    logging.basicConfig(level=logging.INFO)
+
+    # Clean up old config/secrets files for a clean test run
+    if Path("data/config.yml").exists():
+        os.remove("data/config.yml")
+    if Path("data/api_providers.yml").exists():
+        os.remove("data/api_providers.yml")
+    if Path(".streamlit/secrets.toml").exists():
+        os.remove(".streamlit/secrets.toml")
+    if Path(".streamlit").exists():
+        shutil.rmtree(".streamlit")
+    
+    # Create dummy config files for testing
+    Path("data").mkdir(exist_ok=True)
+    Path(".streamlit").mkdir(exist_ok=True)
+
+    # Dummy config.yml content
+    dummy_config_yml_content = """
+llm:
+  default_provider: gemini
+  default_model_name: gemini-1.5-flash
+  default_temperature: 0.7
+  max_summary_input_tokens: 128000
+rag:
+  chunk_size: 500
+  chunk_overlap: 50
+  max_query_results_k: 5
+web_scraping:
+  user_agent: 'Mozilla/5.0 (Test; Python)'
+  timeout_seconds: 15
+  max_search_results: 10
+"""
+    with open("data/config.yml", "w") as f:
+        f.write(dummy_config_yml_content)
+
+    # Dummy api_providers.yml content (reflecting new historical data APIs)
+    dummy_api_providers_yml_content = """
+historical_finance:
+  alphavantage:
+    base_url: "https://www.alphavantage.co/query"
+    api_key_name: "alphavantage_api_key"
+    api_key_param_name: "apikey"
+    functions:
+      get_historical_stock_prices:
+        required_params: ["symbol", "function"]
+        response_path: ["Time Series (Daily)"]
+        data_map:
+          open: "1. open"
+          close: "4. close"
+historical_crypto:
+  coingecko:
+    base_url: "https://api.coingecko.com/api/v3"
+    api_key_name: "coingecko_api_key"
+    functions:
+      get_historical_crypto_prices:
+        endpoint: "/coins/{id}/market_chart"
+        path_params: ["id"]
+        required_params: ["vs_currency", "days"]
+        response_path: ["prices"]
+        data_map:
+          timestamp: 0
+          price: 1
+historical_weather:
+  mock_historical_weather_provider:
+    base_url: "http://mock-historical-weather-api.com/v1"
+    api_key_name: "weather_api_key"
+    functions:
+      get_historical_weather:
+        endpoint: "/history"
+        required_params: ["location", "start_date", "end_date"]
+        response_path: ["history", "daily"]
+        data_map:
+          date: "date"
+          avg_temp_celsius: "avg_temp_c"
+"""
+    with open("data/api_providers.yml", "w") as f:
+        f.write(dummy_api_providers_yml_content)
+
+    # Dummy secrets.toml content
+    dummy_secrets_toml_content = """
+alphavantage_api_key = "test_alphavantage_key"
+coingecko_api_key = "test_coingecko_key"
+weather_api_key = "test_weather_key"
+gemini_api_key = "test_gemini_key"
+openai_api_key = "test_openai_key"
+"""
+    with open(".streamlit/secrets.toml", "w") as f:
+        f.write(dummy_secrets_toml_content)
+
+    # Re-instantiate ConfigManager to load the new dummy files
+    # This simulates a fresh application start
+    ConfigManager._instance = None
+    ConfigManager._is_loaded = False
+    config_manager = ConfigManager() # This will call _load_config()
+
+    print("\n--- Testing ConfigManager ---")
+
+    # Test 1: Retrieve general config values
+    print("\n--- Test 1: Retrieve general config values ---")
+    llm_model = config_manager.get("llm.default_model_name")
+    rag_chunk_size = config_manager.get("rag.chunk_size")
+    web_timeout = config_manager.get("web_scraping.timeout_seconds")
+    print(f"LLM Model: {llm_model}")
+    print(f"RAG Chunk Size: {rag_chunk_size}")
+    print(f"Web Timeout: {web_timeout}")
+    assert llm_model == "gemini-1.5-flash"
+    assert rag_chunk_size == 500
+    assert web_timeout == 15
+    print("Test 1 Passed.")
+
+    # Test 2: Retrieve secrets
+    print("\n--- Test 2: Retrieve secrets ---")
+    alpha_key = config_manager.get_secret("alphavantage_api_key")
+    gemini_key = config_manager.get_secret("gemini_api_key")
+    non_existent_key = config_manager.get_secret("non_existent_key", "default_value")
+    print(f"Alpha Vantage Key: {alpha_key}")
+    print(f"Gemini Key: {gemini_key}")
+    print(f"Non-existent Key (default): {non_existent_key}")
+    assert alpha_key == "test_alphavantage_key"
+    assert gemini_key == "test_gemini_key"
+    assert non_existent_key == "default_value"
+    print("Test 2 Passed.")
+
+    # Test 3: Retrieve API provider configurations
+    print("\n--- Test 3: Retrieve API provider configurations ---")
+    alpha_config = config_manager.get_api_provider_config("historical_finance", "alphavantage")
+    coingecko_config = config_manager.get_api_provider_config("historical_crypto", "coingecko")
+    print(f"Alpha Vantage Config: {json.dumps(alpha_config, indent=2)}")
+    print(f"CoinGecko Config: {json.dumps(coingecko_config, indent=2)}")
+    assert alpha_config is not None
+    assert alpha_config["base_url"] == "https://www.alphavantage.co/query"
+    assert "get_historical_crypto_prices" in coingecko_config["functions"]
+    print("Test 3 Passed.")
+
+    # Test 4: Set secret dynamically (in-memory)
+    print("\n--- Test 4: Set secret dynamically (in-memory) ---")
+    config_manager.set_secret("new_dynamic_key", "dynamic_value_123")
+    retrieved_dynamic_key = config_manager.get_secret("new_dynamic_key")
+    print(f"Dynamic Key: {retrieved_dynamic_key}")
+    assert retrieved_dynamic_key == "dynamic_value_123"
+    print("Test 4 Passed.")
+
+    # Test 5: Missing config.yml or api_providers.yml
+    print("\n--- Test 5: Missing config.yml or api_providers.yml ---")
+    # Remove the files and re-instantiate
+    os.remove("data/config.yml")
+    os.remove("data/api_providers.yml")
+    ConfigManager._instance = None
+    ConfigManager._is_loaded = False
+    new_config_manager = ConfigManager() # This should log warnings
+
+    assert new_config_manager.get("llm.default_model_name") is None # Should be default None
+    assert new_config_manager.get_api_provider_config("historical_finance", "alphavantage") is None
+    print("Test 5 Passed: Handled missing config files gracefully.")
+
+    print("\nAll ConfigManager tests completed.")
+
+    # Clean up dummy files and directories
+    if Path("data").exists():
+        shutil.rmtree("data")
+    if Path(".streamlit").exists():
+        shutil.rmtree(".streamlit")
+    print("\nCleaned up dummy config and secrets files.")
