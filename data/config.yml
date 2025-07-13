@@ -8,17 +8,17 @@ app:
 
 # LLM Settings
 llm:
-  provider: "openai" # or "google", "ollama"
-  model: "gpt-4o" # or "gemini-pro", "llama3"
-  temperature: 0.7
-  max_summary_input_chars: 10000
+  provider: "gemini" # Default LLM provider: "gemini", "openai", "ollama"
+  model: "gemini-1.5-flash" # Default LLM model: "gemini-1.5-flash", "gpt-4o", "llama3"
+  temperature: 0.7 # Default LLM temperature
+  max_summary_input_tokens: 128000 # Max tokens for summarization input (for iterative summarization)
 
 # RAG Settings (for uploaded documents)
 rag:
   embedding_model: "text-embedding-ada-002" # or "text-embedding-3-small", "nomic-embed-text"
-  chunk_size: 500
-  chunk_overlap: 50
-  max_query_results_k: 10 # Max documents to retrieve for RAG
+  chunk_size: 500 # Default chunk size for document splitting
+  chunk_overlap: 50 # Default chunk overlap for document splitting
+  max_query_results_k: 5 # Default max documents to retrieve for RAG queries
 
 # Web Scraping Settings
 web_scraping:
@@ -26,75 +26,26 @@ web_scraping:
   timeout_seconds: 30
   max_search_results: 5 # Max results to fetch from web search
 
-# User Tier and RBAC Settings
-tiers:
-  free:
-    max_uploaded_docs_mb: 5
-    max_rag_queries_per_day: 10
-    tool_access:
-      finance_tool_access: False
-      crypto_tool_access: False
-      medical_tool_access: False
-      news_tool_access: False
-      legal_tool_access: False
-      education_tool_access: False
-      entertainment_tool_access: False
-      weather_tool_access: False
-      travel_tool_access: False
-      sports_tool_access: False
-    data_analysis_enabled: False
-    web_search_limit_chars: 500
-    web_search_max_results: 2
-  pro:
-    max_uploaded_docs_mb: 50
-    max_rag_queries_per_day: 100
-    tool_access:
-      finance_tool_access: True
-      crypto_tool_access: True
-      medical_tool_access: True
-      news_tool_access: True
-      legal_tool_access: True
-      education_tool_access: True
-      entertainment_tool_access: True
-      weather_tool_access: True
-      travel_tool_access: True
-      sports_tool_access: True
-    data_analysis_enabled: True
-    web_search_limit_chars: 3000
-    web_search_max_results: 7
-  premium:
-    max_uploaded_docs_mb: 500
-    max_rag_queries_per_day: 1000
-    tool_access:
-      finance_tool_access: True
-      crypto_tool_access: True
-      medical_tool_access: True
-      news_tool_access: True
-      legal_tool_access: True
-      education_tool_access: True
-      entertainment_tool_access: True
-      weather_tool_access: True
-      travel_tool_access: True
-      sports_tool_access: True
-    data_analysis_enabled: True
-    web_search_limit_chars: 10000
-    web_search_max_results: 15
-
+# Default User Tier and Roles (used for new users if not specified)
 default_user_tier: "free"
 default_user_roles: ["user"]
 
-# Default API Providers for each domain
+# Default API Providers for each domain (used if no specific provider is requested)
 api_defaults:
   finance: "alphavantage"
   crypto: "coingecko"
-  medical: "medical_api" # Hypothetical medical API
+  medical: "health_api" # Hypothetical medical API
   news: "newsapi"
-  legal: "legal_api" # Hypothetical legal API
-  education: "education_api" # Hypothetical education API
-  entertainment: "entertainment_api" # Hypothetical entertainment API
-  weather: "weather_api" # Hypothetical weather API
-  travel: "travel_api" # Hypothetical travel API (can be Amadeus for flights)
-  sports: "sports_api" # Hypothetical sports API
+  legal: "legal_data_api" # Hypothetical legal API
+  education: "academic_api" # Hypothetical education API
+  entertainment: "themoviedb" # Example: TMDb for movies
+  weather: "openweathermap" # Hypothetical weather API
+  travel: "amadeus" # Hypothetical travel API (can be Amadeus for flights)
+  sports: "thesportsdb" # Hypothetical sports API
+  historical_finance: "alphavantage" # Default for historical finance
+  historical_crypto: "coingecko" # Default for historical crypto
+  historical_weather: "mock_historical_weather_provider" # Default for historical weather
+  historical_travel: "mock_historical_travel_api" # Default for historical travel
 
 # Analytics Settings
 analytics:
