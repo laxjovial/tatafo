@@ -1,7 +1,7 @@
 # data/rbac_capabilities.yaml
 
 # This file defines the capabilities available in the application and
-# their default access levels, as well as role-specific overrides.
+# their default access levels, as well as role/tier-specific overrides.
 # This serves as initial seed data for the Firestore-based dynamic RBAC.
 
 capabilities:
@@ -14,224 +14,501 @@ capabilities:
   llm_temperature_control_enabled:
     default: False
     description: "Allows the user to set the LLM's temperature (creativity) via the UI."
-    roles:
-      pro: True # Pro users can set temperature
+    tiers:
+      standard: True
+      pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
   
   llm_default_temperature:
     default: 0.7 # Global default temperature if not overridden by tier/role
     description: "The default LLM temperature for users who cannot control it, or the maximum allowed if control is enabled."
-    roles:
-      free: 0.5 # Free users get a more conservative temperature
-      user: 0.6
+    tiers:
+      visitors: 0.3 # Very conservative for visitors
+      free: 0.4
+      basic: 0.5
+      standard: 0.6
       pro: 0.7
+      elite: 0.8
       premium: 0.8
-      admin: 0.9 # Admins can have highest creativity by default
+      enterprise: 0.9
+      admin: 0.9
+      dev: 1.0 # Developers can have highest creativity by default
 
   llm_max_temperature:
     default: 1.0
     description: "The maximum LLM temperature a user can set, even if control is enabled."
-    roles:
+    tiers:
+      standard: 0.7
       pro: 0.8
+      elite: 0.9
       premium: 0.9
+      enterprise: 1.0
       admin: 1.0
+      dev: 1.0
 
-  llm_model_selection_enabled: # NEW CAPABILITY
+  llm_model_selection_enabled:
     default: False
     description: "Allows the user to select the LLM provider and model (e.g., OpenAI GPT-4o, Google Gemini Pro, Ollama Llama2)."
-    roles:
-      premium: True # Only premium and admin can select models
+    tiers:
+      elite: True
+      premium: True
+      enterprise: True
       admin: True
+      dev: True
 
 
   # --- Shared Tools Capabilities ---
   web_search_enabled:
     default: False
     description: "Allows the AI to search the internet for information."
-    roles:
-      user: True # Basic registered users can use web search
+    tiers:
+      free: True
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
+
+  web_search_max_results:
+    default: 2 # Default max results from web search
+    description: "Maximum number of search results to retrieve from web search."
+    tiers:
+      free: 3
+      basic: 5
+      standard: 7
+      pro: 10
+      elite: 15
+      premium: 15
+      enterprise: 20
+      admin: 20
+      dev: 20
+
+  web_search_limit_chars:
+    default: 500 # Default character limit for web search snippets
+    description: "Maximum characters of content to retrieve from each web search result snippet."
+    tiers:
+      free: 1000
+      basic: 2000
+      standard: 3000
+      pro: 5000
+      elite: 10000
+      premium: 10000
+      enterprise: 20000
+      admin: 20000
+      dev: 20000
 
   data_analysis_enabled:
     default: False
     description: "Allows the AI to execute Python code for data analysis, calculations, etc."
-    roles:
+    tiers:
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
-      dev: True # Developers might also need this
+      dev: True
 
   summarization_enabled:
     default: False
     description: "Allows the AI to summarize documents (PDF, DOCX, TXT, CSV, XLSX)."
-    roles:
+    tiers:
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   summarization_max_input_chars:
     default: 5000 # Default max characters for summarization input
     description: "Maximum characters of document content that can be sent for summarization."
-    roles:
-      pro: 10000
-      premium: 20000
-      admin: 50000 # Effectively unlimited for admin
+    tiers:
+      basic: 10000
+      standard: 20000
+      pro: 50000
+      elite: 100000
+      premium: 100000
+      enterprise: 200000
+      admin: 200000
+      dev: 200000
 
   chart_generation_enabled:
     default: False
     description: "Allows the AI to generate charts from data."
-    roles:
+    tiers:
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
+
+  chart_library_access: # New capability for controlling plotting libraries
+    default: {'matplotlib': True} # Default to only matplotlib
+    description: "Controls access to specific plotting libraries (matplotlib, seaborn, plotly)."
+    tiers:
+      standard: {'matplotlib': True}
+      pro: {'matplotlib': True, 'seaborn': True}
+      elite: {'matplotlib': True, 'seaborn': True, 'plotly': True}
+      premium: {'matplotlib': True, 'seaborn': True, 'plotly': True}
+      enterprise: {'matplotlib': True, 'seaborn': True, 'plotly': True}
+      admin: {'matplotlib': True, 'seaborn': True, 'plotly': True}
+      dev: {'matplotlib': True, 'seaborn': True, 'plotly': True}
+
+  chart_type_access: # New capability for controlling specific chart types
+    default: {'line': True, 'bar': True, 'scatter': True} # Default basic chart types
+    description: "Controls access to specific chart visualization types (line, bar, scatter, histogram, boxplot, pie, area)."
+    tiers:
+      standard: {'line': True, 'bar': True, 'scatter': True}
+      pro: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True}
+      elite: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True, 'pie': True, 'area': True}
+      premium: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True, 'pie': True, 'area': True}
+      enterprise: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True, 'pie': True, 'area': True}
+      admin: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True, 'pie': True, 'area': True}
+      dev: {'line': True, 'bar': True, 'scatter': True, 'histogram': True, 'boxplot': True, 'pie': True, 'area': True}
 
   sentiment_analysis_enabled:
     default: False
     description: "Allows the AI to perform sentiment analysis on text."
-    roles:
-      user: True # Basic users can also use sentiment analysis
+    tiers:
+      free: True
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   document_upload_enabled:
     default: False
     description: "Allows users to upload and index documents for RAG."
-    roles:
+    tiers:
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   document_query_enabled:
     default: False
     description: "Allows the AI to query uploaded and indexed documents (RAG)."
-    roles:
+    tiers:
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   document_query_max_results_k:
     default: 3 # Default number of top results to retrieve from vector store
     description: "Maximum number of relevant document chunks to retrieve for RAG queries."
-    roles:
-      pro: 5
-      premium: 10
+    tiers:
+      basic: 5
+      standard: 7
+      pro: 10
+      elite: 15
+      premium: 15
+      enterprise: 20
       admin: 20
+      dev: 20
 
   chart_export_enabled:
     default: False
     description: "Allows users to export generated charts and queried document results."
-    roles:
+    tiers:
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   # --- Domain-Specific Tools Capabilities ---
   finance_tool_access:
     default: False
     description: "Allows access to general financial tools (stock prices, company news, symbol lookup)."
-    roles:
+    tiers:
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   historical_data_access:
     default: False
-    description: "Allows access to historical financial data (stocks, crypto, etc.)."
-    roles:
+    description: "Allows access to historical data across various domains (finance, crypto, weather, news, etc.)."
+    tiers:
+      pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   crypto_tool_access:
     default: False
     description: "Allows access to cryptocurrency-specific tools (prices, historical data, ID lookup)."
-    roles:
+    tiers:
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   news_tool_access:
     default: False
     description: "Allows access to general news retrieval tools."
-    roles:
-      user: True # Basic users can access news
+    tiers:
+      free: True
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   medical_tool_access:
     default: False
     description: "Allows access to medical information tools."
-    roles:
+    tiers:
+      pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   legal_tool_access:
     default: False
     description: "Allows access to legal information tools."
-    roles:
+    tiers:
+      pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
+
+  education_tool_access:
+    default: False
+    description: "Allows access to education information tools."
+    tiers:
+      free: True
+      basic: True
+      standard: True
+      pro: True
+      elite: True
+      premium: True
+      enterprise: True
+      admin: True
+      dev: True
 
   entertainment_tool_access:
     default: False
     description: "Allows access to entertainment-related tools."
-    roles:
-      user: True # Often basic users get access to general entertainment info
+    tiers:
+      free: True
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   weather_tool_access:
     default: False
     description: "Allows access to weather information tools."
-    roles:
-      user: True # Often basic users get access to weather
+    tiers:
+      free: True
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   travel_tool_access:
     default: False
     description: "Allows access to travel planning tools (flights, hotels)."
-    roles:
-      premium: True # Travel planning is often a premium feature
+    tiers:
+      pro: True
+      elite: True
+      premium: True
+      enterprise: True
       admin: True
+      dev: True
 
-  sports_tool_access: # NEW: Added sports tool access
+  sports_tool_access:
     default: False
     description: "Allows access to sports information tools (player/team stats, trophies, etc.)."
-    roles:
-      pro: True # Sports data can be extensive, often for pro/premium tiers
+    tiers:
+      standard: True
+      pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
+
+  # --- API Provider Access (for multi-API selection) ---
+  api_provider_access:
+    default: {} # Default: no specific provider access, relies on domain tool's default
+    description: "Controls access to specific external API providers within each domain. Keyed by domain, then provider name."
+    tiers:
+      free:
+        finance: ['alphavantage']
+        crypto: ['coingecko']
+        news: ['newsapi']
+        weather: ['openweathermap']
+        education: ['academic_api']
+        entertainment: ['themoviedb']
+        sports: ['thesportsdb']
+      basic:
+        finance: ['alphavantage']
+        crypto: ['coingecko']
+        news: ['newsapi']
+        weather: ['openweathermap']
+        education: ['academic_api']
+        entertainment: ['themoviedb']
+        sports: ['thesportsdb']
+      standard:
+        finance: ['alphavantage']
+        crypto: ['coingecko']
+        news: ['newsapi']
+        weather: ['openweathermap']
+        education: ['academic_api']
+        entertainment: ['themoviedb']
+        sports: ['thesportsdb']
+      pro:
+        finance: ['alphavantage'] # Can add more advanced finance APIs here
+        crypto: ['coingecko']
+        news: ['newsapi']
+        weather: ['openweathermap']
+        medical: ['health_api']
+        legal: ['legal_data_api']
+        education: ['academic_api']
+        entertainment: ['themoviedb', 'omdbapi'] # Pro can use both
+        travel: ['amadeus']
+        sports: ['thesportsdb']
+      elite:
+        finance: ['alphavantage', 'mock_premium_finance_api'] # Hypothetical premium finance API
+        crypto: ['coingecko', 'mock_premium_crypto_api']
+        news: ['newsapi', 'mock_premium_news_api']
+        weather: ['openweathermap', 'mock_premium_weather_api']
+        medical: ['health_api', 'mock_premium_medical_api']
+        legal: ['legal_data_api', 'mock_premium_legal_api']
+        education: ['academic_api', 'mock_premium_education_api']
+        entertainment: ['themoviedb', 'omdbapi', 'mock_premium_entertainment_api']
+        travel: ['amadeus', 'bookingcom']
+        sports: ['thesportsdb', 'mock_premium_sports_api']
+      premium: # Same as Elite for now, can be differentiated later
+        finance: ['alphavantage', 'mock_premium_finance_api']
+        crypto: ['coingecko', 'mock_premium_crypto_api']
+        news: ['newsapi', 'mock_premium_news_api']
+        weather: ['openweathermap', 'mock_premium_weather_api']
+        medical: ['health_api', 'mock_premium_medical_api']
+        legal: ['legal_data_api', 'mock_premium_legal_api']
+        education: ['academic_api', 'mock_premium_education_api']
+        entertainment: ['themoviedb', 'omdbapi', 'mock_premium_entertainment_api']
+        travel: ['amadeus', 'bookingcom']
+        sports: ['thesportsdb', 'mock_premium_sports_api']
+      enterprise: # Full access to all available providers
+        finance: ['alphavantage', 'mock_premium_finance_api']
+        crypto: ['coingecko', 'mock_premium_crypto_api']
+        news: ['newsapi', 'mock_premium_news_api']
+        weather: ['openweathermap', 'mock_premium_weather_api']
+        medical: ['health_api', 'mock_premium_medical_api']
+        legal: ['legal_data_api', 'mock_premium_legal_api']
+        education: ['academic_api', 'mock_premium_education_api']
+        entertainment: ['themoviedb', 'omdbapi', 'mock_premium_entertainment_api']
+        travel: ['amadeus', 'bookingcom']
+        sports: ['thesportsdb', 'mock_premium_sports_api']
+      admin: # Full access to all available providers
+        finance: ['alphavantage', 'mock_premium_finance_api']
+        crypto: ['coingecko', 'mock_premium_crypto_api']
+        news: ['newsapi', 'mock_premium_news_api']
+        weather: ['openweathermap', 'mock_premium_weather_api']
+        medical: ['health_api', 'mock_premium_medical_api']
+        legal: ['legal_data_api', 'mock_premium_legal_api']
+        education: ['academic_api', 'mock_premium_education_api']
+        entertainment: ['themoviedb', 'omdbapi', 'mock_premium_entertainment_api']
+        travel: ['amadeus', 'bookingcom']
+        sports: ['thesportsdb', 'mock_premium_sports_api']
+      dev: # Full access to all available providers
+        finance: ['alphavantage', 'mock_premium_finance_api']
+        crypto: ['coingecko', 'mock_premium_crypto_api']
+        news: ['newsapi', 'mock_premium_news_api']
+        weather: ['openweathermap', 'mock_premium_weather_api']
+        medical: ['health_api', 'mock_premium_medical_api']
+        legal: ['legal_data_api', 'mock_premium_legal_api']
+        education: ['academic_api', 'mock_premium_education_api']
+        entertainment: ['themoviedb', 'omdbapi', 'mock_premium_entertainment_api']
+        travel: ['amadeus', 'bookingcom']
+        sports: ['thesportsdb', 'mock_premium_sports_api']
 
   # --- Analytics Capabilities ---
-  analytics_access: # NEW: Added analytics access
+  analytics_access:
     default: False
     description: "Allows access to application usage analytics."
-    roles:
+    tiers:
+      standard: True # Basic analytics for standard
+      pro: True # More detailed analytics for pro
+      elite: True
+      premium: True
+      enterprise: True
       admin: True # Full access for admins
-      premium: True # Detailed access for premium users
-      pro: True # Basic access for pro users
+      dev: True
 
-  analytics_charts_enabled: # NEW: Control over charts in analytics
+  analytics_charts_enabled:
     default: False
     description: "Allows the display of charts in analytics reports."
-    roles:
-      admin: True
+    tiers:
+      pro: True # Pro users might get basic charts
+      elite: True
       premium: True
-      pro: False # Pro users might only get raw numbers, no charts
+      enterprise: True
+      admin: True
+      dev: True
 
-  analytics_user_specific_access: # NEW: Control over user-specific analytics visibility
+  analytics_user_specific_access:
     default: False
     description: "Allows users to view their own personal usage analytics."
-    roles:
-      user: True # Basic users can see their own usage
+    tiers:
+      free: True # Basic users can see their own usage
+      basic: True
+      standard: True
       pro: True
+      elite: True
       premium: True
+      enterprise: True
       admin: True
+      dev: True
 
   # Add more capabilities as new features/tools are introduced.
