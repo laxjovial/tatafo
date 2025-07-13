@@ -468,7 +468,7 @@ class CryptoTools:
         """
         Retrieves the historical price of a cryptocurrency for a specific date.
         Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'January 1, 2023').
-        Falls back to a generic message if API key is missing or API call fails.
+        This tool now uses the shared historical_data_tool.
 
         Args:
             crypto_id (str): The ID of the cryptocurrency (e.g., "bitcoin", "ethereum").
@@ -484,40 +484,35 @@ class CryptoTools:
 
         logger.info(f"Tool: crypto_get_historical_crypto_price called for crypto_id: '{crypto_id}', date: '{date}', vs_currency: '{vs_currency}' by user: {user_context.user_id}")
 
-        if not get_user_tier_capability(user_context.user_id, 'crypto_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
-            return "Error: Access to crypto tools is not enabled for your current tier."
+        # Use the historical_data_tool to get the data
+        from shared_tools.historical_data_tool import HistoricalDataTools
 
-        parsed_date = parse_date_to_yyyymmdd(date)
-        if not parsed_date:
-            return "Error: Could not parse the provided date. Please ensure the date is valid (e.g., YYYY-MM-DD)."
+        historical_data_json = await HistoricalDataTools.historical_get_data(
+            domain="historical_crypto",
+            identifier=crypto_id,
+            start_date=date,
+            end_date=date,
+            user_context=user_context,
+            vs_currency=vs_currency
+        )
 
-        params = {"id": crypto_id.lower(), "date": parsed_date, "vs_currency": vs_currency.lower()}
-        api_data = await self._make_dynamic_api_request("crypto", "get_historical_crypto_price", params, user_context)
+        if historical_data_json.startswith("Error:"):
+            return historical_data_json
 
-        if api_data:
-            try:
-                price = api_data.get("price")
-                market_cap = api_data.get("market_cap")
-                volume = api_data.get("volume")
-
-                if price is not None:
-                    response_str = (
-                        f"Historical Price for {crypto_id.capitalize()} on {parsed_date}:\n"
-                        f"  Price: {price} {vs_currency.upper()}\n"
-                    )
-                    if market_cap is not None:
-                        response_str += f"  Market Cap: {market_cap:,.2f} {vs_currency.upper()}\n"
-                    if volume is not None:
-                        response_str += f"  24hr Volume: {volume:,.2f} {vs_currency.upper()}\n"
-                    return response_str
-                else:
-                    logger.warning(f"Live API data for historical crypto price of {crypto_id} on {date} is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live historical crypto price for {crypto_id.capitalize()} on {date}. Please try again or check the ID/date."
-            except (ValueError, TypeError) as e:
-                logger.error(f"Error parsing live historical crypto price data for {crypto_id} on {date}: {e}")
-                return f"Error parsing live data for {crypto_id.capitalize()} on {date}. Please try again."
-        else:
-            return f"Could not retrieve live historical cryptocurrency price for {crypto_id.capitalize()} on {date}. The API call failed or returned no data. Please ensure your API key is valid and try again."
+        try:
+            historical_prices = json.loads(historical_data_json)
+            if historical_prices:
+                # The historical_data_tool returns a list of data points. For a single day, we'll take the first one.
+                data = historical_prices[0]
+                response_str = (
+                    f"Historical Price for {crypto_id.capitalize()} on {date}:\n"
+                    f"  Price: {data.get('price')} {vs_currency.upper()}\n"
+                )
+                return response_str
+            else:
+                return f"No historical price found for {crypto_id.capitalize()} on {date}. Please try again or check the ID/date."
+        except (json.JSONDecodeError, IndexError):
+            return "Error: Could not parse historical data from the shared tool."
 
     @tool
     async def crypto_get_crypto_id_by_symbol(self, symbol: str, user_context: UserProfile = None) -> str:
