@@ -28,7 +28,7 @@ requests
 langchain-openai
 email-validator
 dnspython
-pydantic[email]
+pydantic
 beautifulsoup4
 matplotlib
 numpy
