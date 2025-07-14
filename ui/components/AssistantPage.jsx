@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 
+
+
 const AssistantPage = ({ auth }) => {
     const [query, setQuery] = useState('');
     const [messages, setMessages] = useState([]);

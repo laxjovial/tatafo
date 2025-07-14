@@ -1,50 +1,19 @@
 # domain_tools/crypto_tools/crypto_tool.py
 
 import logging
-import requests
-import json
-from typing import Optional, Dict, Any, List
-from pathlib import Path
-from datetime import datetime, timedelta, timezone # Import timezone for consistent datetime objects
-
-# Import generic tools
+from typing import Optional, Dict, Any
 from langchain_core.tools import tool
-from shared_tools.scrapper_tool import scrape_web # This tool is a standalone function
-# from shared_tools.doc_summarizer import summarize_document # This will be accessed via DocumentTools
-# from shared_tools.query_uploaded_docs_tool import query_uploaded_docs # This will be accessed via DocumentTools
 
-# Import config_manager to access API configurations and secrets
-from config.config_manager import config_manager
+# Import the new flexible API request function
+from shared_tools.historical_data_tool import make_api_request
+
 # Import user_manager for RBAC checks
 from utils.user_manager import get_user_tier_capability
-# Import date_parser for date format flexibility
-from utils.date_parser import parse_date_to_yyyymmdd
-
-# Import analytics_tracker (for logging failures within _make_dynamic_api_request)
-from utils import analytics_tracker
 
 # Import UserProfile for type hinting
 from backend.models.user_models import UserProfile
 
 logger = logging.getLogger(__name__)
-
-# --- Generic API Request Helper (copied for standalone tool file, ideally in shared utils) ---
-# This helper is designed to work with the structure defined in api_providers.yml
-
-def _get_nested_value(data: Dict[str, Any], path: List[str]):
-    """Helper to get a value from a nested dictionary using a list of keys."""
-    current = data
-    for key in path:
-        if isinstance(current, dict) and key in current:
-            current = current[key]
-        elif isinstance(current, list) and isinstance(key, str) and key.isdigit(): # Handle list indices
-            try:
-                current = current[int(key)]
-            except (IndexError, ValueError):
-                return None
-        else:
-            return None
-    return current
 
 class CryptoTools:
     """
@@ -52,434 +21,41 @@ class CryptoTools:
     historical data, and general information.
     It integrates with external APIs and provides fallback mechanisms.
     """
-    def __init__(self, config_manager, log_event, document_tools):
+    def __init__(self, config_manager, firestore_manager, log_event, document_tools):
         self.config_manager = config_manager
-        self.log_event = log_event # For direct logging if needed, but _make_dynamic_api_request handles tool usage
-        self.document_tools = document_tools # For crypto_query_uploaded_docs and crypto_summarize_document_by_path
-
-    async def _make_dynamic_api_request(
-        self,
-        domain: str,
-        function_name: str,
-        params: Dict[str, Any],
-        user_context: UserProfile # Changed from user_token to user_context
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Makes an API request to the dynamically configured provider for a given domain and function.
-        Handles API key retrieval, request construction, and basic error handling.
-        Returns parsed JSON data or None on failure (triggering generic fallback message).
-        Logs tool usage analytics for *failures* via analytics_tracker.
-        Success logging is handled by LLMService's wrapped_tool_executor.
-        """
-        user_id = user_context.user_id # Get user_id from UserProfile
-
-        # Get the default active API provider for the domain from data/config.yml
-        active_provider_name = self.config_manager.get(f"api_defaults.{domain}")
-        if not active_provider_name:
-            logger.error(f"No default API provider configured for domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"No default API provider configured for domain '{domain}'."
-            )
-            return None
-
-        # Get the full configuration for the active provider from api_providers.yml
-        provider_config = self.config_manager.get_api_provider_config(domain, active_provider_name)
-        if not provider_config:
-            logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
-            )
-            return None
-
-        base_url = provider_config.get("base_url")
-        api_key_name = provider_config.get("api_key_name")
-        api_key = self.config_manager.get_secret(api_key_name) if api_key_name else None
-
-        # CoinGecko specific: API key can be passed as a query parameter or not needed for demo tier
-        # The `api_key_param_name` in config will handle this.
-        headers = {} # No special headers by default for CoinGecko
-
-        if not base_url:
-            logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"Base URL not configured for '{active_provider_name}'."
-            )
-            return None
-
-        function_details = provider_config.get("functions", {}).get(function_name)
-        if not function_details:
-            logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
-            )
-            return None
-
-        endpoint = function_details.get("endpoint")
-        path_params_config = function_details.get("path_params", []) # For paths like /coins/{id}
-
-        # Construct URL
-        full_url = f"{base_url}{endpoint}" if endpoint else base_url
-
-        # Add path parameters to URL if specified
-        for p_param in path_params_config:
-            if p_param in params:
-                value = str(params.pop(p_param)) # Remove from params after using for path
-                full_url = full_url.replace(f"{{{p_param}}}", value)
-            else:
-                error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
-                logger.warning(error_msg)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=error_msg
-                )
-                return None # Cannot construct URL without required path params
-
-        # Construct query parameters
-        query_params = {}
-
-        # Add API key if it's a query param
-        if api_key_name and api_key:
-            param_name_in_url = provider_config.get("api_key_param_name", api_key_name.replace("_api_key", ""))
-            query_params[param_name_in_url] = api_key 
-
-        for param_key in function_details.get("required_params", []) + function_details.get("optional_params", []):
-            if param_key in params:
-                query_params[param_key] = params[param_key]
-            elif param_key in function_details.get("required_params", []):
-                error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
-                logger.warning(error_msg)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=error_msg
-                )
-                return None # Missing required param, cannot proceed
-
-        try:
-            logger.info(f"Making API call to: {full_url} with params: {query_params}")
-            response = requests.get(full_url, params=query_params, headers=headers, timeout=self.config_manager.get("web_scraping.timeout_seconds", 15))
-            response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
-            raw_data = response.json()
-            
-            # Check for API-specific error messages in the response body
-            api_error_message = None
-            if raw_data.get("status") and raw_data["status"].get("error_code"): # CoinGecko error format
-                api_error_message = f"API Error from {active_provider_name}: {raw_data['status'].get('error_message', 'Unknown CoinGecko error')}"
-            elif raw_data.get("error"): # Generic error key
-                api_error_message = f"API Error from {active_provider_name}: {raw_data['error']}"
-            elif raw_data.get("message") == "Not Found": # Generic "Not Found" message
-                api_error_message = f"API Error from {active_provider_name}: Resource not found."
-            elif raw_data.get("status") == "error": # Generic error status
-                api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
-
-            if api_error_message:
-                logger.error(api_error_message)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=api_error_message
-                )
-                return None
-
-
-            # Extract data based on response_path
-            data_to_map = raw_data
-            response_path = function_details.get("response_path")
-            if response_path:
-                data_to_map = _get_nested_value(raw_data, response_path)
-                if data_to_map is None:
-                    error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
-                    logger.warning(error_msg)
-                    await analytics_tracker.log_tool_usage(
-                        tool_name=f"{domain}_{function_name}",
-                        tool_params=params,
-                        user_id=user_id,
-                        success=False,
-                        error_message=error_msg
-                    )
-                    return None
-
-            # Apply data mapping
-            mapped_data = {}
-            data_map = function_details.get("data_map", {})
-
-            if function_name == "get_crypto_price" and active_provider_name == "coingecko":
-                # CoinGecko simple price response structure: { "bitcoin": { "usd": 20000, "usd_market_cap": ... } }
-                crypto_id_param = params.get("ids", "").lower() # Use 'ids' from original params
-                vs_currency_param = params.get("vs_currencies", "").lower() # Use 'vs_currencies' from original params
-
-                if crypto_id_param in raw_data and vs_currency_param in raw_data[crypto_id_param]:
-                    mapped_data["price"] = raw_data[crypto_id_param][vs_currency_param]
-                    # Dynamically map other fields based on vs_currency
-                    for suffix in ["_market_cap", "_24hr_vol", "_24hr_change"]:
-                        full_key = f"{vs_currency_param}{suffix}"
-                        if full_key in raw_data[crypto_id_param]:
-                            mapped_data[suffix.strip('_')] = raw_data[crypto_id_param][full_key]
-                    if "last_updated_at" in raw_data[crypto_id_param]:
-                        mapped_data["last_updated"] = raw_data[crypto_id_param]["last_updated_at"]
-                    final_result = mapped_data
-                else:
-                    error_msg = f"CoinGecko simple price response unexpected for {crypto_id_param}/{vs_currency_param}: {raw_data}"
-                    logger.warning(error_msg)
-                    await analytics_tracker.log_tool_usage(
-                        tool_name=f"{domain}_{function_name}",
-                        tool_params=params,
-                        user_id=user_id,
-                        success=False,
-                        error_message=error_msg
-                    )
-                    return None
-            elif function_name == "get_historical_crypto_price" and active_provider_name == "coingecko":
-                # CoinGecko historical data: market_data.current_price.usd, market_data.market_cap.usd, market_data.total_volume.usd
-                vs_currency_param = params.get("vs_currency", "usd").lower()
-                
-                price_path = ["market_data", "current_price", vs_currency_param]
-                market_cap_path = ["market_data", "market_cap", vs_currency_param]
-                volume_path = ["market_data", "total_volume", vs_currency_param]
-
-                mapped_data["price"] = _get_nested_value(raw_data, price_path)
-                mapped_data["market_cap"] = _get_nested_value(raw_data, market_cap_path)
-                mapped_data["volume"] = _get_nested_value(raw_data, volume_path)
-                final_result = mapped_data
-            elif function_name == "get_crypto_id_by_symbol" and active_provider_name == "coingecko":
-                # CoinGecko /coins/list returns a list of {id, symbol, name}
-                # We need to find the matching symbol and return its ID
-                symbol_to_find = params.get("symbol", "").lower()
-                found_id = None
-                for item in raw_data:
-                    if item.get("symbol", "").lower() == symbol_to_find:
-                        found_id = item.get("id")
-                        break
-                if found_id:
-                    final_result = {"id": found_id, "symbol": symbol_to_find}
-                else:
-                    error_msg = f"Symbol '{symbol_to_find}' not found in CoinGecko list."
-                    logger.warning(error_msg)
-                    await analytics_tracker.log_tool_usage(
-                        tool_name=f"{domain}_{function_name}",
-                        tool_params=params,
-                        user_id=user_id,
-                        success=False,
-                        error_message=error_msg
-                    )
-                    return None
-            else: # General single object mapping using data_map
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
-                    elif isinstance(original_key_path, str) and '.' in original_key_path:
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
-                    else:
-                        mapped_data[mapped_key] = data_to_map.get(original_key_path)
-                final_result = mapped_data
-
-            # Success logging is handled by LLMService's wrapped_tool_executor, not here.
-            return final_result
-
-        except requests.exceptions.Timeout:
-            error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=str(e) # Ensure error message is string
-            )
-            return None
-        except json.JSONDecodeError:
-            error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
-        except Exception as e:
-            error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
-            logger.error(error_msg, exc_info=True)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
+        self.firestore_manager = firestore_manager
+        self.log_event = log_event
+        self.document_tools = document_tools
 
     @tool
-    async def crypto_get_crypto_price(self, crypto_id: str, vs_currencies: str = "usd", user_context: UserProfile = None) -> str:
+    async def crypto_get_crypto_price(self, crypto_id: str, vs_currencies: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> str:
         """
-        Retrieves the current price of a cryptocurrency in one or more specified fiat currencies or other cryptocurrencies.
-        Falls back to a generic message if API key is missing or API call fails.
-
-        Args:
-            crypto_id (str): The ID of the cryptocurrency (e.g., "bitcoin", "ethereum").
-            vs_currencies (str, optional): A comma-separated string of currency symbols to compare against (e.g., "usd", "eur", "jpy"). Defaults to "usd".
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-
-        Returns:
-            str: A formatted string of the cryptocurrency price, or an error/fallback message.
+        Retrieves the current price of a cryptocurrency.
         """
-        if user_context is None: # For CLI testing without full UserProfile
+        if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
         logger.info(f"Tool: crypto_get_crypto_price called for crypto_id: '{crypto_id}', vs_currencies: '{vs_currencies}' by user: {user_context.user_id}")
 
-        # RBAC check is now performed by the LLMService's wrapped_tool_executor,
-        # but a redundant check here can act as a safeguard or for direct calls.
         if not get_user_tier_capability(user_context.user_id, 'crypto_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to crypto tools is not enabled for your current tier."
         
-        params = {"ids": crypto_id.lower(), "vs_currencies": vs_currencies.lower(), "include_market_cap": "true", "include_24hr_vol": "true", "include_24hr_change": "true", "include_last_updated_at": "true"}
-        api_data = await self._make_dynamic_api_request("crypto", "get_crypto_price", params, user_context)
+        params = {"ids": crypto_id.lower(), "vs_currencies": vs_currencies.lower()}
+        api_data = make_api_request(
+            provider_name=provider,
+            function_name="get_crypto_price",
+            params=params,
+            user_api_keys=user_api_keys,
+        )
 
         if api_data:
-            try:
-                price = api_data.get("price")
-                market_cap = api_data.get("market_cap")
-                vol_24hr = api_data.get("vol_24hr")
-                change_24hr = api_data.get("change_24hr")
-                last_updated = api_data.get("last_updated")
-
-                if price is not None:
-                    response_str = f"Current price of {crypto_id.capitalize()}: {price} {vs_currencies.upper()}"
-                    if market_cap is not None:
-                        response_str += f"\n  Market Cap: {market_cap:,.2f} {vs_currencies.upper()}"
-                    if vol_24hr is not None:
-                        response_str += f"\n  24hr Volume: {vol_24hr:,.2f} {vs_currencies.upper()}"
-                    if change_24hr is not None:
-                        response_str += f"\n  24hr Change: {change_24hr:.2f}%"
-                    if last_updated:
-                        # CoinGecko's last_updated_at is a Unix timestamp
-                        try:
-                            last_updated_dt = datetime.fromtimestamp(last_updated, tz=timezone.utc)
-                            response_str += f"\n  Last Updated: {last_updated_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                        except (ValueError, TypeError):
-                            response_str += f"\n  Last Updated: {last_updated}" # Fallback if not a timestamp
-                    return response_str
-                else:
-                    logger.warning(f"Live API data for {crypto_id} is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live crypto price for {crypto_id.capitalize()}. Please try again or check the ID."
-            except (ValueError, TypeError) as e:
-                logger.error(f"Error parsing live crypto price data for {crypto_id}: {e}")
-                return f"Error parsing live data for {crypto_id.capitalize()}. Please try again."
+            return str(api_data)
         else:
-            return f"Could not retrieve live cryptocurrency price for {crypto_id.capitalize()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
-
+            return f"Could not retrieve live cryptocurrency price for {crypto_id.capitalize()}."
 
     @tool
-    async def crypto_get_crypto_info(self, crypto_id: str, user_context: UserProfile = None) -> str:
-        """
-        Retrieves general information about a cryptocurrency, such as its description, genesis date, and market cap rank.
-        Falls back to a generic message if API key is missing or API call fails.
-
-        Args:
-            crypto_id (str): The ID of the cryptocurrency (e.g., "bitcoin", "ethereum").
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-
-        Returns:
-            str: A formatted string of cryptocurrency information, or an error/fallback message.
-        """
-        if user_context is None: # For CLI testing without full UserProfile
-            user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
-
-        logger.info(f"Tool: crypto_get_crypto_info called for crypto_id: '{crypto_id}' by user: {user_context.user_id}")
-
-        if not get_user_tier_capability(user_context.user_id, 'crypto_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
-            return "Error: Access to crypto tools is not enabled for your current tier."
-
-        params = {"id": crypto_id.lower()} # 'id' is a path parameter, but we pass it in params for _make_dynamic_api_request
-        api_data = await self._make_dynamic_api_request("crypto", "get_crypto_info", params, user_context)
-
-        if api_data:
-            try:
-                name = api_data.get("name")
-                symbol = api_data.get("symbol")
-                description = api_data.get("description")
-                genesis_date = api_data.get("genesis_date")
-                market_cap_rank = api_data.get("market_cap_rank")
-                hashing_algorithm = api_data.get("hashing_algorithm")
-                website = api_data.get("website")
-
-                if name and description:
-                    response_str = (
-                        f"Information for {name} ({symbol.upper() if symbol else 'N/A'}):\n"
-                        f"  Description: {description}\n"
-                    )
-                    if genesis_date:
-                        response_str += f"  Genesis Date: {genesis_date}\n"
-                    if market_cap_rank is not None:
-                        response_str += f"  Market Cap Rank: {market_cap_rank}\n"
-                    if hashing_algorithm:
-                        response_str += f"  Hashing Algorithm: {hashing_algorithm}\n"
-                    if website:
-                        response_str += f"  Website: {website}\n"
-                    return response_str
-                else:
-                    logger.warning(f"Live API data for {crypto_id} is incomplete. Raw: {api_data}")
-                    return f"Could not retrieve complete live crypto information for {crypto_id.capitalize()}. Please try again or check the ID."
-            except (ValueError, TypeError) as e:
-                logger.error(f"Error parsing live crypto info data for {crypto_id}: {e}")
-                return f"Error parsing live data for {crypto_id.capitalize()}. Please try again."
-        else:
-            return f"Could not retrieve live cryptocurrency information for {crypto_id.capitalize()}. The API call failed or returned no data. Please ensure your API key is valid and try again."
-
-
-    @tool
-    async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None) -> str:
-        """
-        Retrieves the historical price of a cryptocurrency for a specific date.
-        Dates can be in various formats (e.g., 'YYYY-MM-DD', 'MM/DD/YYYY', 'January 1, 2023').
-        This tool now uses the shared historical_data_tool.
-
-        Args:
-            crypto_id (str): The ID of the cryptocurrency (e.g., "bitcoin", "ethereum").
-            date (str): The specific date for which to retrieve historical data.
-            vs_currency (str, optional): The currency to compare against (e.g., "usd", "eur"). Defaults to "usd".
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-
-        Returns:
-            str: A formatted string of historical cryptocurrency data, or an error/fallback message.
-        """
-        if user_context is None: # For CLI testing without full UserProfile
+    async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> 
+        if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
         logger.info(f"Tool: crypto_get_historical_crypto_price called for crypto_id: '{crypto_id}', date: '{date}', vs_currency: '{vs_currency}' by user: {user_context.user_id}")
@@ -1139,4 +715,5 @@ if __name__ == "__main__":
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
+
 

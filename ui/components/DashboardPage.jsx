@@ -36,7 +36,6 @@ const DashboardPage = ({ auth }) => {
 
             if (!response.ok) {
                 const errorData = await response.json();
-                throw new Error(errorData.detail || 'Tool execution failed.');
             }
 
             const data = await response.json();
@@ -72,6 +71,7 @@ const DashboardPage = ({ auth }) => {
                     <div>
                         <label htmlFor="ticker">Ticker</label>
                         <input type="text" name="ticker" onChange={handleParamChange} required />
+
                     </div>
                 )}
 
@@ -79,12 +79,6 @@ const DashboardPage = ({ auth }) => {
                     <div>
                         <label htmlFor="symbol">Crypto Symbol</label>
                         <input type="text" name="symbol" onChange={handleParamChange} required />
-                    </div>
-                )}
-
-                <button type="submit" disabled={!tool || loading}>
-                    {loading ? 'Running...' : 'Run Tool'}
-                </button>
             </form>
 
             {error && <div>Error: {error}</div>}
