@@ -1,60 +1,44 @@
-# requirements.txt
-
-# FastAPI and Uvicorn for the backend API
 fastapi
 uvicorn
-
-# HTTPX for making asynchronous HTTP requests from Streamlit to FastAPI
 httpx
-
-# Streamlit for the frontend UI
 streamlit
-
-# Firebase Admin SDK for backend authentication, Firestore, etc.
 firebase-admin
-
-# Google Cloud Storage client library
 google-cloud-storage
-
-# Langchain for LLM orchestration, RAG, etc.
 langchain
 langchain-community
-langchain_community
 langchain-core
 langchain-text-splitters
-chromadb # For ChromaDB vector store
-
-# Document Loaders for Langchain
-pypdf # For PDF documents
-docx2txt # For DOCX documents
-python-docx # Dependency for docx2txt
-unstructured # For general document parsing (e.g., HTML, PPTX, Excel, CSV)
-openpyxl # For .xlsx files (dependency for UnstructuredExcelLoader)
-python-magic # For file type detection (dependency for Unstructured)
-pandas # For CSV/Excel processing if using PandasCSVLoader/PandasExcelLoader
-
-# Embedding models
-openai # For OpenAIEmbeddings
-google-generativeai # For GooglePalmEmbeddings (newer name for Google's models)
-sentence-transformers # For HuggingFaceEmbeddings
-
-# Other utilities
-pyyaml # For config_manager
-python-dotenv # For loading environment variables (if used for secrets)
-toml # NEW: For directly parsing secrets.toml in non-Streamlit contexts
-
-# Development/Testing
+chromadb
+pypdf
+docx2txt
+python-docx
+unstructured
+openpyxl
+python-magic
+pandas
+openai
+google-generativeai
+sentence-transformers
+pyyaml
+python-dotenv
+toml
 pytest
 pytest-asyncio
-unittest-mock # For mocking in tests (if not already part of standard lib)
-firebase-admin
-tiktoken
-toml
-streamlit
-fastapi
-google-cloud-storage
+requests
+langchain-openai
 email-validator
+dnspython
 pydantic
-firebase
-recharts
-lucide-react
+beautifulsoup4
+matplotlib
+numpy
+tiktoken
+PyPDF2
+python-pptx
+xlsxwriter
+lxml
+nltk
+spacy
+langgraph
+redis
+celery

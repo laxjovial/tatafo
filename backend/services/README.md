@@ -1,18 +1,9 @@
-Implementing backend/ Directory - Part 2: Services
-The backend/services/ directory will contain the core business logic that the API endpoints (backend/api/) will call. This further separates concerns, making the codebase more modular and testable.
+# Services
 
-Let's create the necessary initial files for backend/services/.
+This directory contains the services for the application.
 
-1. backend/services/__init__.py
-This file marks backend/services as a Python package.
-backend/services/__init__.py
-Jul 2, 6:53 AM
+## Services
 
-Open
-
-2. backend/services/llm_service.py
-This service will encapsulate the logic for interacting with the LLM, including chat completions and agent orchestration. This moves the LLM interaction logic from the Streamlit frontend to the backend.
-backend/services/llm_service.py
-Jul 2, 6:53 AM
-
-Open
+- **admin_service.py:** This service provides administrative functionalities such as user management, configuration updates, and analytics retrieval.
+- **api_usage_service.py:** This service manages API call limits, usage tracking, and dynamic distribution for default APIs.
+- **llm_service.py:** This service manages interactions with Large Language Models and orchestrates tool usage.
