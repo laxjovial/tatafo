@@ -42,7 +42,4 @@ spacy
 langgraph
 redis
 celery
-google-auth-oauthlib
-google-auth-httplib2
-python-social-auth
-social-auth-app-django
+
