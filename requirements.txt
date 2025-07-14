@@ -42,3 +42,4 @@ spacy
 langgraph
 redis
 celery
+
