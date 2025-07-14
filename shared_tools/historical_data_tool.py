@@ -230,12 +230,14 @@ class HistoricalDataTools:
             mapped_data = {}
             data_map = function_details.get("data_map", {})
 
-            # Special handling for Alpha Vantage TIME_SERIES_DAILY where keys are dates
-            if isinstance(data_to_map, dict) and function_name == "get_historical_stock_prices" and active_provider_name == "alphavantage":
+            # Special handling for date-keyed time series (e.g., Alpha Vantage TIME_SERIES_DAILY)
+            response_type = function_details.get("response_type")
+            if response_type == "time_series_daily" and isinstance(data_to_map, dict):
                 processed_data_list = []
                 for date_key, values in data_to_map.items():
-                    mapped_values = {"date": date_key} # Add date to each entry
+                    mapped_values = {"date": date_key}  # Add date to each entry
                     for mapped_key, original_key_path in data_map.items():
+                        # Use the same _get_nested_value logic for consistency
                         if isinstance(original_key_path, list):
                             mapped_values[mapped_key] = _get_nested_value(values, original_key_path)
                         elif '.' in str(original_key_path):
@@ -317,35 +319,32 @@ class HistoricalDataTools:
             return None
 
     @tool
-    async def historical_get_data(
-        self,
-        domain: str,
-        identifier: str, # e.g., stock symbol, crypto ID, city name
-        start_date: str,
-        end_date: str,
-        user_context: UserProfile,
-        data_type: Optional[str] = None, # e.g., "daily", "hourly" for weather; "price" for crypto
-        **kwargs: Any # For any additional parameters specific to the API
-    ) -> str:
+    @staticmethod
+    async def historical_get_data(**kwargs: Any) -> str:
         """
         Retrieves historical data for a given domain and identifier within a specified date range.
         This tool is generic and can fetch historical data for various domains (e.g., finance, crypto, weather).
         The dates should be provided in YYYY-MM-DD format.
-
         Args:
-            domain (str): The domain of the historical data (e.g., "historical_finance", "historical_crypto", "historical_weather").
-            identifier (str): The identifier for the data (e.g., stock ticker "AAPL", crypto ID "bitcoin", city name "London").
-            start_date (str): The start date for the historical data (YYYY-MM-DD).
-            end_date (str): The end date for the historical data (YYYY-MM-DD).
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-            data_type (str, optional): Specific type of data to retrieve (e.g., "daily" for weather, "price" for crypto).
-                                       This maps to a specific function in api_providers.yml.
-            **kwargs: Additional parameters specific to the API call (e.g., "interval" for stock data).
-
+            kwargs (dict): A dictionary containing the following keys:
+                - domain (str): The domain of the historical data (e.g., "historical_finance", "historical_crypto", "historical_weather").
+                - identifier (str): The identifier for the data (e.g., stock ticker "AAPL", crypto ID "bitcoin", city name "London").
+                - start_date (str): The start date for the historical data (YYYY-MM-DD).
+                - end_date (str): The end date for the historical data (YYYY-MM-DD).
+                - user_context (UserProfile): The user's profile for RBAC checks and logging.
+                - data_type (str, optional): Specific type of data to retrieve (e.g., "daily" for weather, "price" for crypto).
+                                           This maps to a specific function in api_providers.yml.
         Returns:
             str: A JSON string representation of the historical data, or an error message.
                  The data will be a list of dictionaries, each representing a data point.
         """
+        domain = kwargs.get("domain")
+        identifier = kwargs.get("identifier")
+        start_date = kwargs.get("start_date")
+        end_date = kwargs.get("end_date")
+        user_context = kwargs.get("user_context")
+        data_type = kwargs.get("data_type")
+
         if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
@@ -376,12 +375,12 @@ class HistoricalDataTools:
             "identifier": identifier,
             "start_date": parsed_start_date,
             "end_date": parsed_end_date,
-            **kwargs # Include any additional parameters
+            **kwargs
         }
         if data_type:
             params["data_type"] = data_type # Pass data_type if the API config uses it as a param
 
-        api_data = await self._make_dynamic_api_request_historical(domain, api_function_name, params, user_context)
+        api_data = await HistoricalDataTools(config_manager, analytics_tracker.log_event)._make_dynamic_api_request_historical(domain, api_function_name, params, user_context)
 
         if api_data and api_data.get("data"):
             # Return the data as a JSON string for the LLM to process or pass to interpreter
@@ -390,32 +389,31 @@ class HistoricalDataTools:
             return f"Could not retrieve historical data for '{identifier}' in domain '{domain}' from {start_date} to {end_date}. The API call failed or returned no data. Please ensure your API key is valid and parameters are correct."
 
     @tool
-    async def historical_plot_chart(
-        self,
-        data_json: str,
-        x_axis_key: str,
-        y_axis_key: str,
-        chart_type: str = "line", # e.g., "line", "bar", "scatter"
-        title: Optional[str] = "Historical Data Chart",
-        user_context: UserProfile = None
-    ) -> str:
+    @staticmethod
+    async def historical_plot_chart(**kwargs: Any) -> str:
         """
         Generates a textual description of a chart from historical data.
         This tool is intended to be used after `historical_get_data` to visualize the retrieved data.
         It does not generate an actual image, but describes what the chart would look like.
-
         Args:
-            data_json (str): A JSON string representing the historical data (list of dictionaries).
-                             This is typically the output of `historical_get_data`.
-            x_axis_key (str): The key in the data dictionaries to use for the X-axis (e.g., "date").
-            y_axis_key (str): The key in the data dictionaries to use for the Y-axis (e.g., "close_price", "temperature").
-            chart_type (str, optional): The type of chart to describe (e.g., "line", "bar", "scatter"). Defaults to "line".
-            title (str, optional): The title of the chart. Defaults to "Historical Data Chart".
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-
+            kwargs (dict): A dictionary containing the following keys:
+                - data_json (str): A JSON string representing the historical data (list of dictionaries).
+                                 This is typically the output of `historical_get_data`.
+                - x_axis_key (str): The key in the data dictionaries to use for the X-axis (e.g., "date").
+                - y_axis_key (str): The key in the data dictionaries to use for the Y-axis (e.g., "close_price", "temperature").
+                - chart_type (str, optional): The type of chart to describe (e.g., "line", "bar", "scatter"). Defaults to "line".
+                - title (str, optional): The title of the chart. Defaults to "Historical Data Chart".
+                - user_context (UserProfile): The user's profile for RBAC checks and logging.
         Returns:
             str: A textual description of the requested chart, or an error message.
         """
+        data_json = kwargs.get("data_json")
+        x_axis_key = kwargs.get("x_axis_key")
+        y_axis_key = kwargs.get("y_axis_key")
+        chart_type = kwargs.get("chart_type", "line")
+        title = kwargs.get("title", "Historical Data Chart")
+        user_context = kwargs.get("user_context")
+
         if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
@@ -622,7 +620,7 @@ if __name__ == "__main__":
         _mock_users = {
             "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
             "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
-            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", email="premium@example.com", "tier": "premium", "roles": ["user"]},
+            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
             "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
         }
         _rbac_capabilities = { # This now mirrors the _RBAC_CAPABILITIES_CONFIG in utils/user_manager.py
@@ -794,13 +792,13 @@ if __name__ == "__main__":
             # Test 1: historical_get_data (Finance - Success)
             print("\n--- Test 1: historical_get_data (Finance - Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            finance_data_json = await historical_data_tools_instance.historical_get_data(
-                domain="historical_finance",
-                identifier="IBM",
-                start_date="2023-01-01",
-                end_date="2023-01-03",
-                user_context=mock_user_pro_profile
-            )
+            finance_data_json = await historical_data_tools_instance.historical_get_data.ainvoke({
+                "domain": "historical_finance",
+                "identifier": "IBM",
+                "start_date": "2023-01-01",
+                "end_date": "2023-01-03",
+                "user_context": mock_user_pro_profile
+            })
             print(f"Historical Finance Data: {finance_data_json[:200]}...")
             assert "140.50" in finance_data_json # Check for a specific value
             assert "date" in finance_data_json # Ensure date is added
@@ -810,15 +808,15 @@ if __name__ == "__main__":
             # Test 2: historical_get_data (Crypto - Success)
             print("\n--- Test 2: historical_get_data (Crypto - Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            crypto_data_json = await historical_data_tools_instance.historical_get_data(
-                domain="historical_crypto",
-                identifier="bitcoin",
-                start_date="2023-01-01",
-                end_date="2023-01-03",
-                user_context=mock_user_pro_profile,
-                vs_currency="usd",
-                days=3 # CoinGecko uses 'days' for range
-            )
+            crypto_data_json = await historical_data_tools_instance.historical_get_data.ainvoke({
+                "domain": "historical_crypto",
+                "identifier": "bitcoin",
+                "start_date": "2023-01-01",
+                "end_date": "2023-01-03",
+                "user_context": mock_user_pro_profile,
+                "vs_currency": "usd",
+                "days": 3 # CoinGecko uses 'days' for range
+            })
             print(f"Historical Crypto Data: {crypto_data_json[:200]}...")
             assert "16500.0" in crypto_data_json
             assert "timestamp" in crypto_data_json
@@ -828,13 +826,13 @@ if __name__ == "__main__":
             # Test 3: historical_get_data (Weather - Success)
             print("\n--- Test 3: historical_get_data (Weather - Success) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            weather_data_json = await historical_data_tools_instance.historical_get_data(
-                domain="historical_weather",
-                identifier="London",
-                start_date="2023-01-01",
-                end_date="2023-01-03",
-                user_context=mock_user_pro_profile
-            )
+            weather_data_json = await historical_data_tools_instance.historical_get_data.ainvoke({
+                "domain": "historical_weather",
+                "identifier": "London",
+                "start_date": "2023-01-01",
+                "end_date": "2023-01-03",
+                "user_context": mock_user_pro_profile
+            })
             print(f"Historical Weather Data: {weather_data_json[:200]}...")
             assert "avg_temp_celsius" in weather_data_json
             assert "5.0" in weather_data_json
@@ -844,13 +842,13 @@ if __name__ == "__main__":
             # Test 4: historical_get_data (RBAC Denied)
             print("\n--- Test 4: historical_get_data (RBAC Denied) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            rbac_denied_result = await historical_data_tools_instance.historical_get_data(
-                domain="historical_finance",
-                identifier="GOOG",
-                start_date="2023-01-01",
-                end_date="2023-01-05",
-                user_context=mock_user_free_profile
-            )
+            rbac_denied_result = await historical_data_tools_instance.historical_get_data.ainvoke({
+                "domain": "historical_finance",
+                "identifier": "GOOG",
+                "start_date": "2023-01-01",
+                "end_date": "2023-01-05",
+                "user_context": mock_user_free_profile
+            })
             print(f"Historical Data (Free User, RBAC Denied): {rbac_denied_result}")
             assert "Error: Access to historical data tools is not enabled for your current tier." in rbac_denied_result
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called()
@@ -859,13 +857,13 @@ if __name__ == "__main__":
             # Test 5: historical_get_data (API Failure - No Data Found)
             print("\n--- Test 5: historical_get_data (API Failure - No Data Found) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            api_fail_result = await historical_data_tools_instance.historical_get_data(
-                domain="historical_finance",
-                identifier="NONEXISTENT",
-                start_date="2023-01-01",
-                end_date="2023-01-05",
-                user_context=mock_user_pro_profile
-            )
+            api_fail_result = await historical_data_tools_instance.historical_get_data.ainvoke({
+                "domain": "historical_finance",
+                "identifier": "NONEXISTENT",
+                "start_date": "2023-01-01",
+                "end_date": "2023-01-05",
+                "user_context": mock_user_pro_profile
+            })
             print(f"Historical Data (API Failure): {api_fail_result}")
             assert "Could not retrieve historical data for 'NONEXISTENT'" in api_fail_result
             mock_analytics_tracker_db.collection.return_value.add.assert_called_once()
@@ -885,14 +883,14 @@ if __name__ == "__main__":
                 {"date": "2023-01-02", "value": 12},
                 {"date": "2023-01-03", "value": 11},
             ]
-            plot_description = await historical_data_tools_instance.historical_plot_chart(
-                data_json=json.dumps(sample_data),
-                x_axis_key="date",
-                y_axis_key="value",
-                chart_type="line",
-                title="Sample Trend",
-                user_context=mock_user_pro_profile
-            )
+            plot_description = await historical_data_tools_instance.historical_plot_chart.ainvoke({
+                "data_json": json.dumps(sample_data),
+                "x_axis_key": "date",
+                "y_axis_key": "value",
+                "chart_type": "line",
+                "title": "Sample Trend",
+                "user_context": mock_user_pro_profile
+            })
             print(f"Chart Description: {plot_description}")
             assert "A line chart titled 'Sample Trend' would be generated." in plot_description
             assert "X-axis represents 'date'" in plot_description
@@ -904,12 +902,12 @@ if __name__ == "__main__":
             print("\n--- Test 7: historical_plot_chart (Invalid Data) ---")
             mock_analytics_tracker_db.collection.return_value.add.reset_mock()
             invalid_data_json = "not a json string"
-            plot_error = await historical_data_tools_instance.historical_plot_chart(
-                data_json=invalid_data_json,
-                x_axis_key="date",
-                y_axis_key="value",
-                user_context=mock_user_pro_profile
-            )
+            plot_error = await historical_data_tools_instance.historical_plot_chart.ainvoke({
+                "data_json": invalid_data_json,
+                "x_axis_key": "date",
+                "y_axis_key": "value",
+                "user_context": mock_user_pro_profile
+            })
             print(f"Chart Error: {plot_error}")
             assert "Error: Invalid JSON string provided for data." in plot_error
             mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # Error is handled internally, not an API call
