@@ -1,65 +1,81 @@
-# backend/api/tool_api.py
-
+from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi.security import APIKeyHeader
+from starlette.status import HTTP_403_FORBIDDEN
+from domain_tools.finance_tools.finance_tool import finance_get_historical_stock_prices
+from domain_tools.crypto_tools.crypto_tool import crypto_get_historical_crypto_price
+from shared_tools.historical_data_tool import _make_dynamic_api_request_historical
+from utils.user_manager import get_user_by_uid, get_user_by_api_key
+from functools import wraps
+from shared_tools.llm_pipeline import execute_pipeline
+from utils.error_handler import handle_error
 import logging
-from fastapi import APIRouter, HTTPException, status, Depends
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
 
-# Import the LLMService
-from backend.services.llm_service import llm_service
+app = FastAPI()
+router = app
 
-# Import authentication middleware (for protected endpoints)
-from backend.middleware.auth_middleware import get_current_active_user
+API_KEY_HEADER = APIKeyHeader(name="Authorization")
 
-logger = logging.getLogger(__name__)
-
-router = APIRouter()
-
-# Pydantic model for incoming chat requests
-class ChatRequest(BaseModel):
-    prompt: str = Field(..., description="The user's current prompt or message.")
-    chat_history: List[Dict[str, str]] = Field(default_factory=list, description="The full chat history, as a list of {'role': str, 'content': str} dictionaries.")
-    user_token: str = Field(..., description="The user's authentication token (e.g., Firebase ID token or mock token).")
-    temperature: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional: The LLM temperature (creativity) for this request. Must be between 0.0 and 1.0.")
-    llm_provider: Optional[str] = Field(None, description="Optional: The desired LLM provider (e.g., 'openai', 'google', 'ollama').") # NEW FIELD
-    model_name: Optional[str] = Field(None, description="Optional: The desired LLM model name (e.g., 'gpt-4o', 'gemini-pro', 'llama2').") # NEW FIELD
-
-# Pydantic model for outgoing chat responses
-class ChatResponse(BaseModel):
-    response: str = Field(..., description="The AI's generated response.")
-    tool_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Optional: Details of any tool calls made by the AI.")
-    # Add more fields as needed, e.g., token usage, sentiment analysis result, chart path
-
-@router.post("/chat/agent", response_model=ChatResponse)
-async def chat_with_ai_agent(request: ChatRequest):
-    """
-    Endpoint for interacting with the AI agent.
-    The agent can use various tools based on the user's prompt and capabilities.
-    """
-    logger.info(f"Received chat request from user: {request.user_token}, prompt: '{request.prompt[:100]}...', temp: {request.temperature}, provider: {request.llm_provider}, model: {request.model_name}")
-    
-    try:
-        # Call the LLMService's chat_with_agent method
-        # The llm_service will handle tool selection, execution, and RBAC checks
-        agent_response_content = await llm_service.chat_with_agent(
-            prompt=request.prompt,
-            chat_history=request.chat_history,
-            user_token=request.user_token,
-            user_provided_temperature=request.temperature,
-            user_provided_llm_provider=request.llm_provider, # NEW: Pass provider
-            user_provided_model_name=request.model_name # NEW: Pass model name
+def get_current_user(api_key: str = Depends(API_KEY_HEADER)):
+    user = get_user_by_api_key(api_key.split(" ")[1])
+    if user is None:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN, detail="Could not validate credentials"
         )
-        
-        # In a more advanced setup, the agent_response_content might be a structured object
-        # that includes tool call details, which you would parse here.
-        
-        return ChatResponse(response=agent_response_content)
-    except ValueError as ve:
-        logger.error(f"Validation error in chat_with_ai_agent: {ve}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-    except HTTPException as he:
-        # Re-raise HTTPExceptions from underlying services (e.g., RBAC denial)
-        raise he
+    return user
+
+@app.post("/api/run-tool/{tool_name}")
+async def run_tool(tool_name: str, request: Request, user: dict = Depends(get_current_user)):
+    """
+    Runs a tool with the given parameters.
+    """
+    try:
+        body = await request.json()
+        provider = body.pop("provider", None)
+
+        user_api_keys = user.get("api_keys", [])
+
+        if tool_name == "finance_get_historical_stock_prices":
+            # Tier check
+            if user['tier'] not in ['paid', 'premium']:
+                raise HTTPException(status_code=403, detail="This tool is not available for your tier.")
+            return finance_get_historical_stock_prices(**body, provider=provider, user_api_keys=user_api_keys)
+
+        elif tool_name == "crypto_get_historical_crypto_price":
+            # Tier check
+            if user['tier'] not in ['paid', 'premium']:
+                raise HTTPException(status_code=403, detail="This tool is not available for your tier.")
+            return crypto_get_historical_crypto_price(**body, provider=provider, user_api_keys=user_api_keys)
+
+        elif tool_name == "shared_make_dynamic_api_request_historical":
+            # Tier check
+            if user['tier'] not in ['premium']:
+                raise HTTPException(status_code=403, detail="This tool is not available for your tier.")
+            return _make_dynamic_api_request_historical(**body)
+
+        else:
+            raise HTTPException(status_code=404, detail="Tool not found")
     except Exception as e:
-        logger.critical(f"Unexpected error in chat_with_ai_agent: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
+        handle_error(e, "An unexpected error occurred while running the tool.")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+@app.post("/api/assistant")
+async def assistant(request: Request, user: dict = Depends(get_current_user)):
+    """
+    Provides a chat interface to interact with an AI assistant that can use the available tools.
+    """
+    try:
+        body = await request.json()
+        query = body.get("query")
+
+        if not query:
+            raise HTTPException(status_code=400, detail="Query not provided")
+
+        # Tier check
+        if user['tier'] == 'free':
+            raise HTTPException(status_code=403, detail="AI assistant is not available for free tier users.")
+
+        response = execute_pipeline(query)
+        return {"response": response}
+    except Exception as e:
+        handle_error(e, "An unexpected error occurred in the AI assistant.")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")

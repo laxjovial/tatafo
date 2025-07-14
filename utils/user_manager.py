@@ -76,12 +76,16 @@ _RBAC_CAPABILITIES_CONFIG = {
 
 # Tier Hierarchy (used for comparing tiers, e.g., if pro is "higher" than free)
 _TIER_HIERARCHY = {
-    "free": 0,
-    "user": 1, # Assuming 'user' is a base tier, can be merged with 'free' or be distinct
-    "basic": 2,
-    "pro": 3,
-    "premium": 4,
-    "admin": 99 # Admin is highest
+    "visitors": 0,
+    "free": 5,
+    "basic": 10,
+    "standard": 20,
+    "pro": 30,
+    "elite": 40,
+    "premium": 40,
+    "enterprise": 50,
+    "dev": 90,
+    "admin": 99
 }
 
 class UserManager:
@@ -216,6 +220,25 @@ class UserManager:
             log_from_backend=True
         )
         return result
+
+    async def add_api_key(self, uid: str, api_key: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Adds a new API key to a user's profile.
+        """
+        try:
+            user_data = await self.get_user(uid)
+            if not user_data:
+                return {"success": False, "message": "User not found."}
+
+            api_keys = user_data.get("api_keys", [])
+            api_keys.append(api_key)
+
+            updates = {"api_keys": api_keys}
+            result = await self.update_user_profile(uid, updates)
+            return result
+        except Exception as e:
+            logger.error(f"Error adding API key for UID {uid}: {e}", exc_info=True)
+            return {"success": False, "message": f"Failed to add API key: {e}"}
 
 # --- Re-implemented get_user_tier_capability to fetch from Firestore ---
 async def get_user_tier_capability(user_id: str, capability_key: str, default_value: Any = None, user_tier: Optional[str] = None, user_roles: Optional[List[str]] = None) -> Any:

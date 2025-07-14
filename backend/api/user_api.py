@@ -205,3 +205,37 @@ async def get_user_capabilities_route(
     logger.info(f"API: Successfully retrieved RBAC capabilities for user_id: {user_id}")
     return user_capabilities
 
+@router.get("/api-keys", response_model=List[Dict[str, str]])
+async def get_user_api_keys(
+    current_user: Annotated[UserProfile, Depends(get_current_active_user)],
+    user_manager: UserManager = Depends(get_user_manager_dependency)
+):
+    """
+    Retrieves a user's API keys from Firestore.
+    """
+    try:
+        user_data = await user_manager.get_user(current_user.user_id)
+        if not user_data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        api_keys = user_data.get("api_keys", [])
+        return api_keys
+    except Exception as e:
+        logger.error(f"Error fetching user API keys for {current_user.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch user API keys: {e}")
+
+@router.post("/api-keys", response_model=Dict[str, str])
+async def add_user_api_key(
+    api_key: Dict[str, str],
+    current_user: Annotated[UserProfile, Depends(get_current_active_user)],
+    user_manager: UserManager = Depends(get_user_manager_dependency)
+):
+    """
+    Adds a new API key to a user's profile in Firestore.
+    """
+    try:
+        await user_manager.add_api_key(current_user.user_id, api_key)
+        return api_key
+    except Exception as e:
+        logger.error(f"Error adding user API key for {current_user.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to add user API key: {e}")
