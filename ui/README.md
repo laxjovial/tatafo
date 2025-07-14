@@ -1,15 +1,9 @@
- ui/main_app.py (Updated to Use Tier Hierarchy from user_manager)
-ui/main_app.py (Updated for Tier Hierarchy)
-Jul 2, 7:19 AM
+# UI
 
-Open
+This directory contains the user interface for the application. The frontend is a React.js application that provides the user interface for the application.
 
-Key Changes in ui/main_app.py:
+## Directory Structure
 
-_TIER_HIERARCHY Import: Removed the hardcoded TIER_HIERARCHY dictionary and now imports _TIER_HIERARCHY directly from utils.user_manager. This ensures that the tier levels are consistently defined in data/tiers.yaml and loaded by user_manager.
-
-has_access Function: The has_access function now explicitly uses the imported _TIER_HIERARCHY.
-
-New Mini Chatbot Page: Added "Mini Chatbot": {"app": mini_chatbot_app, "tier_access": "user", "roles": ["user", "admin"]} to the PAGES dictionary. This page will be accessible to all registered users.
-
-initialize_app_config(): Added a mock for st.secrets.firebase_config to prevent errors during local testing if Firebase config isn't explicitly set in secrets.toml.
+- **components:** This directory contains the React components for the application.
+- **hooks:** This directory contains the React hooks for the application.
+- **pages:** This directory contains the pages for the application.
