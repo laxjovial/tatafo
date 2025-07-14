@@ -3,14 +3,6 @@ import yaml
 
 def get_api_config(provider_name: str) -> dict:
     """
-    Gets the API configuration for a given provider from the api_providers.yml file.
-
-    :param provider_name: The name of the API provider.
-    :return: The API configuration for the given provider.
-    """
-    with open("data/api_providers.yml", "r") as f:
-        config = yaml.safe_load(f)
-    return config["api_providers"][provider_name]
 
 def make_api_request(provider_name: str, function_name: str, params: dict, user_api_keys: list = []) -> dict:
     """

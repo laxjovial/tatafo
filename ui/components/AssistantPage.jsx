@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+
+
 
 const AssistantPage = ({ auth }) => {
     const [query, setQuery] = useState('');
@@ -42,16 +43,6 @@ const AssistantPage = ({ auth }) => {
             setLoading(false);
         }
     };
-
-    if (auth.user.tier === 'free') {
-        return (
-            <div>
-                <h2>AI Assistant</h2>
-                <p>The AI assistant is not available for free tier users.</p>
-                <Link to="/upgrade">Upgrade to a paid tier to use this feature.</Link>
-            </div>
-        );
-    }
 
     return (
         <div>
