@@ -101,6 +101,49 @@ async def register_user(
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {str(e)}")
 
+@router.post("/lost-token")
+async def lost_token(request_data: PasswordResetRequest):
+    """
+    Handles the 'Lost Token' scenario by sending a password reset link to the user's email.
+    Logs the event.
+    """
+    logger.debug(f"Requesting password reset for email: {request_data.email}")
+    try:
+        # Firebase Admin SDK generates the link
+        reset_link = auth.generate_password_reset_link(request_data.email)
+        # In a real application, you would send this link via email.
+        logger.info(f"Generated password reset link for {request_data.email}.")
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email},
+            user_id="unauthenticated", # User not authenticated yet
+            success=True,
+            log_from_backend=True
+        )
+        # For security, always return a generic success message even if email not found
+        return {"message": "If the email is registered, a password reset link has been sent to your inbox."}
+    except firebase_exceptions.UserNotFoundError:
+        logger.warning(f"Attempted password reset for non-existent email: {request_data.email}. Returning generic success.")
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email, 'error': 'User not found (handled gracefully)'},
+            user_id="unauthenticated",
+            success=True, # Still considered success from user's perspective for security
+            log_from_backend=True
+        )
+        return {"message": "If the email is registered, a password reset link has been sent to your inbox."}
+    except Exception as e:
+        logger.error(f"Error requesting password reset for {request_data.email}: {e}", exc_info=True)
+        await log_event(
+            'password_reset_requested',
+            {'email': request_data.email, 'error': str(e)},
+            user_id="unauthenticated",
+            success=False,
+            error_message=str(e),
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to request password reset: {e}")
+
 @router.post("/login")
 async def login_user(
     credentials: UserLogin,

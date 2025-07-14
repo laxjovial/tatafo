@@ -8,10 +8,10 @@ from typing import Annotated, List, Dict, Any, Optional
 from backend.models.user_models import UserProfile, UserUpdate
 
 # Import middleware for authentication and authorization
-from backend.middleware.auth_middleware import get_current_active_user, get_current_admin_user, get_user_manager_dependency
+from backend.middleware.auth_middleware import get_current_user, get_current_admin_user, get_user_manager_dependency
 
 # Import UserManager (now the primary source for user data logic)
-from utils.user_manager import UserManager, get_user_tier_capability, _RBAC_CAPABILITIES # Import _RBAC_CAPABILITIES for the capabilities endpoint
+from utils.user_manager import UserManager, get_user_tier_capability
 
 # Import Firebase Auth (for updating custom claims)
 from firebase_admin import auth
@@ -24,7 +24,7 @@ router = APIRouter()
 @router.get("/{user_id}", response_model=UserProfile)
 async def get_user_profile(
     user_id: str,
-    current_user: Annotated[UserProfile, Depends(get_current_active_user)], # Use UserProfile type hint
+    current_user: Annotated[UserProfile, Depends(get_current_user)], # Use UserProfile type hint
     user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
@@ -60,7 +60,7 @@ async def get_user_profile(
 async def update_user_profile(
     user_id: str,
     user_update: UserUpdate,
-    current_user: Annotated[UserProfile, Depends(get_current_active_user)], # Use UserProfile type hint
+    current_user: Annotated[UserProfile, Depends(get_current_user)], # Use UserProfile type hint
     user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ):
     """
@@ -159,7 +159,7 @@ async def get_all_users_api(
 @router.get("/capabilities/{user_id}", response_model=Dict[str, Any])
 async def get_user_capabilities_route(
     user_id: str, # Changed from user_token to user_id as we have UserProfile now
-    current_user: Annotated[UserProfile, Depends(get_current_active_user)], # Ensure user is authenticated
+    current_user: Annotated[UserProfile, Depends(get_current_user)], # Ensure user is authenticated
     user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
 ) -> Dict[str, Any]:
     """
