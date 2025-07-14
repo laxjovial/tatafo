@@ -60,7 +60,8 @@ api_providers:
           required_params: ["symbol"]
           optional_params: ["outputsize", "datatype"]
           response_path: ["Time Series (Daily)"]
-          data_map: # Keys are dates, values are objects. Need special handling in _make_dynamic_api_request
+          response_type: "time_series_daily" # Special handling for date-keyed time series
+          data_map: # Keys are dates, values are objects.
             open: "1. open"
             high: "2. high"
             low: "3. low"
