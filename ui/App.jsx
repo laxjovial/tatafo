@@ -8,6 +8,7 @@ import AssistantPage from './components/AssistantPage';
 import UpgradePage from './components/UpgradePage';
 import UserProfilePage from './components/UserProfilePage';
 
+
 const App = () => {
     const auth = useAuth();
 

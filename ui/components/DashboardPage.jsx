@@ -36,9 +36,10 @@ const DashboardPage = ({ auth }) => {
 
             if (!response.ok) {
                 const errorData = await response.json();
+
                 setError(errorData.detail || 'Tool execution failed.');
                 return;
-            }
+
 
             const data = await response.json();
             setResult(JSON.stringify(data, null, 2));
@@ -58,6 +59,7 @@ const DashboardPage = ({ auth }) => {
 
             <Link to="/assistant">Go to AI Assistant</Link>
             <Link to="/profile">Go to Profile</Link>
+
 
             <form onSubmit={handleSubmit}>
                 <div>
@@ -99,6 +101,7 @@ const DashboardPage = ({ auth }) => {
                 </button>
                 {(tool === 'finance_get_historical_stock_prices' && auth.user.tier === 'free') && <Link to="/upgrade">Upgrade to a paid tier to use this feature.</Link>}
                 {(tool === 'crypto_get_historical_crypto_price' && auth.user.tier === 'free') && <Link to="/upgrade">Upgrade to a paid tier to use this feature.</Link>}
+
             </form>
 
             {error && <div>Error: {error}</div>}
