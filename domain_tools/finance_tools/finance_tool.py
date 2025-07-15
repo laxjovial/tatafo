@@ -1,6 +1,7 @@
 # domain_tools/finance_tools/finance_tool.py
 
 import logging
+import json
 from typing import Optional, Dict, Any
 from langchain_core.tools import tool
 
@@ -79,25 +80,27 @@ class FinanceTools:
         )
 
         if api_data:
-            return str(api_data)
+            try:
+                # Assuming api_data is a list of dictionaries
+                sorted_prices = sorted(api_data, key=lambda x: x.get('date', ''))
+                if sorted_prices:
+                    response_str = f"Historical prices for {symbol.upper()}:\n"
+                    for data in sorted_prices:
+                        response_str += (
+                            f"  Date: {data.get('date', 'N/A')}\n"
+                            f"    Open: {data.get('open', 'N/A')}\n"
+                            f"    High: {data.get('high', 'N/A')}\n"
+                            f"    Low: {data.get('low', 'N/A')}\n"
+                            f"    Close: {data.get('close', 'N/A')}\n"
+                            f"    Volume: {data.get('volume', 'N/A')}\n"
+                        )
+                    return response_str
+                else:
+                    return f"No historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
+            except (json.JSONDecodeError, TypeError):
+                return "Error: Could not parse historical data from the shared tool."
         else:
             return f"Could not retrieve historical stock prices for {symbol.upper()}."
- 
-
-                for data in sorted_prices:
-                    response_str += (
-                        f"  Date: {data.get('date', 'N/A')}\n"
-                        f"    Open: {data.get('open', 'N/A')}\n"
-                        f"    High: {data.get('high', 'N/A')}\n"
-                        f"    Low: {data.get('low', 'N/A')}\n"
-                        f"    Close: {data.get('close', 'N/A')}\n"
-                        f"    Volume: {data.get('volume', 'N/A')}\n"
-                    )
-                return response_str
-            else:
-                return f"No historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
-        except json.JSONDecodeError:
-            return "Error: Could not parse historical data from the shared tool."p
 
 
     @tool

@@ -30,8 +30,8 @@ from backend.models.user_models import UserProfile # Only UserProfile is directl
 from backend.api.auth_api import router as auth_router
 from backend.api.user_api import router as user_router
 from backend.api.admin_api import router as admin_router # Now including admin_api
-# from backend.api.tool_api import router as tool_router # Assuming tool_api.py will be created/updated
-# from backend.api.integrations_api import router as integrations_router # For user/global API management
+from backend.api.tool_api import router as tool_router
+from backend.api.integrations_api import router as integrations_router
 
 # Import middleware dependencies (for dependency overrides)
 from backend.middleware.auth_middleware import (
@@ -274,8 +274,8 @@ class FrontendAnalyticsEvent(BaseModel):
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(user_router, prefix="/user", tags=["User Management"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"]) # Now including admin_api
-# app.include_router(tool_router, prefix="/tools", tags=["Tool Operations"])
-# app.include_router(integrations_router, prefix="/integrations", tags=["API Integrations"])
+app.include_router(tool_router, prefix="/tools", tags=["Tool Operations"])
+app.include_router(integrations_router, prefix="/integrations", tags=["API Integrations"])
 
 
 @app.get("/")
