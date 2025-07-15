@@ -1,5 +1,5 @@
 # shared_tools/scraper_tool.py
-
+ 
 import requests
 import logging
 from pathlib import Path
