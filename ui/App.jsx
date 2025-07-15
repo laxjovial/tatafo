@@ -5,6 +5,9 @@ import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import DashboardPage from './components/DashboardPage';
 import AssistantPage from './components/AssistantPage';
+import UpgradePage from './components/UpgradePage';
+import UserProfilePage from './components/UserProfilePage';
+
 
 const App = () => {
     const auth = useAuth();
@@ -44,6 +47,20 @@ const App = () => {
                 <Route path="/assistant" element={
                     auth.isAuthenticated ? (
                         <AssistantPage auth={auth} />
+                    ) : (
+                        <Navigate to="/login" />
+                    )
+                } />
+                <Route path="/upgrade" element={
+                    auth.isAuthenticated ? (
+                        <UpgradePage />
+                    ) : (
+                        <Navigate to="/login" />
+                    )
+                } />
+                <Route path="/profile" element={
+                    auth.isAuthenticated ? (
+                        <UserProfilePage auth={auth} />
                     ) : (
                         <Navigate to="/login" />
                     )

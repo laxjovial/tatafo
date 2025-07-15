@@ -30,16 +30,22 @@ async def run_tool(tool_name: str, request: Request, user: dict = Depends(get_cu
     """
     try:
         body = await request.json()
+        provider = body.pop("provider", None)
+        user_api_keys = user.get("api_keys", [])
 
         if tool_name == "finance_get_historical_stock_prices":
             # Tier check
             if user['tier'] not in ['paid', 'premium']:
                 raise HTTPException(status_code=403, detail="This tool is not available for your tier.")
+            return finance_get_historical_stock_prices(**body, provider=provider, user_api_keys=user_api_keys)
+
 
         elif tool_name == "crypto_get_historical_crypto_price":
             # Tier check
             if user['tier'] not in ['paid', 'premium']:
                 raise HTTPException(status_code=403, detail="This tool is not available for your tier.")
+            return crypto_get_historical_crypto_price(**body, provider=provider, user_api_keys=user_api_keys)
+
 
         elif tool_name == "shared_make_dynamic_api_request_historical":
             # Tier check

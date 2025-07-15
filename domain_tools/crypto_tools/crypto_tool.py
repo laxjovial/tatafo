@@ -54,12 +54,35 @@ class CryptoTools:
             return f"Could not retrieve live cryptocurrency price for {crypto_id.capitalize()}."
 
     @tool
+
+    async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> str:
+        """
+        Retrieves the historical price of a cryptocurrency for a specific date.
+        """
+
     async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> 
+
         if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
         logger.info(f"Tool: crypto_get_historical_crypto_price called for crypto_id: '{crypto_id}', date: '{date}', vs_currency: '{vs_currency}' by user: {user_context.user_id}")
 
+
+        if not get_user_tier_capability(user_context.user_id, 'historical_data_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+            return "Error: Access to historical data is not enabled for your current tier."
+
+        params = {"id": crypto_id.lower(), "date": date, "localization": "false"}
+        api_data = make_api_request(
+            provider_name=provider,
+            function_name="get_historical_crypto_price",
+            params=params,
+            user_api_keys=user_api_keys,
+        )
+
+        if api_data:
+            return str(api_data)
+        else:
+            return f"Could not retrieve historical price for {crypto_id.capitalize()} on {date}."
         # Use the historical_data_tool to get the data
         from shared_tools.historical_data_tool import HistoricalDataTools
 
@@ -715,5 +738,6 @@ if __name__ == "__main__":
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 print(f"Cleaned up {d}")
+
 
 

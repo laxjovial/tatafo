@@ -36,7 +36,10 @@ const DashboardPage = ({ auth }) => {
 
             if (!response.ok) {
                 const errorData = await response.json();
-            }
+
+                setError(errorData.detail || 'Tool execution failed.');
+                return;
+
 
             const data = await response.json();
             setResult(JSON.stringify(data, null, 2));
@@ -55,6 +58,8 @@ const DashboardPage = ({ auth }) => {
             <p>Tier: {auth.user.tier}</p>
 
             <Link to="/assistant">Go to AI Assistant</Link>
+            <Link to="/profile">Go to Profile</Link>
+
 
             <form onSubmit={handleSubmit}>
                 <div>
@@ -71,7 +76,11 @@ const DashboardPage = ({ auth }) => {
                     <div>
                         <label htmlFor="ticker">Ticker</label>
                         <input type="text" name="ticker" onChange={handleParamChange} required />
-
+                        <label htmlFor="provider">Provider</label>
+                        <select name="provider" onChange={handleParamChange}>
+                            <option value="alphavantage">Alpha Vantage</option>
+                            {/* Add other finance providers here */}
+                        </select>
                     </div>
                 )}
 
@@ -79,6 +88,20 @@ const DashboardPage = ({ auth }) => {
                     <div>
                         <label htmlFor="symbol">Crypto Symbol</label>
                         <input type="text" name="symbol" onChange={handleParamChange} required />
+                        <label htmlFor="provider">Provider</label>
+                        <select name="provider" onChange={handleParamChange}>
+                            <option value="coingecko">CoinGecko</option>
+                            {/* Add other crypto providers here */}
+                        </select>
+                    </div>
+                )}
+
+                <button type="submit" disabled={!tool || loading || (tool === 'finance_get_historical_stock_prices' && auth.user.tier === 'free') || (tool === 'crypto_get_historical_crypto_price' && auth.user.tier === 'free')}>
+                    {loading ? 'Running...' : 'Run Tool'}
+                </button>
+                {(tool === 'finance_get_historical_stock_prices' && auth.user.tier === 'free') && <Link to="/upgrade">Upgrade to a paid tier to use this feature.</Link>}
+                {(tool === 'crypto_get_historical_crypto_price' && auth.user.tier === 'free') && <Link to="/upgrade">Upgrade to a paid tier to use this feature.</Link>}
+
             </form>
 
             {error && <div>Error: {error}</div>}

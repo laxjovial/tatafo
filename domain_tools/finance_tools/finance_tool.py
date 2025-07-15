@@ -61,6 +61,27 @@ class FinanceTools:
 
     @tool
     async def finance_get_historical_stock_prices(self, symbol: str, start_date: str, end_date: str, user_context: UserProfile, provider: str = "alphavantage", user_api_keys: list = []) -> str:
+
+        """
+        Retrievels historical daily stock prices for a given stock symbol within a date range.
+        """
+        logger.info(f"Tool: finance_get_historical_stock_prices called for symbol: '{symbol}' from {start_date} to {end_date} by user: {user_context.user_id}")
+
+        if not get_user_tier_capability(user_context.user_id, 'historical_data_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+            return "Error: Access to historical data is not enabled for your current tier."
+
+        params = {"symbol": symbol, "start_date": start_date, "end_date": end_date}
+        api_data = make_api_request(
+            provider_name=provider,
+            function_name="get_historical_stock_prices",
+            params=params,
+            user_api_keys=user_api_keys,
+        )
+
+        if api_data:
+            return str(api_data)
+        else:
+            return f"Could not retrieve historical stock prices for {symbol.upper()}."
  
 
                 for data in sorted_prices:
@@ -77,6 +98,7 @@ class FinanceTools:
                 return f"No historical prices found for {symbol.upper()} within the specified date range. Please try again or check the symbol/dates."
         except json.JSONDecodeError:
             return "Error: Could not parse historical data from the shared tool."p
+
 
     @tool
     async def finance_get_company_overview(self, symbol: str, user_context: UserProfile, provider: str = "alphavantage", user_api_keys: list = []) -> str:
