@@ -412,63 +412,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    # Mock Streamlit secrets and config_manager for local testing
-    class MockSecrets:
-        def __init__(self):
-            self.gemini_api_key = "MOCK_GEMINI_API_KEY_123"
-            self.openai_api_key = "MOCK_OPENAI_API_KEY_456"
-            self.firebase_config = "{}" # Mock empty config for Firebase if not set
-
-        def get(self, key, default=None):
-            return getattr(self, key, default)
-    
-    class MockConfigManager:
-        _instance = None
-        _is_loaded = False
-        def __init__(self):
-            if MockConfigManager._instance is not None:
-                raise Exception("ConfigManager is a singleton. Use get_instance().")
-            MockConfigManager._instance = self
-            self._config_data = {
-                'llm': {
-                    'default_provider': 'gemini',
-                    'default_model_name': 'gemini-1.5-flash',
-                    'default_temperature': 0.7,
-                    'max_summary_input_tokens': 128000 # Max tokens for summarization
-                },
-                'web_scraping': { # Needed for other tools, but not directly by summarizer
-                    'user_agent': 'Mozilla/5.0 (Test; Python)',
-                    'timeout_seconds': 5,
-                    'max_search_results': 5
-                },
-                'tiers': {}, # This will be overridden by tiers.yaml
-                'default_user_tier': 'free',
-                'default_user_roles': ['user'],
-                'api_configs': []
-            }
-            self._is_loaded = True
-        
-        def get(self, key, default=None):
-            parts = key.split('.')
-            val = self._config_data
-            for part in parts:
-                if isinstance(val, dict) and part in val:
-                    val = val[part]
-                else:
-                    return default
-            return val
-        
-        def get_secret(self, key, default=None):
-            return st.secrets.get(key, default)
-
-        def set_secret(self, key, value):
-            setattr(st.secrets, key, value)
-
-        def get_api_provider_config(self, domain: str, provider_name: str) -> Optional[Dict[str, Any]]:
-            return None
-
-        def get_domain_api_providers(self, domain: str) -> Dict[str, Any]:
-            return {}
+    pass
 
     # Mock user_manager.get_user_tier_capability for testing RBAC
     _mock_users_for_test = {

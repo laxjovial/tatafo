@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 httpx
-streamlit
 firebase-admin
 google-cloud-storage
 langchain
@@ -22,7 +21,6 @@ sentence-transformers
 pyyaml
 python-dotenv
 toml
-pytest
 pytest-asyncio
 requests
 langchain-openai
@@ -37,8 +35,3 @@ PyPDF2
 python-pptx
 xlsxwriter
 lxml
-nltk
-spacy
-langgraph
-redis
-celery

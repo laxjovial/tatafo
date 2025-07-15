@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 import json
+import uuid
 from typing import List, Dict, Any, Optional
 import pandas as pd # For exporting DataFrames
 import shutil # For copying files
