@@ -11,7 +11,7 @@ from backend.models.user_models import UserProfile, UserUpdate
 from backend.middleware.auth_middleware import get_current_user, get_current_admin_user, get_user_manager_dependency
 
 # Import UserManager (now the primary source for user data logic)
-from utils.user_manager import UserManager, get_user_tier_capability
+from utils.user_manager import UserManager, get_user_tier_capability, _RBAC_CAPABILITIES_CONFIG
 
 # Import Firebase Auth (for updating custom claims)
 from firebase_admin import auth
@@ -191,7 +191,7 @@ async def get_user_capabilities_route(
         target_user_roles = target_user_roles.split(',')
 
     # Iterate through the global RBAC capabilities configuration
-    for cap_key, cap_info_template in _RBAC_CAPABILITIES.get('capabilities', {}).items():
+    for cap_key, cap_info_template in _RBAC_CAPABILITIES_CONFIG.get('capabilities', {}).items():
         # get_user_tier_capability now directly uses tier and roles from the fetched profile
         effective_value = get_user_tier_capability(
             user_id=user_id, # Still pass user_id for logging/context within get_user_tier_capability

@@ -4,6 +4,7 @@ import logging
 import json
 import uuid
 import os
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Import plotting libraries
@@ -300,60 +301,7 @@ if __name__ == "__main__":
     mock_user_admin_profile = UserProfile(user_id="mock_admin_token", username="AdminUser", email="admin@example.com", tier="admin", roles=["user", "admin"])
 
 
-    # Mock Streamlit secrets and config_manager for local testing
-    class MockSecrets:
-        def __init__(self):
-            self.openai = {"api_key": "sk-mock-openai-key-12345"}
-            self.google = {"api_key": "AIzaSy-mock-google-key"}
-            self.user_tokens = {
-                "free_user_token": "mock_free_token",
-                "pro_user_token": "mock_pro_token",
-                "premium_user_token": "mock_premium_token",
-                "admin_user_token": "mock_admin_token"
-            }
-            self.firebase_config = "{}" # Mock empty config for Firebase if not set
-
-        def get(self, key, default=None):
-            parts = key.split('.')
-            val = self
-            for part in parts:
-                if hasattr(val, part):
-                    val = getattr(val, part)
-                elif isinstance(val, dict) and part in val:
-                    val = val[part]
-                else:
-                    return default
-            return val
-    
-    class MockConfigManager:
-        _instance = None
-        _is_loaded = False
-        def __init__(self):
-            if MockConfigManager._instance is not None:
-                raise Exception("ConfigManager is a singleton. Use get_instance().")
-            MockConfigManager._instance = self
-            self._config_data = {
-                'llm': {'max_summary_input_chars': 10000},
-                'rag': {'chunk_size': 500, 'chunk_overlap': 50, 'max_query_results_k': 10},
-                'web_scraping': {'user_agent': 'Mozilla/5.0 (Test; Python)', 'timeout_seconds': 5, 'max_search_results': 5},
-                'tiers': {}, # This will be overridden by tiers.yaml
-                'default_user_tier': 'free',
-                'default_user_roles': ['user']
-            }
-            self._is_loaded = True
-        
-        def get(self, key, default=None):
-            parts = key.split('.')
-            val = self._config_data
-            for part in parts:
-                if isinstance(val, dict) and part in val:
-                    val = val[part]
-                else:
-                    return default
-            return val
-        
-        def get_secret(self, key, default=None):
-            return st.secrets.get(key, default)
+    pass
 
     # Mock user_manager.get_user_tier_capability for testing RBAC
     class MockUserManager:
