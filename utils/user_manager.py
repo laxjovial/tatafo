@@ -8,6 +8,8 @@ import asyncio
 # Import analytics_tracker for logging events
 from utils.analytics_tracker import log_event
 
+logger = logging.getLogger(__name__)
+
 # Firebase imports for get_user_tier_capability (only for actual runtime, mocked in tests)
 try:
     import firebase_admin
@@ -23,9 +25,6 @@ except ImportError:
     FirestoreManager = None
     CloudStorageUtilsWrapper = None
     config_manager = None
-
-
-logger = logging.getLogger(__name__)
 
 # --- RBAC Capabilities Configuration (Centralized) ---
 # This dictionary defines what capabilities each tier/role has.
