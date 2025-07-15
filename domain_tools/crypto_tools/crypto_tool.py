@@ -54,19 +54,14 @@ class CryptoTools:
             return f"Could not retrieve live cryptocurrency price for {crypto_id.capitalize()}."
 
     @tool
-
     async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> str:
         """
         Retrieves the historical price of a cryptocurrency for a specific date.
         """
-
-    async def crypto_get_historical_crypto_price(self, crypto_id: str, date: str, vs_currency: str = "usd", user_context: UserProfile = None, provider: str = "coingecko", user_api_keys: list = []) -> 
-
         if user_context is None:
             user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
         logger.info(f"Tool: crypto_get_historical_crypto_price called for crypto_id: '{crypto_id}', date: '{date}', vs_currency: '{vs_currency}' by user: {user_context.user_id}")
-
 
         if not get_user_tier_capability(user_context.user_id, 'historical_data_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
             return "Error: Access to historical data is not enabled for your current tier."
@@ -83,35 +78,6 @@ class CryptoTools:
             return str(api_data)
         else:
             return f"Could not retrieve historical price for {crypto_id.capitalize()} on {date}."
-        # Use the historical_data_tool to get the data
-        from shared_tools.historical_data_tool import HistoricalDataTools
-
-        historical_data_json = await HistoricalDataTools.historical_get_data(
-            domain="historical_crypto",
-            identifier=crypto_id,
-            start_date=date,
-            end_date=date,
-            user_context=user_context,
-            vs_currency=vs_currency
-        )
-
-        if historical_data_json.startswith("Error:"):
-            return historical_data_json
-
-        try:
-            historical_prices = json.loads(historical_data_json)
-            if historical_prices:
-                # The historical_data_tool returns a list of data points. For a single day, we'll take the first one.
-                data = historical_prices[0]
-                response_str = (
-                    f"Historical Price for {crypto_id.capitalize()} on {date}:\n"
-                    f"  Price: {data.get('price')} {vs_currency.upper()}\n"
-                )
-                return response_str
-            else:
-                return f"No historical price found for {crypto_id.capitalize()} on {date}. Please try again or check the ID/date."
-        except (json.JSONDecodeError, IndexError):
-            return "Error: Could not parse historical data from the shared tool."
 
     @tool
     async def crypto_get_crypto_id_by_symbol(self, symbol: str, user_context: UserProfile = None) -> str:
