@@ -4,14 +4,14 @@ import logging
 import json
 from typing import List, Dict, Any, Optional
 from fastapi import HTTPException, status
-from datetime import datetime, timedelta, timezone # Import timezone for consistent datetime objects
+from datetime import datetime, timedelta, timezone
 
 # Langchain Imports
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI # Corrected import for Google Generative AI
+from langchain_google_genai import ChatGoogleGenerativeAI # Corrected Import
 from langchain_community.chat_models import ChatOllama
 from langchain_core.tools import Tool
 
@@ -19,26 +19,24 @@ from langchain_core.tools import Tool
 from config.config_manager import config_manager
 
 # Import user_manager for RBAC checks within services
-from utils.user_manager import UserManager # Import UserManager class directly
-from backend.models.user_models import UserProfile # Import UserProfile model
+from utils.user_manager import UserManager
+from backend.models.user_models import UserProfile
 
 # NEW: Import ApiUsageService for API limit checks and usage tracking
 from backend.services.api_usage_service import ApiUsageService
 
 # Import all shared tools (these will be wrapped as Langchain Tools)
-# IMPORTANT: python_interpreter_with_rbac is a standalone function
 from shared_tools.python_interpreter_tool import python_interpreter_with_rbac
 from shared_tools.scraper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
-# Import the ChartTools class itself to instantiate it
-from shared_tools.chart_generation_tool import ChartTools # Corrected to import class, not function directly
+from shared_tools.chart_generation_tool import ChartTools # Import the class
 from shared_tools.sentiment_analysis_tool import analyze_sentiment
 from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 
 # Import the export function from its utility module
-from utils.export_utils import export_dataframe_to_file # Assuming this is the correct path and function
+from utils.export_utils import export_dataframe_to_file
 
-# Import domain-specific tools (these will be wrapped as Langchain Tools)
+# Import domain-specific tools
 from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices, lookup_stock_symbol
 from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
 from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
@@ -110,7 +108,7 @@ class LLMService:
         else:
             logger.info(f"User {user_id} cannot select model. Using config defaults: {effective_llm_provider}/{effective_model_name}")
 
-        api_key = None # Will be set based on provider
+        api_key = None
 
         if effective_llm_provider == "openai":
             api_key = config_manager.get_secret("openai_api_key")
@@ -143,15 +141,6 @@ class LLMService:
                         llm_provider: Optional[str] = None, model_name: Optional[str] = None) -> str:
         """
         Generates a basic chat completion using the configured LLM (without tools).
-        
-        Args:
-            messages (List[Dict[str, str]]): A list of message dictionaries.
-            user_profile (UserProfile): The user's profile for RBAC checks.
-            temperature (float, optional): The LLM temperature to use for this completion.
-            llm_provider (str, optional): The LLM provider to use for this completion.
-            model_name (str, optional): The LLM model name to use for this completion.
-        Returns:
-            str: The AI's response content.
         """
         try:
             temp_llm = self._load_llm(user_profile=user_profile,
@@ -173,26 +162,13 @@ class LLMService:
                               user_provided_model_name: Optional[str] = None) -> str:
         """
         Orchestrates a chat with an agent, dynamically providing tools based on user's capabilities.
-        This method is now fully implemented to use Langchain's AgentExecutor.
-        
-        Args:
-            prompt (str): The current user prompt.
-            chat_history (List[Dict[str, str]]): The full chat history.
-            user_profile (UserProfile): The user's profile for RBAC and API limit checks.
-            user_provided_temperature (float, optional): The temperature provided by the user from the frontend.
-            user_provided_llm_provider (str, optional): The LLM provider provided by the user from the frontend.
-            user_provided_model_name (str, optional): The LLM model name provided by the user from the frontend.
-        Returns:
-            str: The agent's response.
         """
         user_id = user_profile.user_id
         logger.info(f"Agent chat initiated for user: {user_id}, prompt: '{prompt[:100]}...', user_provided_temp: {user_provided_temperature}, user_provided_provider: {user_provided_llm_provider}, user_provided_model: {user_provided_model_name}")
 
         self.llm = self._load_llm(user_profile, user_provided_temperature, user_provided_llm_provider, user_provided_model_name)
 
-        # Helper to map tool function to a conceptual API ID for ApiUsageService
         def get_tool_api_id(tool_func) -> str:
-            # This mapping should be consistent with how API IDs are defined in global_api_configs
             tool_name = tool_func.__name__
             if "stock" in tool_name or "finance" in tool_name:
                 return "finance-api-default"
@@ -214,25 +190,23 @@ class LLMService:
                 return "travel-api-default"
             if "sports" in tool_name:
                 return "sports-api-default"
-            # Special handling for python_interpreter_with_rbac since it's a direct function call now
-            if tool_func == python_interpreter_with_rbac:
+            if "python_interpreter" in tool_name:
                 return "python-interpreter-api"
+            # Specific check for scrape_web as it's a function directly imported
             if tool_func == scrape_web:
                 return "web-scraper-api"
-            # Special handling for generate_and_save_chart since it's a method call
+            # Specific check for generate_and_save_chart as it's a method on an instance
             if hasattr(tool_func, '__self__') and isinstance(tool_func.__self__, ChartTools) and tool_func.__name__ == 'generate_and_save_chart':
                 return "chart-gen-api"
             if tool_func == analyze_sentiment:
                 return "sentiment-api"
             if tool_func == query_uploaded_docs:
                 return "document-query-api"
-            return "general-tool-api" # Fallback for any unmapped tools
+            return "general-tool-api"
 
-        # Helper to wrap tool functions with API limit checks and usage increment
         async def wrapped_tool_executor(tool_func, *args, **kwargs):
             api_id = get_tool_api_id(tool_func)
             
-            # Check API limit before calling the tool
             can_proceed = await self.api_usage_service.check_api_limit(user_profile, api_id)
             if not can_proceed:
                 logger.warning(f"API limit exceeded for user {user_id}, API {api_id}.")
@@ -244,8 +218,8 @@ class LLMService:
                     }
                 )
             
-            # Pass user_profile to tools that need it for internal RBAC/logging
-            if 'user_context' in tool_func.__code__.co_varnames: # Check if tool function accepts user_context
+            # Pass user_context to tools that need it for internal RBAC/logging
+            if 'user_context' in tool_func.__code__.co_varnames:
                 kwargs['user_context'] = user_profile
             
             # Special handling for python_interpreter_with_rbac and generate_and_save_chart
@@ -257,19 +231,16 @@ class LLMService:
             logger.debug(f"Executing tool {tool_func.__name__} for user {user_id} (API: {api_id})...")
             tool_output = await tool_func(*args, **kwargs)
             
-            # Increment usage after successful tool call
             await self.api_usage_service.increment_api_usage(user_id, api_id)
             logger.debug(f"Tool {tool_func.__name__} executed successfully. Usage incremented.")
             return tool_output
 
-        # Construct Langchain Tool objects from our functions
         available_tools = []
 
-        # Shared Tools
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'web_search_enabled', False):
             available_tools.append(Tool(
                 name="scrape_web",
-                func=lambda query: wrapped_tool_executor(scrape_web, query),
+                func=lambda query: wrapped_tool_executor(scrape_web, query, user_context=user_profile), # Pass user_context
                 description="A tool to perform web searches and scrape content from URLs. Input should be a search query string."
             ))
             logger.debug(f"Tool 'scrape_web' added for user {user_id}")
@@ -277,14 +248,13 @@ class LLMService:
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'data_analysis_enabled', False):
             available_tools.append(Tool(
                 name="python_interpreter_with_rbac",
-                # Now explicitly passing the dependencies within the lambda
                 func=lambda code: wrapped_tool_executor(
                     python_interpreter_with_rbac,
                     code,
                     user_context=user_profile,
                     chart_tools=self.chart_tools_instance,
                     export_dataframe_to_file_func=self.export_dataframe_to_file_func
-                ),
+                ), # Pass dependencies
                 description="A powerful Python interpreter for data analysis, complex calculations, time series analysis, regression analysis, or any machine learning tasks. Input should be valid Python code. This tool also provides access to `chart_tools` for charting and `export_data_to_file` for exporting dataframes."
             ))
             logger.debug(f"Tool 'python_interpreter_with_rbac' added for user {user_id}")
@@ -292,30 +262,28 @@ class LLMService:
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'chart_generation_enabled', False):
             available_tools.append(Tool(
                 name="generate_and_save_chart",
-                # Call the method on the instantiated chart_tools_instance
                 func=lambda data_json, chart_type, x_column=None, y_column=None, color_column=None, title="Generated Chart", x_label=None, y_label=None, library="matplotlib", export_format="png": wrapped_tool_executor(
                     self.chart_tools_instance.generate_and_save_chart, # Call the method on the instance
-                    data_json=data_json, 
-                    chart_type=chart_type, 
-                    x_column=x_column, 
-                    y_column=y_column, 
-                    color_column=color_column, 
-                    title=title, 
-                    x_label=x_label, 
-                    y_label=y_label, 
-                    user_context=user_profile, # Pass user_context here as well
-                    library=library, 
+                    data_json=data_json,
+                    chart_type=chart_type,
+                    x_column=x_column,
+                    y_column=y_column,
+                    color_column=color_column,
+                    title=title,
+                    x_label=x_label,
+                    y_label=y_label,
+                    user_context=user_profile, # Pass user_context
+                    library=library,
                     export_format=export_format
                 ),
                 description="Generates and saves a chart (e.g., line, bar, scatter, pie, histogram, boxplot) from provided JSON data. Input should be a JSON string of data, chart type, and optional columns for x, y, color, title, and labels. Supported libraries are matplotlib, seaborn, plotly. Supported export formats are png, jpeg, svg, html (for plotly)."
             ))
             logger.debug(f"Tool 'generate_and_save_chart' added for user {user_id}")
 
-
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'sentiment_analysis_enabled', False):
             available_tools.append(Tool(
                 name="analyze_sentiment",
-                func=lambda text: wrapped_tool_executor(analyze_sentiment, text, user_context=user_profile), # Pass user_context
+                func=lambda text: wrapped_tool_executor(analyze_sentiment, text, user_context=user_profile),
                 description="Analyzes the sentiment of a given text. Input should be a string of text."
             ))
             logger.debug(f"Tool 'analyze_sentiment' added for user {user_id}")
@@ -323,7 +291,6 @@ class LLMService:
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'document_query_enabled', False):
             available_tools.append(Tool(
                 name="query_uploaded_docs",
-                # The prompt has `query_text` and `section` as args, so match that
                 func=lambda query_text, section: wrapped_tool_executor(query_uploaded_docs, query_text, section=section, user_context=user_profile),
                 description="Queries user-uploaded documents to find relevant information. Input should be a query string and an optional section (e.g., 'general', 'financial')."
             ))
@@ -432,7 +399,7 @@ class LLMService:
 
         if not available_tools:
             logger.info(f"No specialized tools available for user {user_id}. Falling back to chat completion.")
-            return await self.chat_completion(chat_history + [{"role": "user", "content": prompt}], 
+            return await self.chat_completion(chat_history + [{"role": "user", "content": prompt}],
                                         user_profile=user_profile,
                                         temperature=user_provided_temperature,
                                         llm_provider=user_provided_llm_provider,
@@ -500,15 +467,13 @@ class LLMService:
             response = await agent_executor.invoke({
                 "input": prompt,
                 "chat_history": langchain_chat_history,
-                "user_profile": user_profile # Passed as context, though tools get it directly too
+                "user_profile": user_profile
             })
             return response["output"]
         except HTTPException as e:
-            # Re-raise HTTPExceptions (e.g., API_LIMIT_EXCEEDED from wrapped_tool_executor)
             raise
         except Exception as e:
             logger.error(f"Error during Langchain agent invocation for user {user_id}: {e}", exc_info=True)
-            # Handle other unexpected errors during agent execution
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Agent execution failed: {str(e)}")
 
     def _convert_to_langchain_message(self, message: Dict[str, str]) -> BaseMessage:
