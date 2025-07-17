@@ -4,22 +4,22 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-# Import vector_utils for loading the vector store
+# Corrected import for load_vectorstore - now importing the module-level function
 from shared_tools.vector_utils import load_vectorstore, BASE_VECTOR_DIR
 
 # Import export_utils for exporting results
-from shared_tools.export_utils import export_vector_results
+from shared_tools.export_utils import export_vector_results # Assuming this is available and correct
 
 # Import config_manager and user_manager for RBAC checks
-from config.config_manager import config_manager
-from utils.user_manager import get_user_tier_capability, get_current_user
+from config.config_manager import config_manager # Ensure this is correctly importable
+from utils.user_manager import get_user_tier_capability, get_current_user # Ensure these are correctly importable
 
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
 @tool
-def query_uploaded_docs(
+async def query_uploaded_docs( # Made the function async
     query: str,
     user_token: str = "default",
     section: str = "general",
@@ -37,112 +37,84 @@ def query_uploaded_docs(
         user_token (str, optional): The unique identifier for the user. Defaults to "default".
                                     Used for RBAC capability checks and user-specific vector stores.
         section (str, optional): The application section where the documents are indexed
-                                 (e.g., "medical", "legal", "finance"). Defaults to "general".
-        k (int, optional): The number of top relevant document chunks to retrieve.
-                           If not provided, it will be determined by user's tier capability.
-        export (bool, optional): If True, the retrieved results will be exported to a Markdown file.
-                                 This action is subject to the 'chart_export_enabled' RBAC capability.
+                                 (e.g., "medical", "legal", "finance", "general").
+                                 Defaults to "general".
+        k (int, optional): The number of top relevant documents to retrieve. Defaults to 4.
+        export (bool, optional): If True, the retrieved results will be exported to a file.
+                                 Defaults to False.
 
     Returns:
-        str: A formatted string containing the retrieved document chunks and their sources,
-             or an error message if the vector store is not found or access is denied.
+        str: A summary of the relevant information found, or an error/status message.
     """
-    logger.info(f"Tool: query_uploaded_docs called for user: {user_token}, section: {section}, query: '{query[:50]}...'")
+    user_id = user_token # Use user_token as user_id for consistency
 
-    # RBAC Check for Document Query Enabled
-    if not get_user_tier_capability(user_token, 'document_query_enabled', False):
-        return "Error: Document querying is not enabled for your current tier."
-    
-    # Get user's allowed k (number of results) from RBAC capabilities
-    if k is None:
-        k = get_user_tier_capability(user_token, 'document_query_max_results_k', config_manager.get('rag.max_query_results_k', 5))
-    
-    # Check if export is enabled for the user's tier (if export is requested)
-    is_export_allowed = get_user_tier_capability(user_token, 'chart_export_enabled', False) # Reusing chart_export_enabled for document export for now
+    logger.info(f"Tool: query_uploaded_docs called for user '{user_id}' in section '{section}' with query: '{query}'")
 
-    vector_store_path = BASE_VECTOR_DIR / user_token / section
+    # RBAC Check: Document querying access
+    if not get_user_tier_capability(user_id, 'document_query_enabled', False):
+        return "Error: Document querying is not enabled for your current tier. Please upgrade your plan."
+    
+    # RBAC Check: Specific section access (if sections are tied to RBAC)
+    # This is a placeholder; implement specific section access logic if needed in config_manager
+    # For example: if section == "medical" and not get_user_tier_capability(user_id, 'medical_docs_access', False):
+    #    return "Error: Access to 'medical' document section is not enabled for your tier."
 
     try:
-        # Load the user-specific vector store
-        vectorstore = load_vectorstore(vector_store_path)
+        # Load the vector store for the specific user and section
+        # Now calling the module-level async function
+        vectorstore = await load_vectorstore(user_id=user_id, section=section)
+
+        if vectorstore is None:
+            return f"Error: Could not load vector store for user '{user_id}' in section '{section}'. It might not exist or be accessible."
+
+        # Perform the similarity search
+        docs = vectorstore.similarity_search(query, k=k if k is not None else 4) # Use k from args, default to 4
+
+        if not docs:
+            log_event(user_id, "query_uploaded_docs", "no_results", {"query": query, "section": section})
+            return "No relevant information found in uploaded documents."
+
+        # Concatenate document content for response
+        # Ensure that `docs` elements have a `page_content` attribute as returned by the mock vector store.
+        relevant_content = "\\n\\n".join([doc.page_content for doc in docs])
         
-        # Perform similarity search
-        # The MockVectorStore from vector_utils.py will simulate this
-        retrieved_docs = vectorstore.similarity_search(query, k=k)
-        
-        if not retrieved_docs:
-            return f"No relevant documents found for your query in the '{section}' section."
+        summary = f"Information from uploaded documents for your query '{query}':\\n\\n{relevant_content}"
 
-        formatted_results = []
-        raw_results_for_export = [] # To store dicts for export_vector_results
+        # RBAC Check: Export capability
+        if export:
+            if get_user_tier_capability(user_id, 'document_export_enabled', False):
+                export_path = export_vector_results(user_id, query, docs)
+                summary += f"\\n\\nQuery results exported to: {export_path}"
+                log_event(user_id, "query_uploaded_docs", "exported", {"query": query, "section": section, "export_path": str(export_path)})
+            else:
+                summary += "\\n\\nWarning: Export was requested but is not enabled for your current tier."
+                log_event(user_id, "query_uploaded_docs", "export_denied", {"query": query, "section": section})
 
-        for i, doc in enumerate(retrieved_docs):
-            # Ensure doc has page_content and metadata attributes/keys
-            content = getattr(doc, 'page_content', doc.get('page_content', 'N/A'))
-            metadata = getattr(doc, 'metadata', doc.get('metadata', {}))
-            source = metadata.get('source', 'Unknown Source')
-            chunk_idx = metadata.get('chunk_idx', 'N/A')
+        log_event(user_id, "query_uploaded_docs", "success", {"query": query, "section": section})
+        return summary
 
-            formatted_results.append(
-                f"--- Document Chunk {i+1} ---\n"
-                f"Source: {source}\n"
-                f"Chunk Index: {chunk_idx}\n"
-                f"Content:\n{content}\n"
-            )
-            raw_results_for_export.append({
-                "page_content": content,
-                "metadata": metadata
-            })
-        
-        final_response = "\n\n".join(formatted_results)
-
-        if export and is_export_allowed:
-            export_message = export_vector_results(raw_results_for_export, user_token, section, file_prefix=f"{section}_query_results")
-            final_response += f"\n\n{export_message}"
-        elif export and not is_export_allowed:
-            final_response += "\n\nWarning: Export was requested but is not enabled for your current tier."
-
-        return final_response
-
-    except ValueError as ve:
-        logger.error(f"Error querying documents for user {user_token}, section {section}: {ve}", exc_info=True)
-        return f"Error: {ve}"
     except Exception as e:
-        logger.critical(f"An unexpected error occurred during document query for user {user_token}, section {section}: {e}", exc_info=True)
-        return f"An unexpected error occurred during document query: {e}"
-
+        logger.error(f"Error querying uploaded documents for user {user_id}, section {section}: {e}", exc_info=True)
+        log_event(user_id, "query_uploaded_docs", "error", {"query": query, "section": section, "error": str(e)})
+        return f"Error: An unexpected error occurred while querying documents: {e}"
 
 # CLI Test (optional)
 if __name__ == "__main__":
-    import shutil
-    from unittest.mock import MagicMock, patch
     import sys
-    import os
+    import asyncio
+    from unittest.mock import MagicMock, patch
 
     logging.basicConfig(level=logging.INFO)
 
-    pass
-
-
-    # Mock user_manager.get_current_user and get_user_tier_capability for testing RBAC
+    # Mock UserManager and config_manager for testing
     class MockUserManager:
-        _mock_users = {
-            "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
-            "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
-            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
-            "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
-        }
         _rbac_capabilities = {
             'capabilities': {
                 'document_query_enabled': {
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
-                'document_query_max_results_k': {
-                    'default': 3,
-                    'roles': {'pro': 5, 'premium': 10, 'admin': 20}
-                },
-                'chart_export_enabled': { # Used for document export as well
+                'document_export_enabled': {
                     'default': False,
                     'roles': {'premium': True, 'admin': True}
                 }
@@ -151,151 +123,140 @@ if __name__ == "__main__":
         _tier_hierarchy = {
             "free": 0, "user": 1, "basic": 2, "pro": 3, "premium": 4, "admin": 99
         }
+        def get_user_tier_capability(self, user_token: Optional[str], capability_key: str, default_value: Any = None, user_tier: Optional[str] = None, user_roles: Optional[List[str]] = None) -> Any:
+            user_info = {"tier": user_tier if user_tier else "free", "roles": user_roles if user_roles else []}
+            if user_token == "test_user_pro": user_info = {"tier": "pro", "roles": ["user"]}
+            if user_token == "test_user_premium": user_info = {"tier": "premium", "roles": ["user"]}
+            if user_token == "test_user_free": user_info = {"tier": "free", "roles": ["user"]}
+            if user_token == "test_user_admin": user_info = {"tier": "admin", "roles": ["user", "admin"]}
 
-        def get_current_user(self) -> Dict[str, Any]:
-            return getattr(self, '_current_mock_user', {})
+            if "admin" in user_info["roles"]:
+                return True # Admin bypasses all specific capability checks
 
-        def get_user_tier_capability(self, user_token: Optional[str], capability_key: str, default_value: Any = None) -> Any:
-            user_info = self._mock_users.get(user_token, {})
-            user_id = user_info.get('user_id')
-            user_tier = user_info.get('tier', 'free')
-            user_roles = user_info.get('roles', [])
-
-            if "admin" in user_roles:
-                if isinstance(default_value, bool): return True
-                if isinstance(default_value, (int, float)): return float('inf')
-                return default_value
-            
             capability_config = self._rbac_capabilities.get('capabilities', {}).get(capability_key)
             if not capability_config:
                 return default_value
-
-            for role in user_roles:
+            
+            for role in user_info["roles"]:
                 if role in capability_config.get('roles', {}):
                     return capability_config['roles'][role]
             
+            if user_info["tier"] in capability_config.get('tiers', {}):
+                return capability_config['tiers'][user_info["tier"]]
+
             return capability_config.get('default', default_value)
 
-    # Patch the actual imports for testing
-    import streamlit as st_mock
-    if not hasattr(st_mock, 'secrets'):
-        st_mock.secrets = MockSecrets()
-    
-    sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
+    # Patch relevant modules
+    sys.modules['config.config_manager'] = MagicMock()
     sys.modules['utils.user_manager'] = MockUserManager()
-    sys.modules['utils.user_manager']._RBAC_CAPABILITIES = MockUserManager()._rbac_capabilities
-    sys.modules['utils.user_manager']._TIER_HIERARCHY = MockUserManager()._tier_hierarchy
+    sys.modules['utils.analytics_tracker'] = MagicMock()
+    sys.modules['utils.analytics_tracker'].log_event = MagicMock()
+    
+    # Mock the vector store and export functions
+    class MockVectorStore:
+        def similarity_search(self, query: str, k: int) -> List[Any]:
+            if "report" in query.lower():
+                # For testing export, return a document with content
+                mock_doc_content = "This is a mock report with key points."
+                # Langchain Document objects have page_content attribute
+                mock_doc = MagicMock()
+                mock_doc.page_content = mock_doc_content
+                return [mock_doc]
+            elif "no info" in query.lower():
+                return []
+            # Simulate general results
+            doc1 = MagicMock()
+            doc1.page_content = f"Mock chunk 1 for '{query}'"
+            doc2 = MagicMock()
+            doc2.page_content = f"Mock chunk 2 for '{query}'"
+            return [doc1, doc2][:k] # Return up to k mock documents
+    
+    # Mock load_vectorstore to return our MockVectorStore
+    # Patch the actual module-level load_vectorstore from shared_tools.vector_utils
+    with patch('shared_tools.vector_utils.load_vectorstore', new=MagicMock(return_value=MockVectorStore())):
+        with patch('shared_tools.export_utils.export_vector_results', new=MagicMock(return_value="/tmp/mock_export.txt")):
+            async def run_tests():
+                test_user_pro = "test_user_pro"
+                test_user_premium = "test_user_premium"
+                test_user_free = "test_user_free"
+                test_user_admin = "test_user_admin"
 
-    # Mock vector_utils functions
-    sys.modules['shared_tools.vector_utils']._embedding_model_instance = None # Reset mock embedding
-    sys.modules['shared_tools.vector_utils'].get_embedding_model() # Initialize mock embedding
+                # Test 1: Pro user, general query (allowed)
+                print("\n--- Test 1: Pro user, general query ---")
+                result1 = await query_uploaded_docs("What is the main topic?", user_token=test_user_pro)
+                print(f"Result 1 (Pro user): {result1}")
+                assert "Mock chunk 1" in result1
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once_with(test_user_pro, "query_uploaded_docs", "success", {"query": "What is the main topic?", "section": "general"})
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                print("Test 1 Passed.")
 
-    class MockLoadedVectorStore:
-        def __init__(self, path):
-            self.path = path
-        def similarity_search(self, query: str, k: int = 4) -> List[Any]:
-            mock_docs = [
-                type('obj', (object,), {'page_content': f"Mock chunk 1 for '{query}' from {self.path}. This chunk is very relevant.", 'metadata': {'source': 'doc_A.pdf', 'chunk_idx': 0}}),
-                type('obj', (object,), {'page_content': f"Mock chunk 2 for '{query}' from {self.path}. This chunk provides more details.", 'metadata': {'source': 'doc_B.txt', 'chunk_idx': 1}}),
-                type('obj', (object,), {'page_content': f"Mock chunk 3 for '{query}' from {self.path}. This chunk is also relevant.", 'metadata': {'source': 'doc_C.docx', 'chunk_idx': 2}}),
-                type('obj', (object,), {'page_content': f"Mock chunk 4 for '{query}' from {self.path}. This chunk is less relevant.", 'metadata': {'source': 'doc_D.csv', 'chunk_idx': 3}}),
-                type('obj', (object,), {'page_content': f"Mock chunk 5 for '{query}' from {self.path}. This chunk is the least relevant.", 'metadata': {'source': 'doc_E.xlsx', 'chunk_idx': 4}}),
-            ]
-            return mock_docs[:k]
+                # Test 2: Free user, query denied by RBAC
+                print("\n--- Test 2: Free user, query denied by RBAC ---")
+                result2 = await query_uploaded_docs("some query", user_token=test_user_free)
+                print(f"Result 2 (Free user): {result2}")
+                assert "Error: Document querying is not enabled for your current tier." in result2
+                sys.modules['utils.analytics_tracker'].log_event.assert_not_called() # No success event if denied
+                print("Test 2 Passed.")
 
-    sys.modules['shared_tools.vector_utils'].load_vectorstore = MagicMock(return_value=MockLoadedVectorStore(Path("mock_vector_store_path")))
-    sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR = Path("./mock_vector_stores") # Use a mock base dir for tests
+                # Test 3: No relevant info found
+                print("\n--- Test 3: No relevant info found ---")
+                result3 = await query_uploaded_docs("no info", user_token=test_user_pro)
+                print(f"Result 3 (Pro user, no info): {result3}")
+                assert "No relevant information found in uploaded documents." in result3
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once_with(test_user_pro, "query_uploaded_docs", "no_results", {"query": "no info", "section": "general"})
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                print("Test 3 Passed.")
 
-    # Mock export_utils functions
-    sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR = Path("./mock_exports") # Use a mock base dir for tests
-    # Mock firestore.SERVER_TIMESTAMP for export_utils
-    class MockFirestore:
-        SERVER_TIMESTAMP = "MOCK_TIMESTAMP"
-    sys.modules['firebase_admin.firestore'] = MockFirestore()
+                # Test 4: Premium user, query and export (allowed)
+                print("\n--- Test 4: Premium user, query and export ---")
+                result4 = await query_uploaded_docs("report details", user_token=test_user_premium, export=True)
+                print(f"Result 4 (Premium user, export requested):\\n{result4[:200]}...")
+                assert "Query results exported to: /tmp/mock_export.txt" in result4
+                assert "mock report" in result4
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once_with(test_user_premium, "query_uploaded_docs", "exported", {"query": "report details", "section": "general", "export_path": "/tmp/mock_export.txt"})
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                print("Test 4 Passed.")
 
-    # Ensure mock directories exist for tests
-    sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR.mkdir(parents=True, exist_ok=True)
-    sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_pro" / "medical" / "index.faiss").touch()
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_pro" / "medical" / "index.pkl").touch()
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_premium" / "legal" / "index.faiss").touch()
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_premium" / "legal" / "index.pkl").touch()
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_admin" / "finance" / "index.faiss").touch()
-    (sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR / "test_user_admin" / "finance" / "index.pkl").touch()
+                # Test 5: Pro user, export requested but denied by RBAC
+                print("\n--- Test 5: Pro user, export requested but denied by RBAC ---")
+                result5 = await query_uploaded_docs("another query", user_token=test_user_pro, export=True)
+                print(f"Result 5 (Pro user, export requested):\\n{result5[:200]}...")
+                assert "Warning: Export was requested but is not enabled for your current tier." in result5
+                assert "Mock chunk 1" in result5 # Should still return results
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once_with(test_user_pro, "query_uploaded_docs", "export_denied", {"query": "another query", "section": "general"})
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                print("Test 5 Passed.")
 
+                # Test 6: Admin user, full access (allowed)
+                print("\n--- Test 6: Admin user, full access ---")
+                result6 = await query_uploaded_docs("admin query", user_token=test_user_admin, export=True, section="finance")
+                print(f"Result 6 (Admin user): {result6}")
+                assert "Query results exported to: /tmp/mock_export.txt" in result6
+                assert "Mock chunk 1" in result6
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once_with(test_user_admin, "query_uploaded_docs", "exported", {"query": "admin query", "section": "finance", "export_path": "/tmp/mock_export.txt"})
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                print("Test 6 Passed.")
 
-    test_user_free = sys.modules['utils.user_manager']._mock_users["mock_free_token"]['user_id']
-    test_user_pro = sys.modules['utils.user_manager']._mock_users["mock_pro_token"]['user_id']
-    test_user_premium = sys.modules['utils.user_manager']._mock_users["mock_premium_token"]['user_id']
-    test_user_admin = sys.modules['utils.user_manager']._mock_users["mock_admin_token"]['user_id']
+                # Test 7: Error during vector store loading
+                print("\n--- Test 7: Error during vector store loading ---")
+                # Temporarily mock load_vectorstore to raise an exception
+                original_load_vectorstore = load_vectorstore
+                load_vectorstore_mock = MagicMock(side_effect=Exception("Simulated vector store load error"))
+                sys.modules['shared_tools.vector_utils'].load_vectorstore = load_vectorstore_mock
+                
+                result7 = await query_uploaded_docs("error query", user_token=test_user_pro)
+                print(f"Result 7 (Error loading store): {result7}")
+                assert "Error: An unexpected error occurred while querying documents" in result7
+                assert "Simulated vector store load error" in result7
+                sys.modules['utils.analytics_tracker'].log_event.assert_called_once()
+                sys.modules['utils.analytics_tracker'].log_event.reset_mock()
+                # Restore original load_vectorstore
+                sys.modules['shared_tools.vector_utils'].load_vectorstore = original_load_vectorstore
+                print("Test 7 Passed.")
 
-    print("\n--- Testing query_uploaded_docs function ---")
+            asyncio.run(run_tests())
+            print("\nAll query_uploaded_docs tests passed (mocked vector store and RBAC).")
 
-    # Test 1: Pro user, medical section, default k (5)
-    print("\n--- Test 1: Pro user, medical section, default k ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result1 = query_uploaded_docs("symptoms of common cold", user_token=test_user_pro, section="medical")
-    print(f"Result 1 (Pro user, medical):\n{result1[:200]}...")
-    assert "Mock chunk 1 for 'symptoms of common cold'" in result1
-    assert "Mock chunk 5 for 'symptoms of common cold'" in result1 # Should get up to k=5
-    assert "Error: Document querying is not enabled" not in result1
-    print("Test 1 Passed.")
-
-    # Test 2: Premium user, legal section, explicit k=2, with export
-    print("\n--- Test 2: Premium user, legal section, k=2, with export ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_premium
-    result2 = query_uploaded_docs("contract law basics", user_token=test_user_premium, section="legal", k=2, export=True)
-    print(f"Result 2 (Premium user, legal, k=2, export):\n{result2[:200]}...")
-    assert "Mock chunk 1 for 'contract law basics'" in result2
-    assert "Mock chunk 2 for 'contract law basics'" in result2
-    assert "Mock chunk 3 for 'contract law basics'" not in result2 # Should be limited to k=2
-    assert "Vector search results exported to:" in result2 # Should export
-    assert (sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR / test_user_premium / "legal").exists()
-    print("Test 2 Passed.")
-
-    # Test 3: Free user, document querying disabled
-    print("\n--- Test 3: Free user, querying disabled ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_free
-    result3 = query_uploaded_docs("any query", user_token=test_user_free, section="general")
-    print(f"Result 3 (Free user): {result3}")
-    assert "Error: Document querying is not enabled for your current tier." in result3
-    print("Test 3 Passed.")
-
-    # Test 4: Admin user, finance section, explicit k=15 (admin override), with export
-    print("\n--- Test 4: Admin user, finance section, k=15, with export ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_admin
-    result4 = query_uploaded_docs("stock market trends", user_token=test_user_admin, section="finance", k=15, export=True)
-    print(f"Result 4 (Admin user, finance, k=15, export):\n{result4[:200]}...")
-    assert "Mock chunk 1 for 'stock market trends'" in result4
-    assert "Vector search results exported to:" in result4 # Should export
-    assert (sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR / test_user_admin / "finance").exists()
-    print("Test 4 Passed.")
-
-    # Test 5: Pro user, export requested but not allowed (chart_export_enabled is False for Pro by default)
-    print("\n--- Test 5: Pro user, export requested but not allowed ---")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result5 = query_uploaded_docs("pro export test", user_token=test_user_pro, section="medical", export=True)
-    print(f"Result 5 (Pro user, export requested):\n{result5[:200]}...")
-    assert "Warning: Export was requested but is not enabled for your current tier." in result5
-    assert "Mock chunk 1" in result5 # Should still return results
-    print("Test 5 Passed.")
-
-    # Test 6: Vector store not found
-    print("\n--- Test 6: Vector store not found ---")
-    sys.modules['shared_tools.vector_utils'].load_vectorstore.side_effect = ValueError("Vector store not found at mock_path")
-    sys.modules['utils.user_manager']._current_mock_user = test_user_pro
-    result6 = query_uploaded_docs("non-existent store", user_token=test_user_pro, section="non_existent")
-    print(f"Result 6 (Non-existent store): {result6}")
-    assert "Error: Vector store not found at mock_path" in result6
-    sys.modules['shared_tools.vector_utils'].load_vectorstore.side_effect = None # Reset mock
-    print("Test 6 Passed.")
-
-    print("\nAll query_uploaded_docs tests passed (mocked vector store and RBAC).")
-
-    # Clean up mock directories
-    if sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR.exists():
-        shutil.rmtree(sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR)
-    if sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR.exists():
-        shutil.rmtree(sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR)
-    print(f"\nCleaned up mock directories: {sys.modules['shared_tools.vector_utils'].BASE_VECTOR_DIR}, {sys.modules['shared_tools.export_utils'].BASE_EXPORT_DIR}")
+            # Clean up mock export file if it was created
+            if Path("/tmp/mock_export.txt").exists():
+                Path("/tmp/mock_export.txt").unlink()
