@@ -290,6 +290,7 @@ if __name__ == "__main__":
     import shutil
     from unittest.mock import MagicMock, patch
     import sys
+    import asyncio # Import asyncio
 
     logging.basicConfig(level=logging.INFO)
 
@@ -300,8 +301,6 @@ if __name__ == "__main__":
     mock_user_free_profile = UserProfile(user_id="mock_free_token", username="FreeUser", email="free@example.com", tier="free", roles=["user"])
     mock_user_admin_profile = UserProfile(user_id="mock_admin_token", username="AdminUser", email="admin@example.com", tier="admin", roles=["user", "admin"])
 
-
-    pass
 
     # Mock user_manager.get_user_tier_capability for testing RBAC
     class MockUserManager:
@@ -377,204 +376,210 @@ if __name__ == "__main__":
             return capability_config.get('default', default_value)
 
     # Patch the actual imports for testing
+    # Assuming MockSecrets is defined elsewhere or not strictly needed for this specific error fix
+    class MockSecrets:
+        pass
     import streamlit as st_mock
     if not hasattr(st_mock, 'secrets'):
         st_mock.secrets = MockSecrets()
     
     # Mock config_manager and user_manager
-    sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
+    sys.modules['config.config_manager'].config_manager = MagicMock() # Use MagicMock as we don't have the full class definition
+    sys.modules['config.config_manager'].ConfigManager = MagicMock # Use MagicMock as we don't have the full class definition
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability
     # Also set the internal _RBAC_CAPABILITIES and _TIER_HIERARCHY for direct access in other modules if they use it
     sys.modules['utils.user_manager']._RBAC_CAPABILITIES = MockUserManager()._rbac_capabilities
     sys.modules['utils.user_manager']._TIER_HIERARCHY = MockUserManager()._tier_hierarchy
 
+    async def run_chart_tests(): # Define an async function for tests
+        print("\n--- Testing ChartTools functions ---")
+        
+        # Instantiate ChartTools for testing
+        chart_tools_instance = ChartTools(config_manager=sys.modules['config.config_manager'].config_manager)
 
-    print("\n--- Testing ChartTools functions ---")
-    
-    # Instantiate ChartTools for testing
-    chart_tools_instance = ChartTools(config_manager=sys.modules['config.config_manager'].config_manager)
+        sample_data = [
+            {"month": "Jan", "sales": 100, "expenses": 50, "region": "East"},
+            {"month": "Feb", "sales": 120, "expenses": 60, "region": "West"},
+            {"month": "Mar", "sales": 90, "expenses": 55, "region": "East"},
+            {"month": "Apr", "sales": 130, "expenses": 70, "region": "West"},
+            {"month": "May", "sales": 110, "expenses": 65, "region": "East"},
+            {"month": "Jun", "sales": 140, "expenses": 75, "region": "West"},
+        ]
+        sample_data_json = json.dumps(sample_data)
 
-    sample_data = [
-        {"month": "Jan", "sales": 100, "expenses": 50, "region": "East"},
-        {"month": "Feb", "sales": 120, "expenses": 60, "region": "West"},
-        {"month": "Mar", "sales": 90, "expenses": 55, "region": "East"},
-        {"month": "Apr", "sales": 130, "expenses": 70, "region": "West"},
-        {"month": "May", "sales": 110, "expenses": 65, "region": "East"},
-        {"month": "Jun", "sales": 140, "expenses": 75, "region": "West"},
-    ]
-    sample_data_json = json.dumps(sample_data)
+        # Data for histogram/boxplot
+        numerical_data = [{"value": x} for x in np.random.normal(loc=50, scale=10, size=100).tolist()]
+        numerical_data_json = json.dumps(numerical_data)
 
-    # Data for histogram/boxplot
-    numerical_data = [{"value": x} for x in np.random.normal(loc=50, scale=10, size=100).tolist()]
-    numerical_data_json = json.dumps(numerical_data)
-
-    # Data for pie chart
-    pie_data = [
-        {"category": "A", "count": 30},
-        {"category": "B", "count": 20},
-        {"category": "C", "count": 50},
-    ]
-    pie_data_json = json.dumps(pie_data)
-
-
-    # Clean up charts directory from previous runs
-    if BASE_CHART_DIR.exists():
-        shutil.rmtree(BASE_CHART_DIR)
-    BASE_CHART_DIR.mkdir(exist_ok=True)
+        # Data for pie chart
+        pie_data = [
+            {"category": "A", "count": 30},
+            {"category": "B", "count": 20},
+            {"category": "C", "count": 50},
+        ]
+        pie_data_json = json.dumps(pie_data)
 
 
-    # Test 1: Pro user - Matplotlib Line chart (allowed)
-    print("\n--- Test 1: Pro user, Matplotlib Line chart ---")
-    chart_path_pro_line = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="line",
-        x_column="month",
-        y_column="sales",
-        title="Monthly Sales (Pro User)",
-        user_context=mock_user_pro_profile,
-        library="matplotlib"
-    )
-    print(f"Chart path (Pro user, Matplotlib Line): {chart_path_pro_line}")
-    assert isinstance(chart_path_pro_line, str) and Path(chart_path_pro_line).exists()
-    assert Path(chart_path_pro_line).parent.name == mock_user_pro_profile.user_id
-    print("Test 1 Passed: Matplotlib Line chart generated for Pro user.")
-
-    # Test 2: Pro user - Seaborn Bar chart (denied by RBAC)
-    print("\n--- Test 2: Pro user, Seaborn Bar chart (Denied) ---")
-    error_message_pro_seaborn = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="bar",
-        x_column="month",
-        y_column="sales",
-        user_context=mock_user_pro_profile,
-        library="seaborn" # Pro user not allowed Seaborn
-    )
-    print(f"Result (Pro user, Seaborn): {error_message_pro_seaborn}")
-    assert "Error: Access to the 'seaborn' plotting library is not enabled for your current tier." in error_message_pro_seaborn
-    print("Test 2 Passed: Seaborn access correctly denied for Pro user.")
-
-    # Test 3: Premium user - Seaborn Histogram (allowed)
-    print("\n--- Test 3: Premium user, Seaborn Histogram ---")
-    chart_path_premium_hist = await chart_tools_instance.generate_and_save_chart(
-        data_json=numerical_data_json,
-        chart_type="histogram",
-        x_column="value",
-        title="Value Distribution (Premium User, Seaborn)",
-        user_context=mock_user_premium_profile,
-        library="seaborn"
-    )
-    print(f"Chart path (Premium user, Seaborn Hist): {chart_path_premium_hist}")
-    assert isinstance(chart_path_premium_hist, str) and Path(chart_path_premium_hist).exists()
-    print("Test 3 Passed: Seaborn Histogram generated for Premium user.")
-
-    # Test 4: Premium user - Plotly Pie chart (allowed)
-    print("\n--- Test 4: Premium user, Plotly Pie chart ---")
-    chart_path_premium_pie = await chart_tools_instance.generate_and_save_chart(
-        data_json=pie_data_json,
-        chart_type="pie",
-        names_column="category",
-        values_column="count",
-        title="Category Distribution (Premium User, Plotly)",
-        user_context=mock_user_premium_profile,
-        library="plotly",
-        export_format="html" # Test HTML export
-    )
-    print(f"Chart path (Premium user, Plotly Pie HTML): {chart_path_premium_pie}")
-    assert isinstance(chart_path_premium_pie, str) and Path(chart_path_premium_pie).exists()
-    assert chart_path_premium_pie.endswith(".html")
-    print("Test 4 Passed: Plotly Pie chart (HTML) generated for Premium user.")
-
-    # Test 5: Free user - Chart generation denied (general RBAC)
-    print("\n--- Test 5: Free user, Chart generation denied (general RBAC) ---")
-    error_message_free_general = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="line",
-        x_column="month",
-        y_column="sales",
-        user_context=mock_user_free_profile,
-        library="matplotlib"
-    )
-    print(f"Result (Free user, general denial): {error_message_free_general}")
-    assert "Error: Chart generation is not enabled for your current tier." in error_message_free_general
-    print("Test 5 Passed: General chart generation correctly denied for Free user.")
-
-    # Test 6: Admin user - Plotly Area chart (allowed, admin override)
-    print("\n--- Test 6: Admin user, Plotly Area chart ---")
-    chart_path_admin_area = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="area",
-        x_column="month",
-        y_column="sales",
-        title="Monthly Sales Area (Admin User, Plotly)",
-        user_context=mock_user_admin_profile,
-        library="plotly"
-    )
-    print(f"Chart path (Admin user, Plotly Area): {chart_path_admin_area}")
-    assert isinstance(chart_path_admin_area, str) and Path(chart_path_admin_area).exists()
-    print("Test 6 Passed: Plotly Area chart generated for Admin user.")
-
-    # Test 7: Pro user - Pie chart (type denied by RBAC)
-    print("\n--- Test 7: Pro user, Pie chart (type denied) ---")
-    error_message_pro_pie = await chart_tools_instance.generate_and_save_chart(
-        data_json=pie_data_json,
-        chart_type="pie",
-        names_column="category",
-        values_column="count",
-        user_context=mock_user_pro_profile,
-        library="matplotlib" # Matplotlib is allowed, but pie chart type is not for Pro
-    )
-    print(f"Result (Pro user, Pie type denied): {error_message_pro_pie}")
-    assert "Error: The chart type 'pie' is not enabled for your current tier." in error_message_pro_pie
-    print("Test 7 Passed: Pie chart type correctly denied for Pro user.")
-
-    # Test 8: Pro user - HTML export (denied by RBAC)
-    print("\n--- Test 8: Pro user, HTML export (denied) ---")
-    error_message_pro_html_export = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="line",
-        x_column="month",
-        y_column="sales",
-        user_context=mock_user_pro_profile,
-        library="matplotlib",
-        export_format="html" # HTML export not allowed for Pro
-    )
-    print(f"Result (Pro user, HTML export denied): {error_message_pro_html_export}")
-    assert "Error: Exporting charts to 'html' format is not enabled for your current tier." in error_message_pro_html_export
-    print("Test 8 Passed: HTML export correctly denied for Pro user.")
+        # Clean up charts directory from previous runs
+        if BASE_CHART_DIR.exists():
+            shutil.rmtree(BASE_CHART_DIR)
+        BASE_CHART_DIR.mkdir(exist_ok=True)
 
 
-    # Test 9: Invalid JSON data
-    print("\n--- Test 9: Invalid JSON data ---")
-    invalid_json_result = await chart_tools_instance.generate_and_save_chart(
-        data_json="not a json string",
-        chart_type="line",
-        x_column="month",
-        y_column="sales",
-        user_context=mock_user_pro_profile,
-        library="matplotlib"
-    )
-    print(f"Result (Invalid JSON): {invalid_json_result}")
-    assert "Error: Invalid JSON data provided for chart generation." in invalid_json_result
-    print("Test 9 Passed: Invalid JSON data handled.")
+        # Test 1: Pro user - Matplotlib Line chart (allowed)
+        print("\n--- Test 1: Pro user, Matplotlib Line chart ---")
+        chart_path_pro_line = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="line",
+            x_column="month",
+            y_column="sales",
+            title="Monthly Sales (Pro User)",
+            user_context=mock_user_pro_profile,
+            library="matplotlib"
+        )
+        print(f"Chart path (Pro user, Matplotlib Line): {chart_path_pro_line}")
+        assert isinstance(chart_path_pro_line, str) and Path(chart_path_pro_line).exists()
+        assert Path(chart_path_pro_line).parent.name == mock_user_pro_profile.user_id
+        print("Test 1 Passed: Matplotlib Line chart generated for Pro user.")
 
-    # Test 10: Missing columns for required chart type
-    print("\n--- Test 10: Missing columns for required chart type ---")
-    missing_columns_result = await chart_tools_instance.generate_and_save_chart(
-        data_json=sample_data_json,
-        chart_type="line",
-        x_column="non_existent_col_x",
-        y_column="non_existent_col_y",
-        user_context=mock_user_pro_profile,
-        library="matplotlib"
-    )
-    print(f"Result (Missing columns): {missing_columns_result}")
-    assert "Error: Specified columns 'non_existent_col_x' or 'non_existent_col_y' not found in data." in missing_columns_result
-    print("Test 10 Passed: Missing columns handled.")
+        # Test 2: Pro user - Seaborn Bar chart (denied by RBAC)
+        print("\n--- Test 2: Pro user, Seaborn Bar chart (Denied) ---")
+        error_message_pro_seaborn = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="bar",
+            x_column="month",
+            y_column="sales",
+            user_context=mock_user_pro_profile,
+            library="seaborn" # Pro user not allowed Seaborn
+        )
+        print(f"Result (Pro user, Seaborn): {error_message_pro_seaborn}")
+        assert "Error: Access to the 'seaborn' plotting library is not enabled for your current tier." in error_message_pro_seaborn
+        print("Test 2 Passed: Seaborn access correctly denied for Pro user.")
 
-    print("\nAll ChartTools tests completed.")
+        # Test 3: Premium user - Seaborn Histogram (allowed)
+        print("\n--- Test 3: Premium user, Seaborn Histogram ---")
+        chart_path_premium_hist = await chart_tools_instance.generate_and_save_chart(
+            data_json=numerical_data_json,
+            chart_type="histogram",
+            x_column="value",
+            title="Value Distribution (Premium User, Seaborn)",
+            user_context=mock_user_premium_profile,
+            library="seaborn"
+        )
+        print(f"Chart path (Premium user, Seaborn Hist): {chart_path_premium_hist}")
+        assert isinstance(chart_path_premium_hist, str) and Path(chart_path_premium_hist).exists()
+        print("Test 3 Passed: Seaborn Histogram generated for Premium user.")
 
-    # Clean up generated chart files and directories
-    if BASE_CHART_DIR.exists():
-        shutil.rmtree(BASE_CHART_DIR)
-        print(f"\nCleaned up chart directory: {BASE_CHART_DIR}")
+        # Test 4: Premium user - Plotly Pie chart (allowed)
+        print("\n--- Test 4: Premium user, Plotly Pie chart ---")
+        chart_path_premium_pie = await chart_tools_instance.generate_and_save_chart(
+            data_json=pie_data_json,
+            chart_type="pie",
+            names_column="category",
+            values_column="count",
+            title="Category Distribution (Premium User, Plotly)",
+            user_context=mock_user_premium_profile,
+            library="plotly",
+            export_format="html" # Test HTML export
+        )
+        print(f"Chart path (Premium user, Plotly Pie HTML): {chart_path_premium_pie}")
+        assert isinstance(chart_path_premium_pie, str) and Path(chart_path_premium_pie).exists()
+        assert chart_path_premium_pie.endswith(".html")
+        print("Test 4 Passed: Plotly Pie chart (HTML) generated for Premium user.")
+
+        # Test 5: Free user - Chart generation denied (general RBAC)
+        print("\n--- Test 5: Free user, Chart generation denied (general RBAC) ---")
+        error_message_free_general = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="line",
+            x_column="month",
+            y_column="sales",
+            user_context=mock_user_free_profile,
+            library="matplotlib"
+        )
+        print(f"Result (Free user, general denial): {error_message_free_general}")
+        assert "Error: Chart generation is not enabled for your current tier." in error_message_free_general
+        print("Test 5 Passed: General chart generation correctly denied for Free user.")
+
+        # Test 6: Admin user - Plotly Area chart (allowed, admin override)
+        print("\n--- Test 6: Admin user, Plotly Area chart ---")
+        chart_path_admin_area = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="area",
+            x_column="month",
+            y_column="sales",
+            title="Monthly Sales Area (Admin User, Plotly)",
+            user_context=mock_user_admin_profile,
+            library="plotly"
+        )
+        print(f"Chart path (Admin user, Plotly Area): {chart_path_admin_area}")
+        assert isinstance(chart_path_admin_area, str) and Path(chart_path_admin_area).exists()
+        print("Test 6 Passed: Plotly Area chart generated for Admin user.")
+
+        # Test 7: Pro user - Pie chart (type denied by RBAC)
+        print("\n--- Test 7: Pro user, Pie chart (type denied) ---")
+        error_message_pro_pie = await chart_tools_instance.generate_and_save_chart(
+            data_json=pie_data_json,
+            chart_type="pie",
+            names_column="category",
+            values_column="count",
+            user_context=mock_user_pro_profile,
+            library="matplotlib" # Matplotlib is allowed, but pie chart type is not for Pro
+        )
+        print(f"Result (Pro user, Pie type denied): {error_message_pro_pie}")
+        assert "Error: The chart type 'pie' is not enabled for your current tier." in error_message_pro_pie
+        print("Test 7 Passed: Pie chart type correctly denied for Pro user.")
+
+        # Test 8: Pro user - HTML export (denied by RBAC)
+        print("\n--- Test 8: Pro user, HTML export (denied) ---")
+        error_message_pro_html_export = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="line",
+            x_column="month",
+            y_column="sales",
+            user_context=mock_user_pro_profile,
+            library="matplotlib",
+            export_format="html" # HTML export not allowed for Pro
+        )
+        print(f"Result (Pro user, HTML export denied): {error_message_pro_html_export}")
+        assert "Error: Exporting charts to 'html' format is not enabled for your current tier." in error_message_pro_html_export
+        print("Test 8 Passed: HTML export correctly denied for Pro user.")
+
+
+        # Test 9: Invalid JSON data
+        print("\n--- Test 9: Invalid JSON data ---")
+        invalid_json_result = await chart_tools_instance.generate_and_save_chart(
+            data_json="not a json string",
+            chart_type="line",
+            x_column="month",
+            y_column="sales",
+            user_context=mock_user_pro_profile,
+            library="matplotlib"
+        )
+        print(f"Result (Invalid JSON): {invalid_json_result}")
+        assert "Error: Invalid JSON data provided for chart generation." in invalid_json_result
+        print("Test 9 Passed: Invalid JSON data handled.")
+
+        # Test 10: Missing columns for required chart type
+        print("\n--- Test 10: Missing columns for required chart type ---")
+        missing_columns_result = await chart_tools_instance.generate_and_save_chart(
+            data_json=sample_data_json,
+            chart_type="line",
+            x_column="non_existent_col_x",
+            y_column="non_existent_col_y",
+            user_context=mock_user_pro_profile,
+            library="matplotlib"
+        )
+        print(f"Result (Missing columns): {missing_columns_result}")
+        assert "Error: Specified columns 'non_existent_col_x' or 'non_existent_col_y' not found in data." in missing_columns_result
+        print("Test 10 Passed: Missing columns handled.")
+
+        print("\nAll ChartTools tests completed.")
+
+        # Clean up generated chart files and directories
+        if BASE_CHART_DIR.exists():
+            shutil.rmtree(BASE_CHART_DIR)
+            print(f"\nCleaned up chart directory: {BASE_CHART_DIR}")
+
+    # Run the async test function
+    asyncio.run(run_chart_tests())
