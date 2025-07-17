@@ -7,19 +7,18 @@ import os
 import shutil
 import base64
 import asyncio
+from datetime import datetime, timezone
+from unittest.mock import MagicMock # For mocks
 
 # Import necessary components for vector storage and processing
-# Assuming you have a vector database client or a local vector store setup
 # For demonstration, we'll use a simple in-memory mock or a file-based approach.
 # In a real application, this would integrate with Pinecone, Milvus, Chroma, FAISS, etc.
 
 # Import dependencies
 from config.config_manager import config_manager
 from utils.analytics_tracker import log_event
-# CORRECTED: Import the CloudStorageUtilsWrapper class, not individual functions
+# CORRECTED: Import the CloudStorageUtilsWrapper class
 from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper 
-# Assuming you have a document loader/splitter (e.g., from langchain)
-# For this example, we'll mock it.
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +53,57 @@ class MockFirestoreManager:
         logger.debug(f"MockFirestoreManager: Adding document with data {data}")
         return MagicMock(id="mock_doc_id")
 
-# Assuming CloudStorageUtilsWrapper can be initialized with config_manager
-_cloud_storage_utils_instance = CloudStorageUtilsWrapper(config_manager)
+class MockCloudStorageUtilsWrapper:
+    """Mock CloudStorageUtilsWrapper for testing when GCS is not configured."""
+    def __init__(self, config_manager):
+        logger.info("Using MockCloudStorageUtilsWrapper")
+        self.config_manager = config_manager # Keep it for consistency, but not used by mocks
+        self.bucket_name = "mock-bucket"
 
-# --- Global instance of VectorUtilsWrapper and a factory function ---
+    async def upload_file(self, source_file_path: Path, destination_blob_name: str) -> str:
+        logger.info(f"Mock GCS: Uploading {source_file_path} to {destination_blob_name}")
+        return f"gs://{self.bucket_name}/{destination_blob_name}"
+
+    async def download_file(self, source_blob_name: str, destination_file_path: Path) -> str:
+        logger.info(f"Mock GCS: Downloading {source_blob_name} to {destination_file_path}")
+        destination_file_path.touch() # Create an empty file to simulate download
+        return str(destination_file_path)
+
+    async def delete_blob(self, blob_name: str) -> str:
+        logger.info(f"Mock GCS: Deleting {blob_name}")
+        return f"Blob {blob_name} deleted."
+
+
+# Determine which CloudStorageUtilsWrapper to use based on config or env
+# Check if a GCS bucket name is configured in config_manager
+gcs_bucket_configured = config_manager.get_config("gcs_bucket_name") is not None
+
+if gcs_bucket_configured:
+    # Attempt to use the real CloudStorageUtilsWrapper
+    # Its __init__ will log errors if GCS credentials are bad, but won't crash
+    _cloud_storage_utils_instance = CloudStorageUtilsWrapper(config_manager)
+    # If GCS client failed to initialize within CloudStorageUtilsWrapper,
+    # _cloud_storage_utils_instance._gcs_client will be None.
+    # We can further check it here if we want to switch to mock post-init.
+    if _cloud_storage_utils_instance._gcs_client is None:
+        logger.warning("Real GCS client failed to initialize, falling back to MockCloudStorageUtilsWrapper.")
+        _cloud_storage_utils_instance = MockCloudStorageUtilsWrapper(config_manager)
+else:
+    logger.info("GCS bucket name not configured. Using MockCloudStorageUtilsWrapper.")
+    _cloud_storage_utils_instance = MockCloudStorageUtilsWrapper(config_manager)
+
+# Global instance of VectorUtilsWrapper, initialized lazily
 _vector_utils_instance: Optional['VectorUtilsWrapper'] = None
 
 def _get_vector_utils_instance() -> 'VectorUtilsWrapper':
     """
     Returns a lazily initialized singleton instance of VectorUtilsWrapper.
-    In a production environment, ensure FirestoreManager and CloudStorageUtilsWrapper
-    are properly initialized and passed here.
     """
     global _vector_utils_instance
     if _vector_utils_instance is None:
         _vector_utils_instance = VectorUtilsWrapper(
             firestore_manager=MockFirestoreManager(), # Replace with your actual FirestoreManager instance
-            cloud_storage_utils=_cloud_storage_utils_instance, # Replace with your actual CloudStorageUtilsWrapper instance
+            cloud_storage_utils=_cloud_storage_utils_instance, # This will be either real or mock GCS
             config_manager=config_manager
         )
     return _vector_utils_instance
@@ -136,17 +169,6 @@ class VectorUtilsWrapper:
         """
         await self.initialize_vector_store(user_id, section) # Ensure path exists
 
-        # In a real application, this would load the FAISS index, or connect to Pinecone/Chroma.
-        # Example for FAISS:
-        # try:
-        #     embeddings = OpenAIEmbeddings() # Or your chosen embeddings
-        #     vectorstore = FAISS.load_local(BASE_VECTOR_DIR / user_id / section, embeddings)
-        # except Exception as e:
-        #     logger.warning(f"Could not load local FAISS index for {user_id}/{section}: {e}")
-        #     # Fallback or re-create
-        #     vectorstore = FAISS.from_documents([], embeddings) # Create an empty one
-        # return vectorstore
-
         # Mock vector store for demonstration
         class MockVectorStore:
             def similarity_search(self, query: str, k: int) -> List[Any]:
@@ -191,17 +213,16 @@ class VectorUtilsWrapper:
             query_ref = query_ref.where("section", "==", section)
         
         # Mocking the query results
-        # In a real scenario, you'd fetch from Firestore
         mock_docs = [
-            {"document_id": "doc1", "section": "general", "content_snippet": "First document...", "metadata": {"title": "Doc One"}},
-            {"document_id": "doc2", "section": "finance", "content_snippet": "Finance report summary...", "metadata": {"title": "Financials"}},
+            {"user_id": user_id, "document_id": "doc1", "section": "general", "content_snippet": "First document...", "metadata": {"title": "Doc One"}},
+            {"user_id": user_id, "document_id": "doc2", "section": "finance", "content_snippet": "Finance report summary...", "metadata": {"title": "Financials"}},
         ]
         results = [d for d in mock_docs if d["user_id"] == user_id and (not section or d["section"] == section)]
 
         log_event(user_id, "list_indexed_documents", "success", {"section": section, "count": len(results)})
         return results
 
-# NEW: Module-level function for load_vectorstore, wrapping the instance method
+# Module-level function for load_vectorstore, wrapping the instance method
 async def load_vectorstore(user_id: str, section: str) -> Any:
     """
     Loads the appropriate vector store for a given user and section.
@@ -210,7 +231,7 @@ async def load_vectorstore(user_id: str, section: str) -> Any:
     instance = _get_vector_utils_instance()
     return await instance.load_vectorstore(user_id, section)
 
-# NEW: Module-level function for add_document_to_vector_store, wrapping the instance method
+# Module-level function for add_document_to_vector_store, wrapping the instance method
 async def add_document_to_vector_store(user_id: str, section: str, document_content: str, metadata: Dict[str, Any]) -> str:
     """
     Processes a document, generates embeddings, and adds it to the vector store.
@@ -219,7 +240,7 @@ async def add_document_to_vector_store(user_id: str, section: str, document_cont
     instance = _get_vector_utils_instance()
     return await instance.add_document_to_vector_store(user_id, section, document_content, metadata)
 
-# NEW: Module-level function for delete_vector_store, wrapping the instance method
+# Module-level function for delete_vector_store, wrapping the instance method
 async def delete_vector_store(user_id: str, section: str) -> str:
     """
     Deletes the vector store for a given user and section.
@@ -228,7 +249,7 @@ async def delete_vector_store(user_id: str, section: str) -> str:
     instance = _get_vector_utils_instance()
     return await instance.delete_vector_store(user_id, section)
 
-# NEW: Module-level function for list_indexed_documents, wrapping the instance method
+# Module-level function for list_indexed_documents, wrapping the instance method
 async def list_indexed_documents(user_id: str, section: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Lists metadata for documents indexed in the vector store for a user,
@@ -239,13 +260,50 @@ async def list_indexed_documents(user_id: str, section: Optional[str] = None) ->
     return await instance.list_indexed_documents(user_id, section)
 
 
-# CLI Test (optional) - Moved to query_uploaded_docs_tool.py if it's the primary tool to test
-# To run tests for vector_utils.py directly, you would need to set up mocks appropriately.
+# CLI Test (optional)
 if __name__ == "__main__":
     from unittest.mock import MagicMock
-    from datetime import datetime, timezone
-
+    import sys
+    import asyncio
+    
     logging.basicConfig(level=logging.INFO)
+
+    # Mock config_manager for testing purposes
+    class MockConfigManager:
+        def __init__(self):
+            self._secrets = {}
+            # Set to None by default for mock GCS if no specific bucket name is provided
+            self._configs = {"gcs_bucket_name": None} 
+
+        def get_secret(self, key: str) -> Optional[str]:
+            return self._secrets.get(key)
+
+        def set_secret(self, key: str, value: str):
+            self._secrets[key] = value
+
+        def get_config(self, key: str) -> Any:
+            return self._configs.get(key)
+        
+        def set_config(self, key: str, value: Any):
+            self._configs[key] = value
+
+    sys.modules['config.config_manager'] = MockConfigManager()
+    sys.modules['utils.analytics_tracker'] = MagicMock()
+    sys.modules['utils.analytics_tracker'].log_event = MagicMock()
+
+    # Create a test config manager
+    test_config_manager = MockConfigManager()
+    # If you want to test with real GCS (after setting up credentials), uncomment below:
+    # test_config_manager.set_config("gcs_bucket_name", "your-test-bucket-name")
+    # os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/path/to/your/laxjovial-c126e7532150.json" # Set this if you have the file
+
+    # Note: For module-level imports, the global config_manager is used at import time.
+    # To properly test the GCS fallback logic in `if __name__ == "__main__":` block,
+    # you might need to run this file directly and ensure `gcs_bucket_configured` evaluates
+    # based on the `test_config_manager` if it's assigned to the global `config_manager`
+    # *before* `_cloud_storage_utils_instance` is initialized.
+    # For now, the existing `if gcs_bucket_configured:` logic will handle it based on the
+    # `config_manager` that was imported at the top of the module.
 
     async def run_vector_utils_tests():
         print("Running VectorUtilsWrapper tests...")
@@ -271,8 +329,8 @@ if __name__ == "__main__":
         print(f"Add Document Result: {add_result}")
         assert f"Document {test_section}_" in add_result and "added to vector store" in add_result
         assert test_vector_dir.exists()
-        log_event.assert_called_once()
-        log_event.reset_mock()
+        sys.modules['utils.analytics_tracker'].log_event.assert_called_once()
+        sys.modules['utils.analytics_tracker'].log_event.reset_mock()
         print("Test 1 Passed.")
 
         # Test load_vectorstore and similarity_search
@@ -283,31 +341,17 @@ if __name__ == "__main__":
         query_result = vectorstore.similarity_search("sample query", k=1)
         print(f"Query Result: {query_result[0].page_content}")
         assert "Relevant data point 1" in query_result[0].page_content
-        log_event.assert_called_once()
-        log_event.reset_mock()
+        sys.modules['utils.analytics_tracker'].log_event.assert_called_once()
+        sys.modules['utils.analytics_tracker'].log_event.reset_mock()
         print("Test 2 Passed.")
-
-        # Test query_uploaded_docs (no relevant info) - this test is for the tool, not vector_utils itself
-        # print("\n--- Test 3: query_uploaded_docs (no relevant info) ---")
-        # # This would call the query_uploaded_docs from query_uploaded_docs_tool.py, not directly part of vector_utils.py tests
-        # query_result_no_info = await query_uploaded_docs( # This assumes query_uploaded_docs is imported
-        #     query="no info",
-        #     user_token=test_user_id,
-        #     section=test_section
-        # )
-        # print(f"Query Uploaded Docs Result (No Info): {query_result_no_info}")
-        # assert "No relevant information found in uploaded documents." in query_result_no_info
-        # log_event.assert_called_once()
-        # log_event.reset_mock()
-        # print("Test 3 Passed.")
 
         # Test list_indexed_documents
         print("\n--- Test 3: list_indexed_documents ---")
         indexed_docs = await list_indexed_documents(user_id=test_user_id, section=test_section)
         print(f"Indexed Documents: {indexed_docs}")
         assert len(indexed_docs) > 0 # Should at least see the mock docs
-        log_event.assert_called_once()
-        log_event.reset_mock()
+        sys.modules['utils.analytics_tracker'].log_event.assert_called_once()
+        sys.modules['utils.analytics_tracker'].log_event.reset_mock()
         print("Test 3 Passed.")
 
 
@@ -317,9 +361,32 @@ if __name__ == "__main__":
         print(f"Delete Result: {delete_result}")
         assert "deleted" in delete_result
         assert not test_vector_dir.exists()
-        log_event.assert_called_once()
-        log_event.reset_mock()
+        sys.modules['utils.analytics_tracker'].log_event.assert_called_once()
+        sys.modules['utils.analytics_tracker'].log_event.reset_mock()
         print("Test 4 Passed.")
+
+        # Test GCS Mock functionality
+        print("\n--- Test 5: GCS Mock (internal to VectorUtilsWrapper) ---")
+        gcs_mock_instance = _get_vector_utils_instance().cloud_storage_utils
+        assert isinstance(gcs_mock_instance, MockCloudStorageUtilsWrapper)
+
+        mock_file = Path("mock_file.txt")
+        mock_file.write_text("test content")
+        upload_res = await gcs_mock_instance.upload_file(mock_file, "test_blob.txt")
+        print(f"Mock GCS Upload Result: {upload_res}")
+        assert "gs://mock-bucket/test_blob.txt" in upload_res
+        mock_file.unlink() # Clean up
+
+        download_res = await gcs_mock_instance.download_file("test_blob.txt", Path("downloaded_mock.txt"))
+        print(f"Mock GCS Download Result: {download_res}")
+        assert "downloaded_mock.txt" in download_res
+        Path("downloaded_mock.txt").unlink() # Clean up
+
+        delete_res = await gcs_mock_instance.delete_blob("test_blob.txt")
+        print(f"Mock GCS Delete Result: {delete_res}")
+        assert "deleted" in delete_res
+        print("Test 5 Passed.")
+
 
         print("\nAll VectorUtilsWrapper internal tests completed.")
 
