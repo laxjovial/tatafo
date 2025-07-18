@@ -27,26 +27,26 @@ from backend.services.api_usage_service import ApiUsageService
 
 # Import all shared tools (these will be wrapped as Langchain Tools)
 from shared_tools.python_interpreter_tool import python_interpreter_with_rbac
-from shared_tools.scraper_tool import scrape_web
+from shared_tools.scrapper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 from shared_tools.chart_generation_tool import ChartTools # Import the class
 from shared_tools.sentiment_analysis_tool import analyze_sentiment
 from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 
 # Import the export function from its utility module
-from utils.export_utils import export_dataframe_to_file
+from shared_tools.export_utils import export_dataframe_to_file
 
 # Import domain-specific tools
-from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, get_historical_stock_prices, lookup_stock_symbol
-from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
-from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
-from domain_tools.news_tools.news_tool import get_general_news
-from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
-from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
-from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
+from domain_tools.finance_tools.finance_tool import FinanceTools
+from domain_tools.crypto_tools.crypto_tool import CryptoTools
+from domain_tools.medical_tools.medical_tool import MedicalTools
+from domain_tools.news_tools.news_tool import NewsTools
+from domain_tools.legal_tools.legal_tool import LegalTools
+from domain_tools.education_tools.education_tool import EducationTools
+from domain_tools.entertainment_tools.entertainment_tool import EntertainmentTools
 from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast
-from domain_tools.travel_tools.travel_tool import find_flights, find_hotels
-from domain_tools.sports_tools.sports_tool import get_player_stats, get_team_stats, get_league_info
+from domain_tools.travel_tools import TravelTools
+from domain_tools.sports_tools import SportsTools
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
