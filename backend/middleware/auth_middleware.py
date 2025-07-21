@@ -11,11 +11,11 @@ from firebase_admin import exceptions as firebase_exceptions
 # Import Pydantic models
 from backend.models.user_models import UserProfile
 
-# Import project-specific utilities and managers (only type hints needed here)
+# Import project-specific utilities and managers
 from utils.analytics_tracker import log_event
-from database.firestore_manager import FirestoreManager # For type hinting in Depends
-from utils.user_manager import UserManager # For type hinting in Depends
-from backend.services.api_usage_service import ApiUsageService # For type hinting in Depends (will be created next)
+from database.firestore_manager import FirestoreManager
+from utils.user_manager import UserManager
+from backend.services.api_usage_service import ApiUsageService
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -23,116 +23,150 @@ logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed logging during develo
 
 
 # Dependency to provide FirestoreManager instance
-async def get_firestore_manager_dependency() -> FirestoreManager:
+# This function will be overridden in main.py to provide the actual instance
+async def get_firestore_manager_dependency(
+    firestore_manager: FirestoreManager = Depends(lambda: None) # Default to None, will be overridden
+) -> FirestoreManager:
     """Dependency to get the FirestoreManager instance."""
-    raise NotImplementedError("FirestoreManager dependency must be provided by main.py")
+    if firestore_manager is None:
+        logger.error("FirestoreManager dependency not properly injected.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error: FirestoreManager not initialized.")
+    return firestore_manager
 
 # Dependency to provide UserManager instance
+# This function will be overridden in main.py to provide the actual instance
 async def get_user_manager_dependency(
-    firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency)
+    firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency),
+    user_manager: UserManager = Depends(lambda: None) # Default to None, will be overridden
 ) -> UserManager:
     """Dependency to get the UserManager instance."""
-    raise NotImplementedError("UserManager dependency must be provided by main.py")
+    if user_manager is None:
+        logger.error("UserManager dependency not properly injected.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error: UserManager not initialized.")
+    return user_manager
 
-# NEW: Dependency to provide ApiUsageService instance
+# Dependency to provide ApiUsageService instance
+# This function will be overridden in main.py to provide the actual instance
 async def get_api_usage_service_dependency(
-    firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency)
+    firestore_manager_dep: FirestoreManager = Depends(get_firestore_manager_dependency),
+    api_usage_service: ApiUsageService = Depends(lambda: None) # Default to None, will be overridden
 ) -> ApiUsageService:
     """Dependency to get the ApiUsageService instance."""
-    raise NotImplementedError("ApiUsageService dependency must be provided by main.py")
+    if api_usage_service is None:
+        logger.error("ApiUsageService dependency not properly injected.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error: ApiUsageService not initialized.")
+    return api_usage_service
 
 
-# The main authentication dependency
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
-    user_manager: UserManager = Depends(get_user_manager_dependency) # Inject UserManager
+    id_token: Optional[str] = Header(None, alias="Authorization"),
+    user_manager: UserManager = Depends(get_user_manager_dependency)
 ) -> UserProfile:
     """
-    FastAPI dependency to authenticate the user using a Firebase ID token.
-    Extracts the token from the Authorization header (Bearer token).
-    Verifies the token, fetches the user profile from Firestore, checks account status,
-    updates last login time, and returns the UserProfile object.
+    FastAPI dependency to authenticate a user using Firebase ID Token.
+    Extracts the ID token from the Authorization header (Bearer token),
+    verifies it with Firebase Auth, and retrieves the user's profile.
     """
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header missing",
-            headers={"WWW-Authenticate": "Bearer"},
+    if not id_token:
+        await log_event(
+            'authentication_failure',
+            {'reason': 'No ID token provided'},
+            success=False,
+            error_message="Authentication header missing",
+            log_from_backend=True
         )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication token missing or invalid.")
 
-    scheme, token = authorization.split()
-    if scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication scheme. Must be 'Bearer'.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # Remove "Bearer " prefix if present
+    if id_token.startswith("Bearer "):
+        id_token = id_token[len("Bearer "):]
 
     try:
-        # Verify the Firebase ID token
-        decoded_token = auth.verify_id_token(token)
-        uid = decoded_token['uid']
-        
+        # Verify the ID token using Firebase Admin SDK
+        decoded_token = auth.verify_id_token(id_token)
+        user_id = decoded_token['uid']
+        email = decoded_token.get('email')
+
         # Retrieve user profile from Firestore using UserManager
-        user_data = await user_manager.get_user(uid) 
+        user_profile = await user_manager.get_user(user_id)
 
-        if not user_data:
-            await log_event(
-                'authentication_failure',
-                {'uid': uid, 'error_details': 'User profile not found in Firestore'},
-                user_id=uid,
-                success=False,
-                error_message="User profile not found.",
-                log_from_backend=True
-            )
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User profile not found.")
+        if not user_profile:
+            logger.warning(f"User profile not found in Firestore for UID: {user_id}. Attempting to create basic profile.")
+            # This scenario can happen if a user is created in Firebase Auth but not yet in Firestore.
+            # Create a basic profile to avoid errors downstream.
+            user_profile_data = {
+                "user_id": user_id,
+                "email": email,
+                "username": decoded_token.get('name', email.split('@')[0] if email else f"user_{user_id[:8]}"),
+                "tier": "free", # Default tier
+                "roles": ["user"], # Default role
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_login_at": datetime.now(timezone.utc).isoformat(),
+                "profile_data": {}
+            }
+            create_result = await user_manager.create_user_profile(user_id, user_profile_data)
+            if create_result["success"]:
+                user_profile = user_profile_data
+                logger.info(f"Basic user profile created for new user: {user_id}")
+            else:
+                logger.error(f"Failed to create basic user profile for {user_id}: {create_result.get('message')}")
+                # Even if profile creation failed, we proceed with basic info from decoded token
+                # This could be problematic for capabilities, so ideally profile exists.
+                # For robustness, we will create a UserProfile object from decoded token if Firestore failed.
+                user_profile = {
+                    "user_id": user_id,
+                    "email": email,
+                    "username": decoded_token.get('name', email.split('@')[0] if email else f"user_{user_id[:8]}"),
+                    "tier": "free",
+                    "roles": ["user"],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_login_at": datetime.now(timezone.utc).isoformat(),
+                    "profile_data": {}
+                }
+
+        # Update last_login_at
+        await user_manager.update_user_last_login(user_id)
+
+        # Increment API usage for authentication event
+        api_usage_service: ApiUsageService = Depends(get_api_usage_service_dependency)() # Get instance to increment usage
+        await api_usage_service.increment_api_call_count(user_id, "authentication_success")
         
-        # Check if account is disabled/suspended
-        if user_data.get('status') == 'disabled' or user_data.get('status') == 'suspended':
-            await log_event(
-                'authentication_failure',
-                {'uid': uid, 'error_details': f"Account status: {user_data.get('status')}"},
-                user_id=uid,
-                success=False,
-                error_message="Your account is currently disabled or suspended. Please contact support.",
-                log_from_backend=True
-            )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account is disabled or suspended. Please contact support.")
-
-        # Update last_login_at timestamp
-        await user_manager.update_last_login(uid)
-
-        logger.info(f"User {uid} authenticated successfully via Firebase ID Token.")
+        # Log successful authentication
         await log_event(
-            'user_authenticated',
-            {'uid': uid},
-            user_id=uid,
+            'authentication_success',
+            {'uid': user_id, 'email': email},
+            user_id=user_id,
             success=True,
             log_from_backend=True
         )
-        user_data['user_id'] = uid 
-        return UserProfile(**user_data)
-    except firebase_exceptions.AuthError as e:
-        logger.error(f"Firebase ID Token verification failed: {e}", exc_info=True)
+
+        return UserProfile(**user_profile) # Convert dict to Pydantic model
+
+    except firebase_exceptions.FirebaseError as e:
+        logger.error(f"Firebase authentication error: {e}", exc_info=True)
+        # Check specific Firebase error codes
+        if e.code == 'auth/argument-error':
+            detail = "Invalid ID token format."
+        elif e.code == 'auth/invalid-id-token':
+            detail = "Invalid or expired ID token."
+        elif e.code == 'auth/user-not-found':
+            detail = "User not found."
+        else:
+            detail = f"Firebase authentication error: {e.code}"
+
         await log_event(
             'authentication_failure',
-            {'error_details': str(e), 'firebase_code': e.code if hasattr(e, 'code') else 'N/A'},
-            user_id="unauthenticated",
+            {'reason': detail, 'error_code': e.code},
             success=False,
-            error_message=f"Invalid authentication credentials: {e.code}. Please log in again.",
+            error_message=detail,
             log_from_backend=True
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {e.code}. Please log in again.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during authentication: {e}", exc_info=True)
+        logger.error(f"An unexpected authentication error occurred: {e}", exc_info=True)
         await log_event(
             'authentication_failure',
-            {'error_details': str(e)},
-            user_id="unauthenticated",
+            {'reason': 'Unexpected error', 'error': str(e)},
             success=False,
             error_message=f"An unexpected authentication error occurred: {str(e)}",
             log_from_backend=True
@@ -160,7 +194,5 @@ async def get_current_admin_user(current_user: UserProfile = Depends(get_current
 # Other role-specific dependencies can be added here if needed, following the same pattern:
 # async def get_current_customer_care_user(current_user: UserProfile = Depends(get_current_user)) -> UserProfile:
 #     if "customer_care" not in current_user.roles:
-#         await log_event(...)
-#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized: Customer Care access required")
+#         await log_event(...); raise HTTPException(...)
 #     return current_user
-
