@@ -32,318 +32,282 @@ class AdminService:
         self,
         firestore_manager: FirestoreManager,
         user_manager: UserManager,
-        cloud_storage_utils: CloudStorageUtilsWrapper, # Added for completeness, though not directly used in all methods here
+        cloud_storage_utils: CloudStorageUtilsWrapper, # Added for completeness
         api_usage_service: ApiUsageService # NEW: Inject ApiUsageService
     ):
         self.firestore_manager = firestore_manager
         self.user_manager = user_manager
-        self.cloud_storage_utils = cloud_storage_utils
-        self.api_usage_service = api_usage_service # Store the injected service
-        logger.info("AdminService initialized with dependencies.")
+        self.cloud_storage_utils = cloud_storage_utils # Store the injected instance
+        self.api_usage_service = api_usage_service # Store the injected instance
+        logger.info("AdminService initialized.")
 
-    async def get_all_user_profiles(self) -> List[Dict[str, Any]]:
-        """
-        Retrieves all user profiles.
-        """
-        try:
-            users = await self.user_manager.get_all_user_profiles() # Use injected UserManager
-            return list(users.values())
-        except Exception as e:
-            logger.error(f"Error retrieving all user profiles: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve user profiles: {e}")
+    # --- User Management Operations ---
 
-    async def update_user_profile_admin(self, user_id: str, user_update: UserUpdateAdmin, current_admin: UserProfile) -> Dict[str, Any]:
-        """
-        Updates a user's profile (including username, tier, roles, and status) as an administrator.
-        Performs granular permission checks based on current_admin's roles/claims.
-        """
-        logger.debug(f"Admin {current_admin.user_id} attempting to update user {user_id} with data: {user_update.model_dump(exclude_unset=True)}")
-        try:
-            target_user_profile = await self.user_manager.get_user(user_id)
-            if not target_user_profile:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    async def get_all_users(self, current_admin: UserProfile) -> List[UserProfile]:
+        """Retrieves all user profiles."""
+        logger.debug(f"Admin {current_admin.user_id} requesting all user profiles.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_view_users', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view all users.")
+        
+        users = await self.user_manager.get_all_users()
+        return [UserProfile(**user) for user in users]
 
-            update_data = user_update.model_dump(exclude_unset=True)
-            
-            # --- Granular Admin Permission Checks ---
-            # Creator has full override. Otherwise, check specific permissions.
-            is_creator = "creator" in current_admin.roles
+    async def update_user_profile(self, user_id: str, update_data: UserUpdateAdmin, current_admin: UserProfile) -> Dict[str, Any]:
+        """Updates a user's profile, tier, and roles."""
+        logger.debug(f"Admin {current_admin.user_id} updating profile for user_id: {user_id}")
+        
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_users', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage users.")
 
-            if 'tier' in update_data and not is_creator:
-                new_tier = update_data['tier']
-                # Check if admin has permission to manage this specific tier
-                if not current_admin.get(f'can_manage_tier_{new_tier}', False):
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Not authorized to set user tier to '{new_tier}'.")
-            
-            if 'roles' in update_data and not is_creator:
-                # Check if admin has permission to assign all requested roles
-                for role in update_data['roles']:
-                    if not current_admin.get(f'can_assign_role_{role}', False):
-                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Not authorized to assign role '{role}'.")
-            
-            if 'status' in update_data and not is_creator:
-                # Check if admin has permission to change user status
-                if not current_admin.get('can_change_user_status', False):
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to change user account status.")
+        # Prepare update data for Firestore
+        firestore_update_data = update_data.model_dump(exclude_unset=True, exclude={'roles', 'tier', 'status'})
+        
+        # Handle roles and tier updates separately via UserManager methods
+        if update_data.roles is not None:
+            await self.user_manager.update_user_roles(user_id, update_data.roles)
+        if update_data.tier is not None:
+            await self.user_manager.update_user_tier(user_id, update_data.tier)
+        
+        # Handle user status update
+        if update_data.status is not None:
+            await self.user_manager.update_user_status(user_id, update_data.status)
 
-            # Update Firestore document and Firebase Auth custom claims via UserManager
-            result = await self.user_manager.update_user_profile(user_id, update_data)
-            
-            if not result["success"]:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
+        # Update other profile data in Firestore
+        if firestore_update_data:
+            await self.firestore_manager.update_doc(f"users/{user_id}", firestore_update_data)
 
-            # Fetch and return the updated user profile
-            updated_user_info = await self.user_manager.get_user(user_id)
-            if not updated_user_info: # Should not happen if update was successful
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to retrieve updated user profile.")
+        logger.info(f"User profile for {user_id} updated by admin {current_admin.user_id}.")
+        return {"success": True, "message": f"User {user_id} profile updated."}
 
-            return updated_user_info
-        except HTTPException:
-            raise # Re-raise HTTPExceptions
-        except Exception as e:
-            logger.error(f"Error updating user profile {user_id} by admin {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update user profile: {e}")
-
-    async def update_user_status_admin(self, user_id: str, new_status: str, current_admin: UserProfile) -> Dict[str, Any]:
-        """
-        Updates a user's account status (active, disabled, suspended) as an administrator.
-        Requires 'can_change_user_status' permission or 'creator' role.
-        """
-        logger.debug(f"Admin {current_admin.user_id} attempting to update status for user {user_id} to {new_status}")
-        try:
-            if "creator" not in current_admin.roles and not current_admin.get('can_change_user_status', False):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to change user account status.")
-
-            # Use UserManager to update status
-            result = await self.user_manager.update_user_profile(user_id, {"status": new_status})
-            if not result["success"]:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["message"])
-
-            # If status is disabled/suspended, revoke Firebase tokens to force logout
-            if new_status in ["disabled", "suspended"]:
-                try:
-                    auth.revoke_refresh_tokens(user_id)
-                    logger.info(f"Firebase refresh tokens revoked for user {user_id} due to status change to {new_status}.")
-                except firebase_exceptions.FirebaseError as e:
-                    logger.warning(f"Failed to revoke Firebase tokens for {user_id}: {e}")
-
-            updated_user_info = await self.user_manager.get_user(user_id)
-            if not updated_user_info:
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to retrieve updated user profile after status change.")
-            return updated_user_info
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error updating user status for user {user_id} by admin {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update user status: {e}")
-
-    async def purge_user_sessions(self, user_id: str, current_admin: UserProfile):
-        """
-        Purges active sessions for a specific user by revoking Firebase refresh tokens.
-        Requires admin privileges.
-        """
-        logger.debug(f"Admin {current_admin.user_id} attempting to purge sessions for user {user_id}")
-        try:
-            # Admins can purge individual user sessions. Creator can purge all.
-            # If a non-creator admin wants to purge, they must have 'can_purge_user_sessions'
-            if "creator" not in current_admin.roles and not current_admin.get('can_purge_user_sessions', False):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to purge user sessions.")
-
-            auth.revoke_refresh_tokens(user_id)
-            logger.info(f"Firebase refresh tokens revoked for user {user_id}.")
-        except firebase_exceptions.UserNotFoundError:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-        except Exception as e:
-            logger.error(f"Error revoking tokens for user {user_id} by admin {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to purge user sessions: {e}")
-
-    async def purge_all_sessions(self, current_admin: UserProfile):
-        """
-        Purges all active sessions for all users by revoking all Firebase refresh tokens.
-        Requires 'creator' role.
-        """
-        logger.debug(f"Creator {current_admin.user_id} attempting to purge all sessions.")
+    async def grant_admin_access(self, request: GrantAdminAccessRequest, current_admin: UserProfile) -> Dict[str, Any]:
+        """Grants or revokes admin access to a user."""
+        logger.debug(f"Admin {current_admin.user_id} modifying admin access for user {request.user_id}.")
+        
+        # Only 'creator' role can grant/revoke admin access
         if "creator" not in current_admin.roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can purge all sessions.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only 'creator' can grant/revoke admin access.")
         
-        # Firebase Admin SDK does not have a direct 'revoke_all_tokens' function.
-        # This would typically involve iterating through all users and revoking tokens individually,
-        # or a more complex solution if millions of users. For now, we'll simulate/log.
-        # In a real large-scale app, this might be a background task or specific Firebase feature.
-        logger.warning(f"Simulating purge of ALL user sessions. This is a placeholder for a large-scale operation.")
-        # Example: Fetch all UIDs and call auth.revoke_refresh_tokens(uid) for each.
-        # For a truly massive scale, this needs careful consideration of Firebase limits.
-        
-        # For now, we'll just log and return success.
-        # A more robust implementation would fetch users in batches and revoke.
-        # users = await self.user_manager.get_all_user_profiles()
-        # for user in users:
-        #     try:
-        #         auth.revoke_refresh_tokens(user['uid'])
-        #     except Exception as e:
-        #         logger.warning(f"Failed to revoke token for user {user['uid']} during all-purge: {e}")
-        logger.info(f"All user sessions conceptually purged by creator {current_admin.user_id}.")
-
-
-    async def grant_admin_access(self, target_user_id: str, permissions: Dict[str, Any], replace_all: bool, current_admin: UserProfile):
-        """
-        Grants specific administrative permissions (custom claims) to another user.
-        Requires 'creator' role.
-        """
-        logger.debug(f"Creator {current_admin.user_id} attempting to grant admin access to {target_user_id} with permissions: {permissions}, replace_all: {replace_all}")
-        if "creator" not in current_admin.roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can grant/modify admin permissions.")
-        
-        try:
-            user = auth.get_user(target_user_id)
-            current_claims = user.custom_claims if user.custom_claims else {}
-
-            if replace_all:
-                new_claims = permissions
-            else:
-                new_claims = {**current_claims, **permissions}
-            
-            # Ensure 'admin' role is added if any admin permission is granted and not already present
-            if any(key.startswith('can_') for key in new_claims.keys()) and 'admin' not in new_claims.get('roles', []):
-                roles = set(new_claims.get('roles', []))
-                roles.add('admin')
-                new_claims['roles'] = list(roles)
-
-            auth.set_custom_user_claims(target_user_id, new_claims)
-            logger.info(f"Custom claims updated for user {target_user_id}: {new_claims}")
-            # Invalidate token to ensure new claims take effect
-            auth.revoke_refresh_tokens(target_user_id)
-            logger.info(f"Tokens revoked for {target_user_id} after claims update.")
-
-            # Also update Firestore profile to reflect roles (tier is handled by user_manager update)
-            # Ensure roles are consistent between custom claims and Firestore profile
-            await self.user_manager.update_user_profile(target_user_id, {"roles": new_claims.get('roles', ['user'])})
-
-        except firebase_exceptions.UserNotFoundError:
+        user_profile = await self.user_manager.get_user(request.user_id)
+        if not user_profile:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target user not found.")
-        except Exception as e:
-            logger.error(f"Error granting admin access to {target_user_id} by creator {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to grant admin access: {e}")
 
-
-    # --- Global Configuration Management (RBAC Capabilities & Tiers) ---
-    async def get_rbac_capabilities(self) -> Dict[str, Any]:
-        """
-        Retrieves the current RBAC capabilities configuration from Firestore.
-        """
-        try:
-            capabilities_doc = await self.firestore_manager.get_global_config("rbac_capabilities")
-            if capabilities_doc and capabilities_doc.get('capabilities'):
-                return capabilities_doc['capabilities']
-            return {} # Return empty dict if not found
-        except Exception as e:
-            logger.error(f"Error retrieving RBAC capabilities from Firestore: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve RBAC capabilities: {e}")
-
-    async def update_rbac_capabilities(self, capability_update: CapabilityUpdate, current_admin: UserProfile) -> Dict[str, Any]:
-        """
-        Updates a specific RBAC capability or the entire capabilities document in Firestore.
-        Requires 'creator' role.
-        """
-        logger.debug(f"Admin {current_admin.user_id} attempting to update RBAC capabilities.")
-        if "creator" not in current_admin.roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can update RBAC capabilities.")
+        current_roles = set(user_profile.get("roles", []))
         
-        try:
-            current_capabilities_doc = await self.firestore_manager.get_global_config("rbac_capabilities")
-            current_capabilities = current_capabilities_doc.get('capabilities', {}) if current_capabilities_doc else {}
-
-            updated_capabilities = current_capabilities
-            if capability_update.capability_key:
-                if capability_update.capability_key not in updated_capabilities:
-                    updated_capabilities[capability_update.capability_key] = {"default": False, "roles": {}}
-                
-                if capability_update.default_value is not None:
-                    updated_capabilities[capability_update.capability_key]['default'] = capability_update.default_value
-                
-                if capability_update.roles is not None:
-                    updated_capabilities[capability_update.capability_key]['roles'] = capability_update.roles
+        if request.grant:
+            current_roles.add("admin")
+            await self.user_manager.update_user_roles(request.user_id, list(current_roles))
+            message = f"Admin access granted to user {request.user_id}."
+            logger.info(message)
+        else:
+            if "admin" in current_roles:
+                current_roles.remove("admin")
+                await self.user_manager.update_user_roles(request.user_id, list(current_roles))
+                message = f"Admin access revoked from user {request.user_id}."
+                logger.info(message)
             else:
-                updated_capabilities = capability_update.full_capabilities or {}
+                message = f"User {request.user_id} does not have admin access to revoke."
+                logger.warning(message)
 
-            await self.firestore_manager.set_global_config("rbac_capabilities", {"capabilities": updated_capabilities})
-            logger.info("RBAC capabilities updated in Firestore.")
-            return updated_capabilities
-        except Exception as e:
-            logger.error(f"Error updating RBAC capabilities in Firestore by admin {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update RBAC capabilities: {e}")
+        return {"success": True, "message": message}
 
-    async def get_tier_hierarchy(self) -> Dict[str, Any]:
-        """
-        Retrieves the current tier hierarchy configuration from Firestore.
-        """
-        try:
-            tiers_doc = await self.firestore_manager.get_global_config("tiers")
-            if tiers_doc and tiers_doc.get('tiers'):
-                return tiers_doc['tiers']
-            return {}
-        except Exception as e:
-            logger.error(f"Error retrieving tier hierarchy from Firestore: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve tier hierarchy: {e}")
+    async def delete_user(self, user_id: str, current_admin: UserProfile) -> Dict[str, Any]:
+        """Deletes a user from Firebase Auth and Firestore."""
+        logger.debug(f"Admin {current_admin.user_id} deleting user: {user_id}")
 
-    async def update_tier_hierarchy(self, tier_update: TierUpdate, current_admin: UserProfile) -> Dict[str, Any]:
-        """
-        Updates a specific tier or the entire tier hierarchy document in Firestore.
-        Requires 'creator' role.
-        """
-        logger.debug(f"Admin {current_admin.user_id} attempting to update tier hierarchy.")
-        if "creator" not in current_admin.roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can update tier hierarchy.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_delete_users', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete users.")
 
         try:
-            current_tiers_doc = await self.firestore_manager.get_global_config("tiers")
-            current_tiers = current_tiers_doc.get('tiers', {}) if current_tiers_doc else {}
+            # Delete from Firebase Authentication
+            auth.delete_user(user_id)
+            # Delete user profile from Firestore
+            await self.firestore_manager.delete_doc(f"users/{user_id}")
+            # Optionally, delete user-related data from cloud storage (e.g., vector stores)
+            await self.cloud_storage_utils.delete_user_data_folder(user_id)
 
-            updated_tiers = current_tiers
-            if tier_update.tier_name:
-                if tier_update.tier_name not in updated_tiers:
-                    updated_tiers[tier_update.tier_name] = {"level": 0, "description": ""}
-                
-                if tier_update.level is not None:
-                    updated_tiers[tier_update.tier_name]['level'] = tier_update.level
-                
-                if tier_update.description is not None:
-                    updated_tiers[tier_update.tier_name]['description'] = tier_update.description
-            else:
-                updated_tiers = tier_update.full_tiers or {}
-
-            await self.firestore_manager.set_global_config("tiers", {"tiers": updated_tiers})
-            logger.info("Tier hierarchy updated in Firestore.")
-            return updated_tiers
+            await log_event(
+                'admin_action_delete_user',
+                {'target_user_id': user_id},
+                user_id=current_admin.user_id,
+                success=True,
+                log_from_backend=True
+            )
+            logger.info(f"User {user_id} deleted successfully by admin {current_admin.user_id}.")
+            return {"success": True, "message": f"User {user_id} and associated data deleted."}
+        except firebase_exceptions.FirebaseError as e:
+            logger.error(f"Firebase error deleting user {user_id}: {e}", exc_info=True)
+            await log_event(
+                'admin_action_delete_user',
+                {'target_user_id': user_id, 'error': str(e)},
+                user_id=current_admin.user_id,
+                success=False,
+                error_message=f"Failed to delete user: {e.code}",
+                log_from_backend=True
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to delete user: {e.code}")
         except Exception as e:
-            logger.error(f"Error updating tier hierarchy in Firestore by admin {current_admin.user_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update tier hierarchy: {e}")
+            logger.error(f"Unexpected error deleting user {user_id}: {e}", exc_info=True)
+            await log_event(
+                'admin_action_delete_user',
+                {'target_user_id': user_id, 'error': str(e)},
+                user_id=current_admin.user_id,
+                success=False,
+                error_message=f"Unexpected error: {e}",
+                log_from_backend=True
+            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete user: {e}")
 
-    # --- Global API Management Methods (Delegated to ApiUsageService) ---
-    async def create_global_api_config(self, api_config: GlobalApiConfigCreate, current_admin: UserProfile) -> Dict[str, Any]:
-        """Creates a new global/default API configuration."""
-        # Permission check already in API endpoint, but can be duplicated here for robustness
-        logger.debug(f"Admin {current_admin.user_id} calling ApiUsageService to create global API config.")
-        return await self.api_usage_service.create_global_api_config(api_config)
+    # --- RBAC and Tier Management ---
 
-    async def get_global_api_configs(self) -> List[Dict[str, Any]]:
-        """Retrieves all global/default API configurations."""
+    async def update_capability(self, capability_update: CapabilityUpdate, current_admin: UserProfile) -> Dict[str, Any]:
+        """Dynamically updates a specific RBAC capability."""
+        logger.debug(f"Admin {current_admin.user_id} updating capability: {capability_update.capability_key}.")
+
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_capabilities', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage capabilities.")
+        
+        result = await self.user_manager.update_capability_config(
+            capability_update.capability_key, 
+            capability_update.new_default_value, 
+            capability_update.tier_overrides
+        )
+        await log_event(
+            'admin_action_update_capability',
+            {'capability_key': capability_update.capability_key},
+            user_id=current_admin.user_id,
+            success=True,
+            log_from_backend=True
+        )
+        return result
+
+    async def update_tier_config(self, tier_update: TierUpdate, current_admin: UserProfile) -> Dict[str, Any]:
+        """Dynamically updates a tier's configuration (e.g., capabilities)."""
+        logger.debug(f"Admin {current_admin.user_id} updating tier config for tier: {tier_update.tier_name}.")
+
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_tiers', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage tiers.")
+
+        result = await self.user_manager.update_tier_config(
+            tier_update.tier_name, 
+            tier_update.capabilities
+        )
+        await log_event(
+            'admin_action_update_tier_config',
+            {'tier_name': tier_update.tier_name},
+            user_id=current_admin.user_id,
+            success=True,
+            log_from_backend=True
+        )
+        return result
+
+    async def get_all_capabilities(self, current_admin: UserProfile) -> Dict[str, Any]:
+        """Retrieves the current RBAC capabilities configuration."""
+        logger.debug(f"Admin {current_admin.user_id} requesting all capabilities.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_view_capabilities', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view capabilities.")
+        
+        return await self.user_manager.get_all_capabilities_config()
+
+    async def get_all_tiers_config(self, current_admin: UserProfile) -> Dict[str, Any]:
+        """Retrieves the current tiers configuration."""
+        logger.debug(f"Admin {current_admin.user_id} requesting all tiers config.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_view_tiers', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view tiers.")
+        
+        return await self.user_manager.get_all_tiers_config()
+
+    # --- Session Management ---
+
+    async def purge_user_sessions(self, request: PurgeSessionsRequest, current_admin: UserProfile) -> Dict[str, Any]:
+        """Revokes all refresh tokens for a given user, effectively logging them out from all devices."""
+        logger.debug(f"Admin {current_admin.user_id} purging sessions for user: {request.user_id}.")
+
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_sessions', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to purge user sessions.")
+
+        try:
+            auth.revoke_refresh_tokens(request.user_id)
+            await log_event(
+                'admin_action_purge_sessions',
+                {'target_user_id': request.user_id},
+                user_id=current_admin.user_id,
+                success=True,
+                log_from_backend=True
+            )
+            logger.info(f"Revoked all refresh tokens for user {request.user_id} by admin {current_admin.user_id}.")
+            return {"success": True, "message": f"All sessions for user {request.user_id} purged."}
+        except firebase_exceptions.FirebaseError as e:
+            logger.error(f"Firebase error purging sessions for user {request.user_id}: {e}", exc_info=True)
+            await log_event(
+                'admin_action_purge_sessions',
+                {'target_user_id': request.user_id, 'error': str(e)},
+                user_id=current_admin.user_id,
+                success=False,
+                error_message=f"Failed to purge sessions: {e.code}",
+                log_from_backend=True
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to purge sessions: {e.code}")
+        except Exception as e:
+            logger.error(f"Unexpected error purging sessions for user {request.user_id}: {e}", exc_info=True)
+            await log_event(
+                'admin_action_purge_sessions',
+                {'target_user_id': request.user_id, 'error': str(e)},
+                user_id=current_admin.user_id,
+                success=False,
+                error_message=f"Unexpected error: {e}",
+                log_from_backend=True
+            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to purge sessions: {e}")
+
+    # --- Global API Configuration Management ---
+
+    async def create_global_api_config(self, config_data: GlobalApiConfigCreate, current_admin: UserProfile) -> Dict[str, Any]:
+        """Creates a new global API configuration."""
+        logger.debug(f"Admin {current_admin.user_id} creating global API config for {config_data.api_id}.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_api_configs', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage global API configurations.")
+        
+        return await self.api_usage_service.create_global_api_config(config_data)
+
+    async def get_global_api_configs(self, current_admin: UserProfile) -> List[Dict[str, Any]]:
+        """Retrieves all global API configurations."""
+        logger.debug(f"Admin {current_admin.user_id} requesting all global API configs.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_view_api_configs', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view global API configurations.")
+        
         return await self.api_usage_service.get_global_api_configs()
 
-    async def update_global_api_config(self, api_id: str, api_config_update: GlobalApiConfigUpdate, current_admin: UserProfile) -> Dict[str, Any]:
-        """Updates an existing global/default API configuration."""
-        logger.debug(f"Admin {current_admin.user_id} calling ApiUsageService to update global API config {api_id}.")
-        return await self.api_usage_service.update_global_api_config(api_id, api_config_update)
+    async def update_global_api_config(self, api_id: str, config_data: GlobalApiConfigUpdate, current_admin: UserProfile) -> Dict[str, Any]:
+        """Updates an existing global API configuration."""
+        logger.debug(f"Admin {current_admin.user_id} updating global API config for {api_id}.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_api_configs', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage global API configurations.")
+        
+        return await self.api_usage_service.update_global_api_config(api_id, config_data)
 
-    async def delete_global_api_config(self, api_id: str, current_admin: UserProfile):
-        """Deletes a global/default API configuration."""
-        logger.debug(f"Admin {current_admin.user_id} calling ApiUsageService to delete global API config {api_id}.")
-        await self.api_usage_service.delete_global_api_config(api_id)
+    async def delete_global_api_config(self, api_id: str, current_admin: UserProfile) -> Dict[str, Any]:
+        """Deletes a global API configuration."""
+        logger.debug(f"Admin {current_admin.user_id} deleting global API config for {api_id}.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_api_configs', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage global API configurations.")
+        
+        return await self.api_usage_service.delete_global_api_config(api_id)
 
     async def update_api_limits(self, limit_update: ApiCallLimitUpdate, current_admin: UserProfile) -> Dict[str, Any]:
-        """Updates default API call limits for a specific tier."""
-        logger.debug(f"Admin {current_admin.user_id} calling ApiUsageService to update API limits for tier {limit_update.tier}.")
-        return await self.api_usage_service.update_api_limits(limit_update)
+        """Updates default API call limits for a specific API across different tiers."""
+        logger.debug(f"Admin {current_admin.user_id} calling ApiUsageService to update API limits for API {limit_update.api_id}.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_manage_api_limits', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage API limits.")
+            
+        return await self.api_usage_service.update_api_call_limits(limit_update.api_id, limit_update)
+
+    async def get_all_api_limits(self, current_admin: UserProfile) -> Dict[str, Any]:
+        """Retrieves all global API limits configured."""
+        logger.debug(f"Admin {current_admin.user_id} requesting all API limits.")
+        if "creator" not in current_admin.roles and not current_admin.get('can_view_api_limits', False):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view API limits.")
+            
+        return await self.api_usage_service.get_all_api_limits()
 
     # --- Analytics for Unanswered Queries ---
     async def get_unanswered_queries_analytics(self, current_admin: UserProfile) -> List[Dict[str, Any]]:
@@ -352,6 +316,10 @@ class AdminService:
         """
         logger.debug(f"Admin {current_admin.user_id} fetching unanswered queries analytics.")
         try:
+            # Check for creator role or specific permission
+            if "creator" not in current_admin.roles and not current_admin.get('can_view_analytics', False):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view analytics.")
+
             # This will query a specific collection in Firestore, e.g., 'analytics/unanswered_queries'
             # Assuming 'analytics_tracker' or a dedicated 'AnalyticsService' will log these.
             # For now, we'll just fetch from a predefined collection.
@@ -360,4 +328,3 @@ class AdminService:
         except Exception as e:
             logger.error(f"Error fetching unanswered queries analytics for admin {current_admin.user_id}: {e}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve unanswered queries analytics: {e}")
-
