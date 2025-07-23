@@ -76,7 +76,8 @@ class MockCloudStorageUtilsWrapper:
 
 # Determine which CloudStorageUtilsWrapper to use based on config or env
 # Check if a GCS bucket name is configured in config_manager
-gcs_bucket_configured = config_manager.get_config("gcs_bucket_name") is not None
+# CORRECTED: Changed get_config to get to match ConfigManager's method signature
+gcs_bucket_configured = config_manager.get("gcs_bucket_name") is not None
 
 if gcs_bucket_configured:
     # Attempt to use the real CloudStorageUtilsWrapper
@@ -281,8 +282,8 @@ if __name__ == "__main__":
         def set_secret(self, key: str, value: str):
             self._secrets[key] = value
 
-        def get_config(self, key: str) -> Any:
-            return self._configs.get(key)
+        def get(self, key: str, default: Any = None) -> Any: # Changed get_config to get
+            return self._configs.get(key, default)
         
         def set_config(self, key: str, value: Any):
             self._configs[key] = value
