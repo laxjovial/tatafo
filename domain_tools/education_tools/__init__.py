@@ -1,14 +1,22 @@
 # domain_tools/education_tools/__init__.py
 
 import logging
-from typing import Any, Optional # Import Optional
+from typing import Any, Optional, List # Ensure List is imported
 
+# Import individual tool functions from the education_tool module
 from .education_tool import (
     search_educational_resources,
     education_search_web,
     education_query_uploaded_docs,
     education_summarize_document_by_path
 )
+
+# Import UserProfile for type hinting
+from backend.models.user_models import UserProfile # Added UserProfile import
+
+# Import DocumentTools for type hinting in the EducationTools class
+from domain_tools.document_tools.document_tool import DocumentTools
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +26,14 @@ class EducationTools:
     This class acts as a wrapper to group related tool functions and
     provides a consistent interface for the main application.
     """
-    def __init__(self, config_manager: Any, log_event: Any, document_tools: Any):
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: DocumentTools):
         """
         Initializes the EducationTools with necessary dependencies.
 
         Args:
             config_manager (Any): The configuration manager instance.
             log_event (Any): The analytics logging function.
-            document_tools (Any): The DocumentTools instance for document querying and summarization.
+            document_tools (DocumentTools): The DocumentTools instance for document querying.
         """
         self.config_manager = config_manager
         self.log_event = log_event
@@ -34,48 +42,65 @@ class EducationTools:
 
     # Expose individual tool functions as methods of this class
     # These methods will simply call the underlying functions,
-    # passing the required arguments including user_token.
+    # passing the required arguments including user_context.
 
-    async def search_educational_resources(self, query: str, resource_type: Optional[str] = None, user_token: str = "default") -> str:
+    async def search_educational_resources(self, query: str, resource_type: Optional[str] = None, user_context: Optional[UserProfile] = None, provider: str = "coursera", user_api_keys: List[str] = []) -> str:
         """
-        Searches for educational resources based on a query, optionally filtered by resource type.
+        Searches for educational resources (e.g., courses, tutorials, articles) based on a query.
         """
-        return await search_educational_resources(query=query, resource_type=resource_type, user_token=user_token)
+        return await search_educational_resources(
+            query=query,
+            resource_type=resource_type,
+            user_context=user_context,
+            provider=provider,
+            user_api_keys=user_api_keys
+        )
 
-    async def education_search_web(self, query: str, user_token: str = "default", max_chars: int = 2000) -> str:
+    async def education_search_web(self, query: str, user_context: Optional[UserProfile] = None, max_chars: int = 2000) -> str:
         """
         Searches the web for general education-related information.
         """
-        return await education_search_web(query=query, user_token=user_token, max_chars=max_chars)
+        return await education_search_web(
+            query=query,
+            user_context=user_context,
+            max_chars=max_chars
+        )
 
-    async def education_query_uploaded_docs(self, query: str, user_token: str = "default", export: Optional[bool] = False, k: int = 5) -> str:
+    async def education_query_uploaded_docs(self, query: str, user_context: Optional[UserProfile] = None, export: Optional[bool] = False, k: int = 5) -> str:
         """
         Queries previously uploaded and indexed educational documents for a user using vector similarity search.
         """
-        # This now calls the DocumentTools instance
-        return await self.document_tools.document_query_uploaded_docs(
+        # This now calls the standalone function, passing the DocumentTools instance
+        return await education_query_uploaded_docs(
             query=query,
-            user_token=user_token,
-            section="education", # Specific collection for education documents
+            user_context=user_context,
             export=export,
-            k=k
+            k=k,
+            document_tools=self.document_tools # Pass the instance
         )
 
-    async def education_summarize_document_by_path(self, file_path_str: str) -> str:
+    async def education_summarize_document_by_path(self, file_path_str: str, user_context: Optional[UserProfile] = None) -> str:
         """
         Summarizes a document related to education located at the given file path.
         """
-        # This now calls the DocumentTools instance
-        return await self.document_tools.document_summarize_document_by_path(file_path_str=file_path_str)
+        # This now calls the standalone function, passing the DocumentTools instance
+        return await education_summarize_document_by_path(
+            file_path_str=file_path_str,
+            user_context=user_context,
+            document_tools=self.document_tools # Pass the instance
+        )
 
     def get_tools(self):
         """
         Returns a list of tool functions exposed by this class.
+        This is typically used for registering tools with an LLM agent.
         """
+        # When registering with an LLM, you want the actual tool functions,
+        # which are the standalone ones in education_tool.py.
+        # This assumes the LLM integration can directly use these decorated functions.
         return [
-            self.search_educational_resources,
-            self.education_search_web,
-            self.education_query_uploaded_docs,
-            self.education_summarize_document_by_path
+            search_educational_resources,
+            education_search_web,
+            education_query_uploaded_docs,
+            education_summarize_document_by_path
         ]
-
