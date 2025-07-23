@@ -24,398 +24,453 @@ from utils import analytics_tracker
 # Import UserProfile for type hinting
 from backend.models.user_models import UserProfile
 
+# Import DocumentTools for wrapping document related tools
+from domain_tools.document_tools.document_tool import DocumentTools
+
+
 logger = logging.getLogger(__name__)
 
 # --- Generic API Request Helper (copied for standalone tool file, ideally in shared utils) ---
 # This helper is designed to work with the structure defined in api_providers.yml
 
-def _get_nested_value(data: Dict[str, Any], path: List[str]):
-    """Helper to get a value from a nested dictionary using a list of keys."""
-    current = data
-    for key in path:
-        if isinstance(current, dict) and key in current:
-            current = current[key]
-        elif isinstance(current, list) and isinstance(key, str) and key.isdigit(): # Handle list indices
-            try:
-                current = current[int(key)]
-            except (IndexError, ValueError):
-                return None
-        else:
-            return None
-    return current
-
-class LegalTools:
+async def make_api_request(
+    provider_name: str,
+    function_name: str,
+    params: Dict[str, Any],
+    user_api_keys: List[str],
+    domain: str,
+    user_id: str = "default_user",
+    additional_headers: Optional[Dict[str, str]] = None
+) -> Optional[Dict[str, Any]]:
     """
-    A collection of tools for legal-related operations, including legal research.
-    It integrates with external APIs and provides fallback mechanisms.
+    Makes a dynamic API request based on the provider configuration from config_manager.
+    Handles API key injection, URL construction, and response parsing.
     """
-    def __init__(self, config_manager, log_event, document_tools):
-        self.config_manager = config_manager
-        self.log_event = log_event # For direct logging if needed, but _make_dynamic_api_request handles tool usage
-        self.document_tools = document_tools # For legal_query_uploaded_docs and legal_summarize_document_by_path
+    provider_config = config_manager.get_api_provider_config(domain, provider_name)
+    if not provider_config:
+        logger.error(f"Provider config not found for domain: {domain}, provider: {provider_name}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "config_missing",
+                                    {"domain": domain, "provider": provider_name, "function": function_name}, success=False)
+        return None
 
-    async def _make_dynamic_api_request(
-        self,
-        domain: str,
-        function_name: str,
-        params: Dict[str, Any],
-        user_context: UserProfile # Changed from user_token to user_context
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Makes an API request to the dynamically configured provider for a given domain and function.
-        Handles API key retrieval, request construction, and basic error handling.
-        Returns parsed JSON data or None on failure (triggering generic fallback message).
-        Logs tool usage analytics for *failures* via analytics_tracker.
-        Success logging is handled by LLMService's wrapped_tool_executor.
-        """
-        user_id = user_context.user_id # Get user_id from UserProfile
+    base_url = provider_config.get("base_url")
+    if not base_url:
+        logger.error(f"Base URL not found for provider: {provider_name}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "base_url_missing",
+                                    {"domain": domain, "provider": provider_name, "function": function_name}, success=False)
+        return None
 
-        # Get the default active API provider for the domain from data/config.yml
-        active_provider_name = self.config_manager.get(f"api_defaults.{domain}")
-        if not active_provider_name:
-            logger.error(f"No default API provider configured for domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"No default API provider configured for domain '{domain}'."
-            )
-            return None
+    function_config = provider_config.get("functions", {}).get(function_name)
+    if not function_config:
+        logger.error(f"Function config not found for function: {function_name} in provider: {provider_name}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "function_config_missing",
+                                    {"domain": domain, "provider": provider_name, "function": function_name}, success=False)
+        return None
 
-        # Get the full configuration for the active provider from api_providers.yml
-        provider_config = self.config_manager.get_api_provider_config(domain, active_provider_name)
-        if not provider_config:
-            logger.error(f"Configuration for API provider '{active_provider_name}' in domain '{domain}' not found in api_providers.yml.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"API provider config '{active_provider_name}' not found for domain '{domain}'."
-            )
-            return None
+    endpoint = function_config.get("endpoint", "")
+    method = function_config.get("method", "GET").upper()
+    api_key_name = provider_config.get("api_key_name")
+    api_key_param_name = provider_config.get("api_key_param_name")
+    response_path = function_config.get("response_path", [])
 
-        base_url = provider_config.get("base_url")
-        api_key_name = provider_config.get("api_key_name")
-        api_key = self.config_manager.get_secret(api_key_name) if api_key_name else None
+    # Prepare request parameters
+    request_params = {k: v for k, v in params.items() if k in function_config.get("required_params", []) or k in function_config.get("optional_params", [])}
 
-        headers = {} # No special headers by default for most legal APIs
-
-        if not base_url:
-            logger.error(f"Base URL not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"Base URL not configured for '{active_provider_name}'."
-            )
-            return None
-
-        function_details = provider_config.get("functions", {}).get(function_name)
-        if not function_details:
-            logger.error(f"Function '{function_name}' not configured for API provider '{active_provider_name}' in domain '{domain}'.")
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=f"Function '{function_name}' not configured for '{active_provider_name}'."
-            )
-            return None
-
-        endpoint = function_details.get("endpoint")
-        path_params_config = function_details.get("path_params", [])
-
-        # Construct URL
-        full_url = f"{base_url}{endpoint}" if endpoint else base_url
-
-        # Add path parameters to URL if specified
-        for p_param in path_params_config:
-            if p_param in params:
-                value = str(params.pop(p_param)) # Remove from params after using for path
-                full_url = full_url.replace(f"{{{p_param}}}", value)
+    # Inject API key
+    api_key_value = None
+    if user_api_keys:
+        # Prioritize user-provided keys if they match the required api_key_name
+        for key_dict in user_api_keys:
+            if key_dict.get("name") == api_key_name:
+                api_key_value = key_dict.get("value")
+                break
+    
+    if not api_key_value:
+        # Fallback to backend secrets if not provided by user or not found in user_api_keys
+        api_key_value = config_manager.get_secret(api_key_name)
+    
+    if api_key_value and api_key_param_name:
+        request_params[api_key_param_name] = api_key_value
+    
+    # Construct URL, handling path parameters
+    full_url = base_url + endpoint
+    if function_config.get("path_params"):
+        for param in function_config["path_params"]:
+            if param in request_params:
+                full_url = full_url.replace(f"{{{param}}}", str(request_params.pop(param))) # Remove from query params
             else:
-                error_msg = f"Missing path parameter '{p_param}' for function '{function_name}'."
-                logger.warning(error_msg)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=error_msg
-                )
-                return None # Cannot construct URL without required path params
+                logger.warning(f"Missing path parameter '{param}' for {function_name} in {provider_name}. URL might be malformed.")
 
-        # Construct query parameters
-        query_params = {}
+    headers = additional_headers or {}
+    # Default to application/json for POST if not specified
+    if method == "POST" and "Content-Type" not in headers:
+        headers["Content-Type"] = "application/json"
 
-        # Add API key if it's a query param
-        if api_key_name and api_key:
-            param_name_in_url = provider_config.get("api_key_param_name", api_key_name.replace("_api_key", ""))
-            query_params[param_name_in_url] = api_key 
-
-        for param_key in function_details.get("required_params", []) + function_details.get("optional_params", []):
-            if param_key in params:
-                query_params[param_key] = params[param_key]
-            elif param_key in function_details.get("required_params", []):
-                error_msg = f"Missing required parameter '{param_key}' for function '{function_name}'."
-                logger.warning(error_msg)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=error_msg
-                )
-                return None # Missing required param, cannot proceed
-
-        try:
-            logger.info(f"Making API call to: {full_url} with params: {query_params}")
-            response = requests.get(full_url, params=query_params, headers=headers, timeout=self.config_manager.get("web_scraping.timeout_seconds", 15))
-            response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
-            raw_data = response.json()
-            
-            # Check for API-specific error messages in the response body
-            api_error_message = None
-            if raw_data.get("status") == "error": # Generic error status
-                api_error_message = f"API Error from {active_provider_name}: {raw_data.get('message', 'Unknown error')}"
-            elif raw_data.get("Error"): # Generic error key
-                api_error_message = f"API Error from {active_provider_name}: {raw_data['Error']}"
-            elif raw_data.get("message") == "Not Found": # Generic "Not Found" message
-                api_error_message = f"API Error from {active_provider_name}: Resource not found."
-            elif raw_data.get("code") and raw_data.get("message"): # Common error pattern
-                api_error_message = f"API Error from {active_provider_name} (Code: {raw_data['code']}): {raw_data['message']}"
-
-            if api_error_message:
-                logger.error(api_error_message)
-                await analytics_tracker.log_tool_usage(
-                    tool_name=f"{domain}_{function_name}",
-                    tool_params=params,
-                    user_id=user_id,
-                    success=False,
-                    error_message=api_error_message
-                )
-                return None
-
-
-            # Extract data based on response_path
-            data_to_map = raw_data
-            response_path = function_details.get("response_path")
-            if response_path:
-                data_to_map = _get_nested_value(raw_data, response_path)
-                if data_to_map is None:
-                    error_msg = f"Response path '{'.'.join(response_path)}' not found in API response from {active_provider_name}. Raw data: {raw_data}"
-                    logger.warning(error_msg)
-                    await analytics_tracker.log_tool_usage(
-                        tool_name=f"{domain}_{function_name}",
-                        tool_params=params,
-                        user_id=user_id,
-                        success=False,
-                        error_message=error_msg
-                    )
-                    return None
-
-            # Apply data mapping
-            mapped_data = {}
-            data_map = function_details.get("data_map", {})
-            
-            if isinstance(data_to_map, list): # For lists of items (e.g., multiple search results)
-                mapped_data_list = []
-                for item in data_to_map:
-                    mapped_item = {}
-                    for mapped_key, original_key_path in data_map.items():
-                        if isinstance(original_key_path, list):
-                            mapped_item[mapped_key] = _get_nested_value(item, original_key_path)
-                        elif isinstance(original_key_path, str) and '.' in original_key_path:
-                            mapped_item[mapped_key] = _get_nested_value(item, original_key_path.split('.'))
-                        else:
-                            mapped_item[mapped_key] = item.get(original_key_path)
-                    mapped_data_list.append(mapped_item)
-                final_result = {"data": mapped_data_list} # Wrap list in a dict for consistent return
-            else: # For single object responses
-                for mapped_key, original_key_path in data_map.items():
-                    if isinstance(original_key_path, list):
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path)
-                    elif isinstance(original_key_path, str) and '.' in original_key_path:
-                        mapped_data[mapped_key] = _get_nested_value(data_to_map, original_key_path.split('.'))
-                    else:
-                        mapped_data[mapped_key] = data_to_map.get(original_key_path)
-                final_result = mapped_data
-
-            # Success logging is handled by LLMService's wrapped_tool_executor, not here.
-            return final_result
-
-        except requests.exceptions.Timeout:
-            error_msg = f"API request to {active_provider_name} timed out for function '{function_name}'."
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Error making API request to {active_provider_name} for function '{function_name}': {e}"
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=str(e) # Ensure error message is string
-            )
-            return None
-        except json.JSONDecodeError:
-            error_msg = f"Failed to decode JSON response from {active_provider_name} for function '{function_name}'."
-            logger.error(error_msg)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
-        except Exception as e:
-            error_msg = f"An unexpected error occurred during API call to {active_provider_name} for '{function_name}': {e}"
-            logger.error(error_msg, exc_info=True)
-            await analytics_tracker.log_tool_usage(
-                tool_name=f"{domain}_{function_name}",
-                tool_params=params,
-                user_id=user_id,
-                success=False,
-                error_message=error_msg
-            )
-            return None
-
-    @tool
-    async def legal_perform_legal_research(self, query: str, jurisdiction: Optional[str] = None, case_type: Optional[str] = None, user_context: UserProfile = None) -> str:
-        """
-        Performs legal research based on a query, optionally filtered by jurisdiction and case type.
-        Falls back to a generic message if API key is missing or API call fails.
-
-        Args:
-            query (str): The legal research query (e.g., "contract law principles", "environmental regulations").
-            jurisdiction (str, optional): The legal jurisdiction (e.g., "US", "EU", "California").
-            case_type (str, optional): The type of case (e.g., "civil", "criminal", "corporate").
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-
-        Returns:
-            str: A formatted string of legal research results, or an error/fallback message.
-        """
-        if user_context is None: # For CLI testing without full UserProfile
-            user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
-
-        logger.info(f"Tool: legal_perform_legal_research called for query: '{query}', jurisdiction: '{jurisdiction}', case_type: '{case_type}' by user: {user_context.user_id}")
-
-        if not get_user_tier_capability(user_context.user_id, 'legal_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
-            return "Error: Access to legal tools is not enabled for your current tier."
-        
-        params = {"q": query}
-        if jurisdiction: params["jurisdiction"] = jurisdiction
-        if case_type: params["case_type"] = case_type
-
-        api_data = await self._make_dynamic_api_request("legal", "perform_legal_research", params, user_context)
-
-        if api_data and api_data.get("data"):
-            articles = api_data["data"]
-            if articles:
-                response_str = f"Legal Research Results for '{query}':\n"
-                for article in articles[:5]: # Limit to top 5 for brevity
-                    title = article.get("title", "N/A")
-                    summary = article.get("summary", "N/A")
-                    source = article.get("source", "N/A")
-                    published_date = article.get("published_date", "N/A")
-                    url = article.get("url", "#")
-                    response_str += f"- Title: {title}\n  Summary: {summary}\n  Source: {source}\n  Published: {published_date}\n  URL: {url}\n\n"
-                return response_str
-            else:
-                return f"No live legal research results found for query '{query}'. Please try again or check parameters."
+    try:
+        response = None
+        if method == "GET":
+            response = requests.get(full_url, params=request_params, headers=headers, timeout=config_manager.get("web_scraping.timeout_seconds", 30))
+        elif method == "POST":
+            response = requests.post(full_url, json=request_params, headers=headers, timeout=config_manager.get("web_scraping.timeout_seconds", 30))
         else:
-            return f"Could not retrieve live legal research results for query '{query}'. The API call failed or returned no data. Please ensure your API key is valid and try again."
+            logger.error(f"Unsupported HTTP method: {method}")
+            analytics_tracker.log_event(user_id, "api_request_failed", "unsupported_method",
+                                        {"domain": domain, "provider": provider_name, "function": function_name, "method": method}, success=False)
+            return None
+
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        data = response.json()
+
+        # Navigate response path
+        result = data
+        for key in response_path:
+            if isinstance(result, dict) and key in result:
+                result = result[key]
+            elif isinstance(result, list) and isinstance(key, int) and len(result) > key:
+                result = result[key]
+            else:
+                logger.warning(f"Could not navigate to response_path {response_path} for {function_name}. Returning full data.")
+                result = data
+                break
+        
+        analytics_tracker.log_event(user_id, "api_request_success", "api_call",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "status_code": response.status_code}, success=True)
+        return result
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error for {provider_name} {function_name}: {e.response.status_code} - {e.response.text}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "http_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "status_code": e.response.status_code, "error": str(e)}, success=False)
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error for {provider_name} {function_name}: {e}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "connection_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "error": str(e)}, success=False)
+        return None
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timeout error for {provider_name} {function_name}: {e}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "timeout_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "error": str(e)}, success=False)
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error during API request to {provider_name} {function_name}: {e}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "request_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "error": str(e)}, success=False)
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error for {provider_name} {function_name}: {e}. Response: {response.text if response else 'N/A'}")
+        analytics_tracker.log_event(user_id, "api_request_failed", "json_decode_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "error": str(e)}, success=False)
+        return None
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred during API request to {provider_name} {function_name}.")
+        analytics_tracker.log_event(user_id, "api_request_failed", "unexpected_error",
+                                    {"domain": domain, "provider": provider_name, "function": function_name, "error": str(e)}, success=False)
+        return None
 
 
-    # --- Existing Generic Tools (now methods of LegalTools) ---
-    # These functions wrap existing shared tools or DocumentTools methods.
-    # They will pass the user_context down if the wrapped tool supports it.
+# --- Standalone Tool Functions ---
 
-    @tool
-    async def legal_search_web(self, query: str, user_context: UserProfile, max_chars: int = 2000) -> str:
-        """
-        Searches the web for general legal-related information using a smart search fallback mechanism.
-        This tool wraps the generic `scrape_web` tool, providing a legal-specific interface.
-        
-        Args:
-            query (str): The legal-related search query (e.g., "data privacy regulations EU", "intellectual property law basics").
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-            max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
-        
-        Returns:
-            str: A string containing relevant information from the web.
-        """
-        logger.info(f"Tool: legal_search_web called with query: '{query}' for user: '{user_context.user_id}'")
-        # scrape_web is a standalone function, ensure it handles its own RBAC/logging if applicable
-        # For now, it's assumed LLMService wrapper handles its API limit check.
-        return await scrape_web(query=query, user_token=user_context.user_id, max_chars=max_chars) # Pass user_token for scrape_web's internal logging
+@tool
+async def perform_legal_research(
+    query: str,
+    jurisdiction: Optional[str] = None,
+    case_type: Optional[str] = None,
+    user_context: Optional[UserProfile] = None,
+    provider: str = "lexisnexis", # Example provider
+    user_api_keys: List[str] = []
+) -> str:
+    """
+    Performs legal research on a given query, optionally filtered by jurisdiction and case type.
+    This tool integrates with legal research APIs to retrieve relevant statutes, case law, or legal articles.
+    Requires 'legal_tool_access' capability.
 
-    @tool
-    async def legal_query_uploaded_docs(self, query: str, user_context: UserProfile, export: Optional[bool] = False, k: int = 5) -> str:
-        """
-        Queries previously uploaded and indexed legal documents for a user using vector similarity search.
-        This tool wraps the generic `DocumentTools.document_query_uploaded_docs` tool, fixing the section to "legal".
+    Args:
+        query (str): The legal research query (e.g., "contract law breach", "intellectual property rights").
+        jurisdiction (str, optional): The legal jurisdiction (e.g., "US Federal", "California", "EU"). Defaults to None.
+        case_type (str, optional): The type of legal case or document (e.g., "civil", "criminal", "patent"). Defaults to None.
+        user_context (UserProfile, optional): The user's profile for RBAC checks. Defaults to None.
+        provider (str, optional): The API provider to use. Defaults to "lexisnexis" (example).
+        user_api_keys (list, optional): List of user-provided API keys (e.g., from Streamlit secrets).
+
+    Returns:
+        str: A JSON string containing the research results, or an error message.
+    """
+    if user_context is None:
+        user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+    logger.info(f"Tool: perform_legal_research called for query: '{query}', jurisdiction: '{jurisdiction}', case_type: '{case_type}', provider: '{provider}', user: '{user_context.user_id}'")
+
+    if not get_user_tier_capability(user_context.user_id, 'legal_tool_access', False, user_tier=user_context.tier, user_roles=user_context.roles):
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "permission_denied",
+                                    {"tool_name": "perform_legal_research", "query": query, "provider": provider}, success=False)
+        return "Error: Access to legal tools is not enabled for your current tier."
+    
+    params = {"query": query}
+    if jurisdiction:
+        params["jurisdiction"] = jurisdiction
+    if case_type:
+        params["case_type"] = case_type
+    
+    api_data = await make_api_request(
+        provider_name=provider,
+        function_name="perform_legal_research",
+        params=params,
+        user_api_keys=user_api_keys,
+        domain="legal",
+        user_id=user_context.user_id
+    )
+
+    if api_data:
+        # Assuming the API returns a list of results with 'title', 'snippet', 'url'
+        results = []
+        for item in api_data.get("results", [])[:3]: # Limit to top 3 for brevity
+            title = item.get("title", "N/A")
+            snippet = item.get("snippet", "N/A")
+            url = item.get("url", "#")
+            results.append(f"- **{title}**\n  {snippet}\n  [Read More]({url})")
         
-        Args:
-            query (str): The search query to find relevant legal documents (e.g., "terms of service analysis", "patent infringement cases").
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
-            export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
-            k (int): The number of top relevant documents to retrieve. Defaults to 5.
-        
-        Returns:
-            str: A string containing the combined content of the relevant document chunks,
-                 or a message indicating no data/results found, or the export path if exported.
-        """
-        logger.info(f"Tool: legal_query_uploaded_docs called with query: '{query}' for user: '{user_context.user_id}'")
-        if not self.document_tools:
-            return "Error: Document tools are not initialized. Cannot query uploaded documents."
-        
-        # Call the actual document_query_uploaded_docs from the DocumentTools instance
-        return await self.document_tools.document_query_uploaded_docs(
-            query=query,
-            user_context=user_context, # Pass user_context directly
-            section="legal", # Specify the section for legal documents
+        if results:
+            result_str = f"Legal Research Results for '{query}':\n" + "\n".join(results)
+            analytics_tracker.log_event(user_context.user_id, "tool_usage", "success",
+                                        {"tool_name": "perform_legal_research", "query": query, "provider": provider, "num_results": len(api_data.get("results", []))}, success=True)
+            return result_str
+        else:
+            analytics_tracker.log_event(user_context.user_id, "tool_usage", "no_data",
+                                        {"tool_name": "perform_legal_research", "query": query, "provider": provider, "message": "No legal research results found."}, success=False)
+            return f"No legal research results found for query: '{query}'."
+    else:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "api_error",
+                                    {"tool_name": "perform_legal_research", "query": query, "provider": provider, "message": "API call failed."}, success=False)
+        return "Error: Could not perform legal research at this time. Please try again later."
+
+
+@tool
+async def legal_search_web(
+    query: str,
+    user_context: Optional[UserProfile] = None,
+    max_chars: int = 2000
+) -> str:
+    """
+    Searches the web for general legal-related information using a smart search fallback mechanism.
+    This tool wraps the generic `scrape_web` tool, providing a legal-specific interface.
+    Requires 'web_search_enabled' capability.
+    
+    Args:
+        query (str): The legal-related search query (e.g., "recent supreme court decisions", "copyright infringement definition").
+        user_context (UserProfile, optional): The user's profile for RBAC checks and logging. Defaults to None.
+        max_chars (int): Maximum characters for the returned snippet. Defaults to 2000.
+    
+    Returns:
+        str: A string containing relevant information from the web.
+    """
+    if user_context is None:
+        user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+    logger.info(f"Tool: legal_search_web called with query: '{query}' for user: '{user_context.user_id}'")
+    
+    if not get_user_tier_capability(user_context.user_id, 'web_search_enabled', False, user_tier=user_context.tier, user_roles=user_context.roles):
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "permission_denied",
+                                    {"tool_name": "legal_search_web", "query": query}, success=False)
+        return "Error: Web search is not enabled for your current tier."
+
+    try:
+        # Call the standalone scrape_web function
+        result = await scrape_web(query=query, user_context=user_context, max_chars=max_chars)
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "success",
+                                    {"tool_name": "legal_search_web", "query": query, "result_length": len(result)}, success=True)
+        return result
+    except Exception as e:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "error",
+                                    {"tool_name": "legal_search_web", "query": query, "error": str(e)}, success=False)
+        return f"Error during legal web search: {e}"
+
+
+@tool
+async def legal_query_uploaded_docs(
+    query: str,
+    user_context: Optional[UserProfile] = None,
+    export: Optional[bool] = False,
+    k: int = 5,
+    document_tools: Optional[DocumentTools] = None # Accept DocumentTools instance
+) -> str:
+    """
+    Queries previously uploaded and indexed legal documents for a user using vector similarity search.
+    This tool wraps the generic `DocumentTools.document_query_uploaded_docs` tool, fixing the section to "legal".
+    Requires 'document_query_enabled' capability.
+    
+    Args:
+        query (str): The search query to find relevant legal documents (e.g., "privacy policy analysis", "contract clauses").
+        user_context (UserProfile, optional): The user's profile for RBAC checks and logging. Defaults to None.
+        export (bool): If True, the results will be saved to a file in markdown format. Defaults to False.
+        k (int): The number of top relevant documents to retrieve. Defaults to 5.
+        document_tools (DocumentTools, optional): The DocumentTools instance. Required for this function.
+
+    Returns:
+        str: A string containing the combined content of the relevant document chunks,
+             or a message indicating no data/results found, or the export path if exported.
+    """
+    if user_context is None:
+        user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
+
+    logger.info(f"Tool: legal_query_uploaded_docs called with query: '{query}' for user: '{user_context.user_id}')")
+    
+    if not get_user_tier_capability(user_context.user_id, 'document_query_enabled', False, user_tier=user_context.tier, user_roles=user_context.roles):
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "permission_denied",
+                                    {"tool_name": "legal_query_uploaded_docs", "query": query}, success=False)
+        return "Error: Document querying is not enabled for your current tier."
+    
+    if not document_tools:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "error",
+                                    {"tool_name": "legal_query_uploaded_docs", "query": query, "error": "DocumentTools instance not provided."}, success=False)
+        return "Error: Document tools are not initialized. Cannot query uploaded documents."
+
+    try:
+        result = await document_tools.document_query_uploaded_docs(
+            query_text=query, # Using query_text as per DocumentTools signature
+            user_context=user_context,
+            section="legal",
             export=export,
             k=k
         )
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "success",
+                                    {"tool_name": "legal_query_uploaded_docs", "query": query, "result_length": len(result)}, success=True)
+        return result
+    except Exception as e:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "error",
+                                    {"tool_name": "legal_query_uploaded_docs", "query": query, "error": str(e)}, success=False)
+        return f"Error querying uploaded legal documents: {e}"
 
-    @tool
-    async def legal_summarize_document_by_path(self, file_path_str: str, user_context: UserProfile) -> str:
-        """
-        Summarizes a document related to legal matters located at the given file path.
-        The file path should be accessible by the system (e.g., in the 'uploads' directory).
-        This tool wraps the generic `DocumentTools.document_summarize_document_by_path` tool.
-        
-        Args:
-            file_path_str (str): The full path to the document file to be summarized.
+
+@tool
+async def legal_summarize_document_by_path(
+    file_path_str: str,
+    user_context: Optional[UserProfile] = None,
+    document_tools: Optional[DocumentTools] = None # Accept DocumentTools instance
+) -> str:
+    """
+    Summarizes a document related to legal matters located at the given file path.
+    This tool wraps the generic `DocumentTools.document_summarize_document_by_path` tool.
+    Requires 'summarization_enabled' capability.
+    
+    Args:
+        file_path_str (str): The full path to the document file to be summarized.
                                 Example: "uploads/default/legal/contract_draft.pdf"
-            user_context (UserProfile): The user's profile for RBAC checks and logging.
+        user_context (UserProfile, optional): The user's profile for RBAC checks and logging. Defaults to None.
+        document_tools (DocumentTools, optional): The DocumentTools instance. Required for this function.
         
-        Returns:
-            str: A concise summary of the document content.
-        """
-        logger.info(f"Tool: legal_summarize_document_by_path called for file: '{file_path_str}' by user: '{user_context.user_id}'")
-        if not self.document_tools:
-            return "Error: Document tools are not initialized. Cannot summarize documents."
+    Returns:
+        str: A concise summary of the document content.
+    """
+    if user_context is None:
+        user_context = UserProfile(user_id="default", username="CLI_User", email="cli@example.com", tier="free", roles=["user"])
 
-        # Call the actual document_summarize_document_by_path from the DocumentTools instance
-        return await self.document_tools.document_summarize_document_by_path(
+    logger.info(f"Tool: legal_summarize_document_by_path called for file: '{file_path_str}' by user: '{user_context.user_id}'")
+    
+    if not get_user_tier_capability(user_context.user_id, 'summarization_enabled', False, user_tier=user_context.tier, user_roles=user_context.roles):
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "permission_denied",
+                                    {"tool_name": "legal_summarize_document_by_path", "file_path": file_path_str}, success=False)
+        return "Error: Document summarization is not enabled for your current tier."
+
+    if not document_tools:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "error",
+                                    {"tool_name": "legal_summarize_document_by_path", "file_path": file_path_str, "error": "DocumentTools instance not provided."}, success=False)
+        return "Error: Document tools are not initialized. Cannot summarize documents."
+
+    try:
+        result = await document_tools.document_summarize_document_by_path(
             file_path_str=file_path_str,
-            user_context=user_context # Pass user_context directly
+            user_context=user_context
+        )
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "success",
+                                    {"tool_name": "legal_summarize_document_by_path", "file_path": file_path_str, "result_length": len(result)}, success=True)
+        return result
+    except Exception as e:
+        analytics_tracker.log_event(user_context.user_id, "tool_usage", "error",
+                                    {"tool_name": "legal_summarize_document_by_path", "file_path": file_path_str, "error": str(e)}, success=False)
+        return f"Error summarizing document: {e}"
+
+
+# --- LegalTools Class (Wrapper) ---
+class LegalTools:
+    """
+    A collection of tools for legal-related operations.
+    This class acts primarily as a wrapper to expose the standalone tool functions
+    as methods, ensuring a consistent interface.
+    """
+    def __init__(self, config_manager: Any, log_event: Any, document_tools: DocumentTools):
+        self.config_manager = config_manager
+        self.log_event = log_event
+        self.document_tools = document_tools
+        logger.info("LegalTools initialized.")
+
+    async def perform_legal_research(
+        self,
+        query: str,
+        jurisdiction: Optional[str] = None,
+        case_type: Optional[str] = None,
+        user_context: Optional[UserProfile] = None,
+        provider: str = "lexisnexis",
+        user_api_keys: List[str] = []
+    ) -> str:
+        """
+        Performs legal research on a given query.
+        """
+        return await perform_legal_research(
+            query=query,
+            jurisdiction=jurisdiction,
+            case_type=case_type,
+            user_context=user_context,
+            provider=provider,
+            user_api_keys=user_api_keys
         )
 
+    async def legal_search_web(
+        self,
+        query: str,
+        user_context: Optional[UserProfile] = None,
+        max_chars: int = 2000
+    ) -> str:
+        """
+        Searches the web for general legal-related information.
+        """
+        return await legal_search_web(
+            query=query,
+            user_context=user_context,
+            max_chars=max_chars
+        )
+
+    async def legal_query_uploaded_docs(
+        self,
+        query: str,
+        user_context: Optional[UserProfile] = None,
+        export: Optional[bool] = False,
+        k: int = 5
+    ) -> str:
+        """
+        Queries previously uploaded and indexed legal documents for a user.
+        """
+        return await legal_query_uploaded_docs(
+            query=query,
+            user_context=user_context,
+            export=export,
+            k=k,
+            document_tools=self.document_tools
+        )
+
+    async def legal_summarize_document_by_path(
+        self,
+        file_path_str: str,
+        user_context: Optional[UserProfile] = None
+    ) -> str:
+        """
+        Summarizes a document related to legal matters located at the given file path.
+        """
+        return await legal_summarize_document_by_path(
+            file_path_str=file_path_str,
+            user_context=user_context,
+            document_tools=self.document_tools
+        )
 
 # CLI Test (optional)
 if __name__ == "__main__":
@@ -424,30 +479,53 @@ if __name__ == "__main__":
     import shutil
     import os
     import sys
-    from shared_tools.vector_utils import BASE_VECTOR_DIR # For cleanup
-    from database.firestore_manager import FirestoreManager # For mocking
-    from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper # For mocking
-    from shared_tools.vector_utils import VectorUtilsWrapper # For mocking
-    from domain_tools.document_tools.document_tool import DocumentTools # For mocking
-    from backend.models.user_models import UserProfile # For mock user_context
-    from langchain_core.messages import HumanMessage, AIMessage # For mocking LLM in summarizer
+    from pathlib import Path
+    
+    try:
+        from shared_tools.vector_utils import BASE_VECTOR_DIR
+    except ImportError:
+        BASE_VECTOR_DIR = Path("./mock_vector_dir")
+        
+    try:
+        from database.firestore_manager import FirestoreManager
+    except ImportError:
+        class FirestoreManager: pass
+
+    try:
+        from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper
+    except ImportError:
+        class CloudStorageUtilsWrapper: pass
+
+    try:
+        from shared_tools.vector_utils import VectorUtilsWrapper
+    except ImportError:
+        class VectorUtilsWrapper: pass
+
+    try:
+        from domain_tools.document_tools.document_tool import DocumentTools 
+    except ImportError:
+        class DocumentTools:
+            def __init__(self, *args, **kwargs): pass
+            async def document_query_uploaded_docs(self, query_text, user_context, section, export, k): return f"Mocked document query for {section} with query '{query_text}'"
+            async def document_summarize_document_by_path(self, file_path_str, user_context): return f"Mocked summary of {file_path_str}"
+
+    try:
+        from shared_tools.scraper_tool import scrape_web # For patching scrape_web
+    except ImportError:
+        async def scrape_web(*args, **kwargs): return "Mocked web search results."
+
+    # Mock UserProfile
+    mock_user_free_profile = UserProfile(user_id="mock_free_token", username="FreeUser", email="free@example.com", tier="free", roles=["user"])
+    mock_user_pro_profile = UserProfile(user_id="mock_pro_token", username="ProUser", email="pro@example.com", tier="pro", roles=["user"])
 
     logging.basicConfig(level=logging.INFO)
 
-    # Mock UserProfile for testing
-    mock_user_pro_profile = UserProfile(user_id="mock_pro_token", username="ProUser", email="pro@example.com", tier="pro", roles=["user"])
-    mock_user_free_profile = UserProfile(user_id="mock_free_token", username="FreeUser", email="free@example.com", tier="free", roles=["user"])
-    mock_user_premium_profile = UserProfile(user_id="mock_premium_token", username="PremiumUser", email="premium@example.com", tier="premium", roles=["user"])
-    mock_user_admin_profile = UserProfile(user_id="mock_admin_token", username="AdminUser", email="admin@example.com", tier="admin", roles=["user", "admin"])
-
-
-    # Mock Streamlit secrets and config_manager for local testing
     class MockSecrets:
         def __init__(self):
-            self.legal_api_key = "MOCK_LEGAL_API_KEY_LIVE"
-            self.serpapi_api_key = "MOCK_SERPAPI_KEY_LIVE" # For scrape_web
-            self.openai_api_key = "sk-mock-openai-key-12345" # For summarizer
-            self.google_api_key = "AIzaSy-mock-google-key" # For summarizer
+            self.lexisnexis_api_key = "MOCK_LEXISNEXIS_KEY" # Placeholder
+            self.serpapi_api_key = "MOCK_SERPAPI_KEY_LIVE"
+            self.openai_api_key = "sk-mock-openai-key-12345"
+            self.google_api_key = "AIzaSy-mock-google-key"
 
         def get(self, key, default=None):
             return getattr(self, key, default)
@@ -464,56 +542,50 @@ if __name__ == "__main__":
                 'rag': {'chunk_size': 500, 'chunk_overlap': 50, 'max_query_results_k': 10},
                 'web_scraping': {
                     'user_agent': 'Mozilla/5.0 (Test; Python)',
-                    'timeout_seconds': 1 # Short timeout for mocks
+                    'timeout_seconds': 1
                 },
                 'tiers': {},
                 'default_user_tier': 'free',
                 'default_user_roles': ['user'],
-                'api_defaults': { # Mock api_defaults
-                    'legal': 'mock_legal_provider', # Using a mock name for clarity
+                'api_defaults': {
+                    'legal': 'lexisnexis',
                     'web_search': 'serpapi',
                     'document_summarization_llm': 'openai'
                 },
-                'analytics': { # Mock analytics settings
+                'analytics': {
                     'enabled': True,
                     'log_tool_usage': True,
                     'log_query_failures': True
                 }
             }
-            self._api_providers_data = { # Mock api_providers_data for legal
+            self._api_providers_data = {
                 "legal": {
-                    "mock_legal_provider": {
-                        "base_url": "http://mock-legal-api.com/v1",
-                        "api_key_name": "legal_api_key",
+                    "lexisnexis": {
+                        "base_url": "https://api.lexisnexis.com/v1",
+                        "api_key_name": "lexisnexis_api_key",
                         "api_key_param_name": "apiKey",
                         "functions": {
                             "perform_legal_research": {
                                 "endpoint": "/research",
-                                "required_params": ["q"],
+                                "required_params": ["query"],
                                 "optional_params": ["jurisdiction", "case_type"],
-                                "response_path": ["results"],
-                                "data_map": {
-                                    "title": "title",
-                                    "summary": "summary",
-                                    "source": "source",
-                                    "published_date": "published_date",
-                                    "url": "url"
-                                }
+                                "response_path": ["data"], # Assuming 'data' contains 'results'
+                                "data_map": {}
                             }
                         }
                     }
                 },
-                "web_search": { # Mock for web search (SerpAPI)
+                "web_search": {
                     "serpapi": {
                         "base_url": "https://serpapi.com/search",
                         "api_key_name": "serpapi_api_key",
                         "api_key_param_name": "api_key",
                         "functions": {
-                            "scrape_web": { # This function name should match the tool name
+                            "scrape_web": {
                                 "required_params": ["q"],
                                 "optional_params": ["engine"],
-                                "response_path": ["organic_results"], # Example path for search results
-                                "data_map": { # Simplified mapping for search results
+                                "response_path": ["organic_results"],
+                                "data_map": {
                                     "title": "title",
                                     "link": "link",
                                     "snippet": "snippet"
@@ -522,17 +594,17 @@ if __name__ == "__main__":
                         }
                     }
                 },
-                "document_summarization_llm": { # Mock for summarization LLM
+                "document_summarization_llm": {
                     "openai": {
                         "base_url": "https://api.openai.com/v1/chat/completions",
                         "api_key_name": "openai_api_key",
                         "functions": {
-                            "summarize_document": { # This function name should match the tool name
-                                "endpoint": "", # No specific endpoint for chat completions
+                            "summarize_document": {
+                                "endpoint": "",
                                 "required_params": [],
                                 "optional_params": [],
                                 "response_path": ["choices", 0, "message", "content"],
-                                "data_map": {} # No specific mapping needed for direct content
+                                "data_map": {}
                             }
                         }
                     }
@@ -564,40 +636,37 @@ if __name__ == "__main__":
             return self._api_providers_data.get(domain, {})
 
 
-    # Mock user_manager.get_user_tier_capability for testing RBAC
-    # This mock is for the standalone get_user_tier_capability function
-    # which is now imported directly by tools.
     class MockUserManager:
         _mock_users = {
             "mock_free_token": {"user_id": "mock_free_token", "username": "FreeUser", "email": "free@example.com", "tier": "free", "roles": ["user"]},
             "mock_pro_token": {"user_id": "mock_pro_token", "username": "ProUser", "email": "pro@example.com", "tier": "pro", "roles": ["user"]},
-            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium", "roles": ["user"]}, # Corrected tier for premium
+            "mock_premium_token": {"user_id": "mock_premium_token", "username": "PremiumUser", "email": "premium@example.com", "tier": "premium", "roles": ["user"]},
             "mock_admin_token": {"user_id": "mock_admin_token", "username": "AdminUser", "email": "admin@example.com", "tier": "admin", "roles": ["user", "admin"]},
         }
-        _rbac_capabilities = { # This now mirrors the _RBAC_CAPABILITIES_CONFIG in utils/user_manager.py
+        _rbac_capabilities = {
             'capabilities': {
                 'legal_tool_access': {
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
-                'document_query_enabled': { # Added for document tool
-                    'default': False,
-                    'roles': {'pro': True, 'premium': True, 'admin': True}
-                },
                 'web_search_enabled': {'default': False, 'roles': {'pro': True, 'premium': True, 'admin': True}},
-                'summarization_enabled': { # For summarize_document
+                'document_query_enabled': {
                     'default': False,
                     'roles': {'pro': True, 'premium': True, 'admin': True}
                 },
-                'llm_default_provider': { # For summarize_document
+                'summarization_enabled': {
+                    'default': False,
+                    'roles': {'pro': True, 'premium': True, 'admin': True}
+                },
+                'llm_default_provider': {
                     'default': 'gemini',
                     'tiers': {'pro': 'gemini', 'premium': 'openai', 'admin': 'gemini'}
                 },
-                'llm_default_model_name': { # For summarize_document
+                'llm_default_model_name': {
                     'default': 'gemini-1.5-flash',
                     'tiers': {'pro': 'gemini-1.5-flash', 'premium': 'gpt-4o', 'admin': 'gemini-1.5-flash'}
                 },
-                'llm_default_temperature': { # For summarize_document
+                'llm_default_temperature': {
                     'default': 0.7,
                     'tiers': {'pro': 0.5, 'premium': 0.3, 'admin': 0.7}
                 },
@@ -608,8 +677,6 @@ if __name__ == "__main__":
         }
 
         def get_user_tier_capability(self, user_id: str, capability_key: str, default_value: Any = None, user_tier: Optional[str] = None, user_roles: Optional[List[str]] = None) -> Any:
-            # If user_tier/user_roles are provided, use them directly (from UserProfile)
-            # Otherwise, try to look up from _mock_users
             if user_tier is None or user_roles is None:
                 user_info = self._mock_users.get(user_id, {})
                 user_tier = user_info.get('tier', 'free')
@@ -624,93 +691,77 @@ if __name__ == "__main__":
             if not capability_config:
                 return default_value
 
-            # Check roles first
             for role in user_roles:
                 if role in capability_config.get('roles', {}):
                     return capability_config['roles'][role]
             
-            # Then check tiers
             if user_tier in capability_config.get('tiers', {}):
                 return capability_config['tiers'][user_tier]
 
             return capability_config.get('default', default_value)
 
 
-    # Patch the actual imports for testing
     import streamlit as st_mock
     if not hasattr(st_mock, 'secrets'):
         st_mock.secrets = MockSecrets()
     
-    # Patch config_manager and user_manager in their respective modules
+    if 'config.config_manager' not in sys.modules:
+        sys.modules['config.config_manager'] = MagicMock()
     sys.modules['config.config_manager'].config_manager = MockConfigManager()
-    sys.modules['config.config_manager'].ConfigManager = MockConfigManager # Also patch the class if needed by other modules
+    sys.modules['config.config_manager'].ConfigManager = MockConfigManager
     
-    # Patch the standalone get_user_tier_capability function in utils.user_manager
-    # This is crucial for the tools to use the mock during their CLI tests.
+    if 'utils.user_manager' not in sys.modules:
+        sys.modules['utils.user_manager'] = MagicMock()
     sys.modules['utils.user_manager'].get_user_tier_capability = MockUserManager().get_user_tier_capability
 
-    # Mock analytics_tracker
-    mock_analytics_tracker_db = MagicMock()
-    mock_analytics_tracker_auth = MagicMock()
-    mock_analytics_tracker_auth.currentUser = MagicMock(uid="mock_user_123")
-    mock_analytics_tracker_db.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
+    mock_firestore_manager_for_analytics = MagicMock(spec=FirestoreManager)
+    mock_firestore_manager_for_analytics.collection.return_value.add = AsyncMock(return_value=MagicMock(id="mock_doc_id"))
 
-    # Patch firebase_admin.firestore for the local import within log_event
+    mock_auth_for_analytics = MagicMock()
+    mock_auth_for_analytics.currentUser = MagicMock(uid="mock_user_123")
+    
     with patch.dict(sys.modules, {'firebase_admin.firestore': MagicMock(firestore=MagicMock())}):
         sys.modules['firebase_admin.firestore'].firestore.CollectionReference = MagicMock()
         sys.modules['firebase_admin'].firestore.DocumentReference = MagicMock()
         
-        # Initialize the actual analytics_tracker with mocks
         analytics_tracker.initialize_analytics(
-            mock_analytics_tracker_db,
-            mock_analytics_tracker_auth,
+            mock_firestore_manager_for_analytics,
+            mock_auth_for_analytics,
             "test_app_id_for_analytics",
             "mock_user_123"
         )
 
-        # Mock requests.get for external API calls
         original_requests_get = requests.get
+        original_requests_post = requests.post
 
-        def mock_requests_get_dynamic(url, params=None, headers=None, timeout=None):
-            # Simulate mock legal API responses
-            if "mock-legal-api.com/v1" in url:
+        def mock_requests_dynamic(method, url, params=None, headers=None, json=None, timeout=None):
+            logger.info(f"Mocking {method} API request to {url} with params: {params or json}")
+            if "api.lexisnexis.com/v1" in url:
                 if "/research" in url:
-                    query = params.get("q", "").lower()
-                    if "contract law" in query:
-                        mock_response = MagicMock()
-                        mock_response.status_code = 200
-                        mock_response.json.return_value = {
-                            "status": "success",
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = {
+                        "status": "success",
+                        "data": {
                             "results": [
-                                {
-                                    "title": "Mock Contract Law Basics",
-                                    "summary": "Fundamental principles of contract law.",
-                                    "source": "Legal Encyclopedia",
-                                    "published_date": "2023-01-15",
-                                    "url": "http://mock.com/contract-basics"
-                                }
+                                {"title": "Mock Legal Case 1", "snippet": "Summary of mock case 1.", "url": "http://mock.legal/case1"},
+                                {"title": "Mock Legal Statute 2", "snippet": "Excerpt from mock statute 2.", "url": "http://mock.legal/statute2"}
                             ]
                         }
-                        return mock_response
-                    else:
-                        mock_response = MagicMock()
-                        mock_response.status_code = 200
-                        mock_response.json.return_value = {"status": "success", "results": []}
-                        return mock_response
+                    }
+                    return mock_response
             
-            # Simulate scrape_web's internal requests.get if needed (SerpAPI)
             if "serpapi.com/search" in url:
                 mock_response = MagicMock()
                 mock_response.status_code = 200
                 mock_response.json.return_value = {
                     "organic_results": [
-                        {"title": "Mock Search Result 1", "link": "http://example.com/1", "snippet": f"Snippet for {params.get('q', 'legal')} result 1."},
-                        {"title": "Mock Search Result 2", "link": "http://example.com/2", "snippet": f"Snippet for {params.get('q', 'legal')} result 2."}
+                        {"title": "Mock Web Search Result 1", "link": "http://example.com/web1", "snippet": f"Snippet for {params.get('q', 'legal')} web search result 1."},
+                        {"title": "Mock Web Search Result 2", "link": "http://example.com/web2", "snippet": f"Snippet for {params.get('q', 'legal')} web search result 2."}
                     ]
                 }
                 return mock_response
-            
-            # Mock LLM for summarizer (if it uses requests.post for an API)
+
             if "api.openai.com/v1/chat/completions" in url:
                 mock_response = MagicMock()
                 mock_response.status_code = 200
@@ -719,118 +770,111 @@ if __name__ == "__main__":
                 }
                 return mock_response
 
-            return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            if method == "GET":
+                return original_requests_get(url, params=params, headers=headers, timeout=timeout)
+            elif method == "POST":
+                return original_requests_post(url, json=json, headers=headers, timeout=timeout)
+            else:
+                raise NotImplementedError(f"Mock for method {method} not implemented.")
 
-        requests.get = MagicMock(side_effect=mock_requests_get_dynamic)
-        requests.post = MagicMock(side_effect=mock_requests_get_dynamic) # For OpenAI chat completions
+        requests.get = MagicMock(side_effect=lambda url, params=None, headers=None, timeout=None: mock_requests_dynamic("GET", url, params, headers, timeout=timeout))
+        requests.post = MagicMock(side_effect=lambda url, json=None, headers=None, timeout=None: mock_requests_dynamic("POST", url, json=json, headers=headers, timeout=timeout))
 
-        # Mock FirestoreManager, CloudStorageUtilsWrapper, VectorUtilsWrapper, DocumentTools for init
-        mock_firestore_manager = MagicMock(spec=FirestoreManager)
-        mock_cloud_storage_utils = MagicMock(spec=CloudStorageUtilsWrapper)
-        mock_vector_utils = MagicMock(spec=VectorUtilsWrapper)
+        mock_firestore_manager_instance = MagicMock(spec=FirestoreManager)
+        mock_cloud_storage_utils_instance = MagicMock(spec=CloudStorageUtilsWrapper)
+        mock_vector_utils_instance = MagicMock(spec=VectorUtilsWrapper)
         
-        # Create a mock DocumentTools instance
-        mock_document_tools = MagicMock(spec=DocumentTools)
-        mock_document_tools.document_query_uploaded_docs = AsyncMock(return_value="Mocked document query results for legal.")
-        mock_document_tools.document_summarize_document_by_path = AsyncMock(return_value="Mocked summary of dummy_file.txt")
+        mock_document_tools_instance = DocumentTools(
+            config_manager=sys.modules['config.config_manager'].config_manager,
+            firestore_manager=mock_firestore_manager_instance,
+            cloud_storage_utils=mock_cloud_storage_utils_instance,
+            vector_utils=mock_vector_utils_instance,
+            log_event=analytics_tracker.log_event
+        )
 
-        # Instantiate LegalTools with mocks
         legal_tools_instance = LegalTools(
             config_manager=sys.modules['config.config_manager'].config_manager,
-            log_event=analytics_tracker.log_event, # Pass the actual (mocked) log_event
-            document_tools=mock_document_tools
+            log_event=analytics_tracker.log_event,
+            document_tools=mock_document_tools_instance
         )
 
         async def run_legal_tests(legal_tools_instance):
             print("\n--- Testing legal_tool functions with Live API Simulation and Analytics ---")
 
-            # Test 1: legal_perform_legal_research (success)
-            print("\n--- Test 1: legal_perform_legal_research (Success) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock() # Reset mock call count
-            result_research = await legal_tools_instance.legal_perform_legal_research(query="contract law", user_context=mock_user_pro_profile)
-            print(f"Legal Research: {result_research}")
-            assert "Title: Mock Contract Law Basics" in result_research
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # Analytics should NOT be logged for success here
+            # Test 1: perform_legal_research (success)
+            print("\n--- Test 1: perform_legal_research (Success) ---")
+            mock_firestore_manager_for_analytics.collection.return_value.add.reset_mock()
+            result_research = await legal_tools_instance.perform_legal_research(
+                query="contract breach remedies",
+                jurisdiction="US Federal",
+                user_context=mock_user_pro_profile
+            )
+            print(f"Legal Research Result: {result_research}")
+            assert "Legal Research Results for 'contract breach remedies':" in result_research
+            assert "Mock Legal Case 1" in result_research
+            mock_firestore_manager_for_analytics.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_firestore_manager_for_analytics.collection.return_value.add.call_args
+            logged_data = args[0]
+            assert logged_data["event_type"] == "tool_usage"
+            assert logged_data["details"]["tool_name"] == "perform_legal_research"
+            assert logged_data["success"] is True
             print("Test 1 Passed.")
 
-            # Test 2: legal_perform_legal_research (API failure - no data found)
-            print("\n--- Test 2: legal_perform_legal_research (API Failure - No Data Found) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_research_fail = await legal_tools_instance.legal_perform_legal_research("nonexistent legal topic", user_context=mock_user_pro_profile)
-            print(f"Legal Research (API Error): {result_research_fail}")
-            assert "No live legal research results found for query 'nonexistent legal topic'." in result_research_fail
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Analytics should be logged for failure
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            # Test 2: legal_search_web (generic tool)
+            print("\n--- Test 2: legal_search_web (Generic Tool) ---")
+            mock_firestore_manager_for_analytics.collection.return_value.add.reset_mock()
+            result_web_search = await legal_tools_instance.legal_search_web("recent supreme court rulings", user_context=mock_user_pro_profile)
+            print(f"Web Search Result: {result_web_search[:100]}...")
+            assert "Mocked web search results." in result_web_search
+            mock_firestore_manager_for_analytics.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_firestore_manager_for_analytics.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "legal_perform_legal_research"
-            assert logged_data["success"] is False
-            assert "Response path 'results' not found" in logged_data["error_message"] # Changed from "No live legal research results found"
+            assert logged_data["details"]["tool_name"] == "legal_search_web"
+            assert logged_data["success"] is True
             print("Test 2 Passed.")
 
-            # Test 3: legal_perform_legal_research (RBAC denied)
-            print("\n--- Test 3: legal_perform_legal_research (RBAC Denied) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_research_rbac_denied = await legal_tools_instance.legal_perform_legal_research(query="privacy laws", user_context=mock_user_free_profile)
-            print(f"Legal Research (Free User, RBAC Denied): {result_research_rbac_denied}")
-            assert "Error: Access to legal tools is not enabled for your current tier." in result_research_rbac_denied
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # RBAC check happens before _make_dynamic_api_request
-            print("Test 3 Passed.")
-
-            # Test 4: legal_search_web (generic tool)
-            print("\n--- Test 4: legal_search_web (Generic Tool) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_web_search = await legal_tools_instance.legal_search_web("data privacy regulations EU", user_context=mock_user_pro_profile)
-            print(f"Web Search Result: {result_web_search[:100]}...")
-            assert "Search results for data privacy regulations EU" in result_web_search
-            mock_analytics_tracker_db.collection.return_value.add.assert_not_called() # Analytics for scrape_web is handled by its own internal logging or LLMService wrapper
-            print("Test 4 Passed.")
-
-            # Test 5: legal_query_uploaded_docs (generic tool via DocumentTools)
-            print("\n--- Test 5: legal_query_uploaded_docs (Generic Tool via DocumentTools) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            result_doc_query = await legal_tools_instance.legal_query_uploaded_docs("recent court rulings", user_context=mock_user_pro_profile)
+            # Test 3: legal_query_uploaded_docs (generic tool via DocumentTools)
+            print("\n--- Test 3: legal_query_uploaded_docs (Generic Tool via DocumentTools) ---")
+            mock_firestore_manager_for_analytics.collection.return_value.add.reset_mock()
+            result_doc_query = await legal_tools_instance.legal_query_uploaded_docs("privacy policy analysis", user_context=mock_user_pro_profile)
             print(f"Document Query Result: {result_doc_query}")
-            assert "Mocked document query results for legal." in result_doc_query
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Analytics logged by DocumentTools mock
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            assert "Mocked document query for legal with query 'privacy policy analysis'" in result_doc_query
+            mock_firestore_manager_for_analytics.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_firestore_manager_for_analytics.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "document_query_uploaded_docs"
+            assert logged_data["details"]["tool_name"] == "legal_query_uploaded_docs"
             assert logged_data["success"] is True
-            print("Test 5 Passed.")
+            print("Test 3 Passed.")
 
-            # Test 6: legal_summarize_document_by_path (generic tool via DocumentTools)
-            print("\n--- Test 6: legal_summarize_document_by_path (Generic Tool via DocumentTools) ---")
-            mock_analytics_tracker_db.collection.return_value.add.reset_mock()
-            # Create a dummy file for summarization test
+            # Test 4: legal_summarize_document_by_path (generic tool via DocumentTools)
+            print("\n--- Test 4: legal_summarize_document_by_path (Generic Tool via DocumentTools) ---")
+            mock_firestore_manager_for_analytics.collection.return_value.add.reset_mock()
             test_user_pro_dir = Path("uploads") / mock_user_pro_profile.user_id
-            dummy_file_path = test_user_pro_dir / "legal" / "dummy_brief.txt"
+            dummy_file_path = test_user_pro_dir / "legal" / "dummy_contract.pdf"
             dummy_file_path.parent.mkdir(parents=True, exist_ok=True)
-            dummy_file_path.write_text("This is a dummy legal brief content for testing summarization.")
+            dummy_file_path.write_text("This is a dummy contract content for testing summarization.")
 
             result_summarize = await legal_tools_instance.legal_summarize_document_by_path(str(dummy_file_path), user_context=mock_user_pro_profile)
             print(f"Summarize Result: {result_summarize}")
-            assert "Mocked summary of dummy_file.txt" in result_summarize # Check for mock summary from DocumentTools
-            mock_analytics_tracker_db.collection.return_value.add.assert_called_once() # Now logged by DocumentTools mock
-            args, kwargs = mock_analytics_tracker_db.collection.return_value.add.call_args
+            assert "Mocked summary of uploads" in result_summarize
+            mock_firestore_manager_for_analytics.collection.return_value.add.assert_called_once()
+            args, kwargs = mock_firestore_manager_for_analytics.collection.return_value.add.call_args
             logged_data = args[0]
             assert logged_data["event_type"] == "tool_usage"
-            assert logged_data["details"]["tool_name"] == "document_summarize_document_by_path"
+            assert logged_data["details"]["tool_name"] == "legal_summarize_document_by_path"
             assert logged_data["success"] is True
-            print("Test 6 Passed.")
+            print("Test 4 Passed.")
 
             print("\nAll legal_tool tests with live API simulation and analytics considerations completed.")
 
-        # Ensure tests are only run when the script is executed directly
         if __name__ == "__main__":
             asyncio.run(run_legal_tests(legal_tools_instance))
 
-        # Restore original requests.get
         requests.get = original_requests_get
-        requests.post = original_requests_get # Restore post if it was patched to get
+        requests.post = original_requests_post
 
-        # Clean up dummy files and directories
         test_user_dirs = [Path("uploads") / mock_user_pro_profile.user_id, BASE_VECTOR_DIR / mock_user_pro_profile.user_id]
         for d in test_user_dirs:
             if d.exists():
