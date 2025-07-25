@@ -3,7 +3,7 @@
 import logging
 import json
 from typing import List, Dict, Any, Optional
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, Depends # Added Depends import
 from datetime import datetime, timedelta, timezone
 
 # Langchain Imports
@@ -37,27 +37,27 @@ from shared_tools.query_uploaded_docs_tool import query_uploaded_docs
 from shared_tools.export_utils import export_dataframe_to_file
 
 # Import domain-specific tools
-from domain_tools.finance_tools.finance_tool import FinanceTools
-# Assuming these are functions or methods within FinanceTools, you'd need to import them specifically if they are directly called in the tool list or adjust the tool list creation.
-# For now, let's assume FinanceTools is an instance that exposes these as methods or they are standalone functions imported from elsewhere in finance_tool.py
-from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, lookup_stock_symbol, get_historical_stock_prices
+from domain_tools.finance_tools.finance_tool import FinanceTools # Only import the class
 from domain_tools.crypto_tools.crypto_tool import CryptoTools
-from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
 from domain_tools.medical_tools.medical_tool import MedicalTools
-from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
 from domain_tools.news_tools.news_tool import NewsTools
-from domain_tools.news_tools.news_tool import get_general_news
 from domain_tools.legal_tools.legal_tool import LegalTools
-from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
 from domain_tools.education_tools.education_tool import EducationTools
-from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
 from domain_tools.entertainment_tools.entertainment_tool import EntertainmentTools
-from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
 from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast
 from domain_tools.travel_tools import TravelTools
-from domain_tools.travel_tools.travel_tool import find_flights, find_hotels # Assuming these are functions in travel_tool.py
 from domain_tools.sports_tools import SportsTools
-from domain_tools.sports_tools.sports_tool import get_player_stats, get_team_stats, get_league_info # Assuming these are functions in sports_tool.py
+
+# Assuming these imports are for standalone functions, as per previous assumption
+# If they are also methods of classes, they will need similar treatment as FinanceTools
+from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
+from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
+from domain_tools.news_tools.news_tool import get_general_news
+from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
+from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
+from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
+from domain_tools.travel_tools.travel_tool import find_flights, find_hotels # Assuming these are functions
+from domain_tools.sports_tools.sports_tool import get_player_stats, get_team_stats, get_league_info # Assuming these are functions
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,20 @@ class LLMService:
         # Instantiate ChartTools and store the export function reference
         self.chart_tools_instance = ChartTools()
         self.export_dataframe_to_file_func = export_dataframe_to_file
+
+        # Instantiate FinanceTools
+        # NOTE: firestore_manager, log_event, and document_tools dependencies for FinanceTools
+        # are assumed to be handled by the broader application's dependency injection
+        # or can be simple placeholders for instantiation if not immediately critical
+        # for exposing tool definitions to Langchain. If runtime errors occur, these
+        # dependencies might need proper injection.
+        self.finance_tools_instance = FinanceTools(
+            config_manager=config_manager,
+            firestore_manager=None, # Placeholder
+            log_event=logger.info,  # Using logger.info as a simple callable
+            document_tools=None     # Placeholder
+        )
+        logger.info("FinanceTools instantiated.")
 
         logger.info("LLMService initialized with UserManager, ApiUsageService, ChartTools, and ExportUtil.")
 
@@ -182,7 +196,8 @@ class LLMService:
 
         def get_tool_api_id(tool_func) -> str:
             tool_name = tool_func.__name__
-            if "stock" in tool_name or "finance" in tool_name:
+            # Renamed to check for actual method names now
+            if "finance_get_stock_price" in tool_name or "finance_get_historical_stock_prices" in tool_name or "finance_get_company_overview" in tool_name or "finance_get_forex_exchange_rate" in tool_name or "finance_lookup_stock_symbol" in tool_name:
                 return "finance-api-default"
             if "crypto" in tool_name:
                 return "crypto-api-default"
@@ -313,17 +328,19 @@ class LLMService:
             available_tools.extend([
                 Tool(
                     name="get_stock_price",
-                    func=lambda symbol: wrapped_tool_executor(get_stock_price, symbol, user_context=user_profile),
+                    func=lambda symbol: wrapped_tool_executor(self.finance_tools_instance.finance_get_stock_price, symbol, user_context=user_profile),
                     description="Retrieves the current stock price for a given stock symbol. Input should be a stock symbol (e.g., 'AAPL')."
                 ),
                 Tool(
                     name="get_company_news",
-                    func=lambda symbol, from_date, to_date: wrapped_tool_executor(get_company_news, symbol, from_date, to_date, user_context=user_profile),
+                    # Assuming finance_get_company_news is the correct method name
+                    func=lambda symbol, from_date, to_date: wrapped_tool_executor(self.finance_tools_instance.finance_get_company_news, symbol, from_date, to_date, user_context=user_profile),
                     description="Fetches recent news for a company by its stock symbol within a date range. Input: symbol (str), from_date (YYYY-MM-DD), to_date (YYYY-MM-DD)."
                 ),
                 Tool(
                     name="lookup_stock_symbol",
-                    func=lambda company_name: wrapped_tool_executor(lookup_stock_symbol, company_name, user_context=user_profile),
+                    # Assuming finance_lookup_stock_symbol is the correct method name based on previous error
+                    func=lambda company_name: wrapped_tool_executor(self.finance_tools_instance.finance_lookup_stock_symbol, company_name, user_context=user_profile),
                     description="Looks up the stock symbol for a given company name. Input: company_name (str)."
                 )
             ])
@@ -332,12 +349,12 @@ class LLMService:
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'historical_data_access', False):
             available_tools.append(Tool(
                 name="get_historical_stock_prices",
-                func=lambda symbol, start_date, end_date: wrapped_tool_executor(get_historical_stock_prices, symbol, start_date, end_date, user_context=user_profile),
+                func=lambda symbol, start_date, end_date: wrapped_tool_executor(self.finance_tools_instance.finance_get_historical_stock_prices, symbol, start_date, end_date, user_context=user_profile),
                 description="Retrieves historical stock prices for a given symbol and date range. Input: symbol (str), start_date (YYYY-MM-DD), end_date (YYYY-MM-DD)."
             ))
             logger.debug(f"Tool 'get_historical_stock_prices' added for user {user_id}")
 
-        # Crypto Tools
+        # Crypto Tools (assuming these are standalone functions based on previous error analysis)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'crypto_tool_access', False):
             available_tools.extend([
                 Tool(name="get_crypto_price", func=lambda coin_id: wrapped_tool_executor(get_crypto_price, coin_id, user_context=user_profile), description="Retrieves the current price of a cryptocurrency by its ID."),
@@ -346,7 +363,7 @@ class LLMService:
             ])
             logger.debug(f"Crypto tools added for user {user_id}")
 
-        # Medical Tools
+        # Medical Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'medical_tool_access', False):
             available_tools.extend([
                 Tool(name="get_drug_info", func=lambda drug_name: wrapped_tool_executor(get_drug_info, drug_name, user_context=user_profile), description="Retrieves information about a specific drug."),
@@ -354,12 +371,12 @@ class LLMService:
             ])
             logger.debug(f"Medical tools added for user {user_id}")
 
-        # News Tools
+        # News Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'news_tool_access', False):
             available_tools.append(Tool(name="get_general_news", func=lambda query: wrapped_tool_executor(get_general_news, query, user_context=user_profile), description="Fetches general news articles based on a query."))
             logger.debug(f"General news tool added for user {user_id}")
         
-        # Legal Tools
+        # Legal Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'legal_tool_access', False):
             available_tools.extend([
                 Tool(name="get_legal_definition", func=lambda term: wrapped_tool_executor(get_legal_definition, term, user_context=user_profile), description="Retrieves the definition of a legal term."),
@@ -367,7 +384,7 @@ class LLMService:
             ])
             logger.debug(f"Legal tools (definition, case summary) added for user {user_id}")
         
-        # Education Tools
+        # Education Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'education_tool_access', False):
             available_tools.extend([
                 Tool(name="get_academic_definition", func=lambda term: wrapped_tool_executor(get_academic_definition, term, user_context=user_profile), description="Retrieves the definition of an academic term."),
@@ -375,7 +392,7 @@ class LLMService:
             ])
             logger.debug(f"Education tools (academic definition, historical event summary) added for user {user_id}")
         
-        # Entertainment Tools
+        # Entertainment Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'entertainment_tool_access', False):
             available_tools.extend([
                 Tool(name="get_movie_details", func=lambda movie_title: wrapped_tool_executor(get_movie_details, movie_title, user_context=user_profile), description="Retrieves details about a movie."),
@@ -383,7 +400,7 @@ class LLMService:
             ])
             logger.debug(f"Entertainment tools (movie details, music artist info) added for user {user_id}")
 
-        # Weather Tools
+        # Weather Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'weather_tool_access', False):
             available_tools.extend([
                 Tool(name="get_current_weather", func=lambda location: wrapped_tool_executor(get_current_weather, location, user_context=user_profile), description="Retrieves current weather conditions for a location."),
@@ -391,7 +408,7 @@ class LLMService:
             ])
             logger.debug(f"Weather tools (current weather, forecast) added for user {user_id}")
         
-        # Travel Tools
+        # Travel Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'travel_tool_access', False):
             available_tools.extend([
                 Tool(name="find_flights", func=lambda origin, destination, date: wrapped_tool_executor(find_flights, origin, destination, date, user_context=user_profile), description="Finds flights between an origin and destination on a specific date. Input: origin (str), destination (str), date (YYYY-MM-DD)."),
@@ -399,7 +416,7 @@ class LLMService:
             ])
             logger.debug(f"Travel tools (find flights, find hotels) added for user {user_id}")
         
-        # Sports Tools
+        # Sports Tools (assuming these are standalone functions)
         if self.user_manager.get_user_tier_capability(user_profile.tier, 'sports_tool_access', False):
             available_tools.extend([
                 Tool(name="get_player_stats", func=lambda player_name, sport: wrapped_tool_executor(get_player_stats, player_name, sport=sport, user_context=user_profile), description="Retrieves statistics for a sports player in a given sport."),
@@ -501,8 +518,8 @@ class LLMService:
 
 # Dependency for FastAPI to inject LLMService
 async def get_llm_service_dependency(
-    user_manager: UserManager = Depends(UserManager), # Assuming UserManager is also a FastAPI dependency or a singleton
-    api_usage_service: ApiUsageService = Depends(ApiUsageService) # Assuming ApiUsageService is also a FastAPI dependency or a singleton
+    user_manager: UserManager = Depends(UserManager),
+    api_usage_service: ApiUsageService = Depends(ApiUsageService)
 ) -> LLMService:
     """
     FastAPI dependency that provides an LLMService instance.
