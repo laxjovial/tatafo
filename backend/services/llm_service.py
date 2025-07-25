@@ -32,7 +32,7 @@ from shared_tools.scrapper_tool import scrape_web
 from shared_tools.doc_summarizer import summarize_document
 from shared_tools.chart_generation_tool import ChartTools # Import the class
 from shared_tools.sentiment_analysis_tool import analyze_sentiment
-from shared_tools.query_uploaded_docs_tool import query_uploaded_docs_tool
+from shared_tools.query_uploaded_docs_tool import query_uploaded_docs # Corrected: Changed to query_uploaded_docs
 
 # Import domain-specific tools (e.g., CryptoTools)
 from domain_tools.crypto_tools import CryptoTools # Corrected: Import CryptoTools class from the package's __init__.py
@@ -164,13 +164,14 @@ class LLMService:
             ),
             Tool(
                 name="query_uploaded_docs",
-                func=self.document_tools.query_uploaded_docs, # Use the method from DocumentTools instance
+                func=query_uploaded_docs, # Changed func to query_uploaded_docs
                 description="""
                 Queries previously uploaded and indexed documents for a user using vector similarity search.
                 This tool is useful for retrieving relevant information from a user's personal documents.
-                Input should be a dictionary with 'query_text' (the question to search),
-                'collection_name' (e.g., 'general', 'finance', 'crypto'), 'export' (optional, bool), and 'k' (optional, int, number of results).
-                Example: `{"query_text": "What is blockchain?", "collection_name": "crypto", "k": 3}`.
+                Input should be a dictionary with 'query' (the question to search),
+                'user_token' (the user's ID, e.g., 'user123'),
+                'section' (e.g., 'general', 'finance', 'crypto'), 'export' (optional, bool), and 'k' (optional, int, number of results).
+                Example: `{"query": "What is blockchain?", "user_token": "user123", "section": "crypto", "k": 3}`.
                 """,
                 handle_tool_error=True
             ),
