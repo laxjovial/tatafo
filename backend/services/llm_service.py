@@ -38,15 +38,27 @@ from shared_tools.export_utils import export_dataframe_to_file
 
 # Import domain-specific tools
 from domain_tools.finance_tools.finance_tool import FinanceTools
+# Assuming these are functions or methods within FinanceTools, you'd need to import them specifically if they are directly called in the tool list or adjust the tool list creation.
+# For now, let's assume FinanceTools is an instance that exposes these as methods or they are standalone functions imported from elsewhere in finance_tool.py
+from domain_tools.finance_tools.finance_tool import get_stock_price, get_company_news, lookup_stock_symbol, get_historical_stock_prices
 from domain_tools.crypto_tools.crypto_tool import CryptoTools
+from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historical_crypto_prices, get_crypto_id_by_symbol
 from domain_tools.medical_tools.medical_tool import MedicalTools
+from domain_tools.medical_tools.medical_tool import get_drug_info, get_symptom_info
 from domain_tools.news_tools.news_tool import NewsTools
+from domain_tools.news_tools.news_tool import get_general_news
 from domain_tools.legal_tools.legal_tool import LegalTools
+from domain_tools.legal_tools.legal_tool import get_legal_definition, get_case_summary
 from domain_tools.education_tools.education_tool import EducationTools
+from domain_tools.education_tools.education_tool import get_academic_definition, get_historical_event_summary
 from domain_tools.entertainment_tools.entertainment_tool import EntertainmentTools
+from domain_tools.entertainment_tools.entertainment_tool import get_movie_details, get_music_artist_info
 from domain_tools.weather_tools.weather_tool import get_current_weather, get_weather_forecast
 from domain_tools.travel_tools import TravelTools
+from domain_tools.travel_tools.travel_tool import find_flights, find_hotels # Assuming these are functions in travel_tool.py
 from domain_tools.sports_tools import SportsTools
+from domain_tools.sports_tools.sports_tool import get_player_stats, get_team_stats, get_league_info # Assuming these are functions in sports_tool.py
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -486,3 +498,13 @@ class LLMService:
             return SystemMessage(content=message["content"])
         else:
             raise ValueError(f"Unknown message role: {message['role']}")
+
+# Dependency for FastAPI to inject LLMService
+async def get_llm_service_dependency(
+    user_manager: UserManager = Depends(UserManager), # Assuming UserManager is also a FastAPI dependency or a singleton
+    api_usage_service: ApiUsageService = Depends(ApiUsageService) # Assuming ApiUsageService is also a FastAPI dependency or a singleton
+) -> LLMService:
+    """
+    FastAPI dependency that provides an LLMService instance.
+    """
+    return LLMService(user_manager=user_manager, api_usage_service=api_usage_service)
