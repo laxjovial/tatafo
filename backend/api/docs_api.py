@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 # Project Imports
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.user_models import UserProfile
-from config.config_manager import config_manager
+# CORRECTED IMPORT: Import the class ConfigManager, not the instance config_manager
+from config.config_manager import ConfigManager
 from utils.analytics_tracker import log_event
 from database.firestore_manager import FirestoreManager
 from shared_tools.cloud_storage_utils import CloudStorageUtilsWrapper
@@ -32,9 +33,10 @@ class DocumentDelete(BaseModel):
 
 # --- Dependency Injection for DocumentTools and its components ---
 
-# Dependency for CloudStorageUtilsWrapper (singleton via config_manager)
+# Dependency for CloudStorageUtilsWrapper (singleton via ConfigManager)
 def get_cloud_storage_utils(
-    cfg_manager: config_manager = Depends(config_manager)
+    # CORRECTED: Use ConfigManager (the class) instead of config_manager (the instance)
+    cfg_manager: ConfigManager = Depends(ConfigManager)
 ) -> CloudStorageUtilsWrapper:
     return CloudStorageUtilsWrapper(cfg_manager)
 
@@ -47,7 +49,7 @@ def get_firestore_manager_dependency() -> FirestoreManager:
 
 # Dependency for VectorUtilsWrapper
 def get_vector_utils_wrapper(
-    cfg_manager: config_manager = Depends(config_manager),
+    cfg_manager: ConfigManager = Depends(ConfigManager), # Ensure this also uses ConfigManager class
     cloud_storage_utils: CloudStorageUtilsWrapper = Depends(get_cloud_storage_utils),
     firestore_manager: FirestoreManager = Depends(get_firestore_manager_dependency)
 ) -> VectorUtilsWrapper:
@@ -62,7 +64,7 @@ def get_vector_utils_wrapper(
 # Dependency for DocumentTools
 def get_document_tools(
     vector_utils_wrapper: VectorUtilsWrapper = Depends(get_vector_utils_wrapper),
-    cfg_manager: config_manager = Depends(config_manager),
+    cfg_manager: ConfigManager = Depends(ConfigManager), # Ensure this also uses ConfigManager class
     firestore_manager: FirestoreManager = Depends(get_firestore_manager_dependency),
     cloud_storage_utils: CloudStorageUtilsWrapper = Depends(get_cloud_storage_utils)
 ) -> DocumentTools:
