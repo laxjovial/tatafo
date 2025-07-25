@@ -105,7 +105,7 @@ app = FastAPI(
     description="Backend services for the Intelli-Agent application, providing LLM, tool execution, and user management.",
     version="0.1.0",
 )
-
+app.dependency_overrides[get_firestore_manager_dependency] = lambda: firestore_manager
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
