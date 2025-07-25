@@ -33,8 +33,8 @@ from backend.api.admin_api import router as admin_router
 from backend.api.tool_api import router as tool_router
 from backend.api.integrations_api import router as integrations_router
 from backend.api.docs_api import router as docs_router # For document handling
-from backend.api.api_config_api import router as api_config_router # For global API configurations
 from backend.api.docs_api import get_firestore_manager_dependency
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,7 +98,6 @@ try:
 except Exception as e:
     logger.critical(f"Failed to initialize analytics tracker: {e}")
     exit(1)
-app.dependency_overrides[get_firestore_manager_dependency] = lambda: firestore_manager
 
 app = FastAPI(
     title="Intelli-Agent Backend",
@@ -122,7 +121,7 @@ app.include_router(admin_router, prefix="/admin", tags=["Admin Operations"])
 app.include_router(tool_router, prefix="/tool", tags=["Tool Execution"])
 app.include_router(integrations_router, prefix="/integrations", tags=["Integrations"])
 app.include_router(docs_router, prefix="/docs", tags=["Document Management"])
-app.include_router(api_config_router, prefix="/api-config", tags=["API Configuration"])
+
 
 # OAuth2PasswordBearer for token extraction (used by Depends in routers)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
