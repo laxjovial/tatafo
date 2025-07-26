@@ -35,3 +35,6 @@ PyPDF2
 python-pptx
 xlsxwriter
 lxml
+seaborn
+plotly
+langchain_google_genai
