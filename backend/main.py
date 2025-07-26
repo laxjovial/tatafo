@@ -22,6 +22,7 @@ import shared_tools.cloud_storage_utils as cloud_storage_utils_module
 import shared_tools.vector_utils as vector_utils_module
 from utils.date_parser import parse_date_to_yyyymmdd
 from utils.user_manager import UserManager, get_user_tier_capability
+from backend.services.api_usage_service import ApiUsageService # Import ApiUsageService
 
 # Import Pydantic models from backend.models
 from backend.models.user_models import UserProfile
@@ -32,8 +33,15 @@ from backend.api.user_api import router as user_router
 from backend.api.admin_api import router as admin_router
 from backend.api.tool_api import router as tool_router
 from backend.api.integrations_api import router as integrations_router
-from backend.api.docs_api import router as docs_router  # For document handling
-from backend.api.docs_api import get_firestore_manager_dependency
+from backend.api.docs_api import router as docs_router
+
+# Import dependency functions directly from auth_middleware
+from backend.middleware.auth_middleware import (
+    get_firestore_manager_dependency,
+    get_user_manager_dependency,
+    get_api_usage_service_dependency
+)
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -87,12 +95,15 @@ except Exception as e:
     logger.critical(f"Application will not start due to Firebase initialization failure: {e}")
     exit(1)
 
-# Initialize Analytics Tracker AFTER Firebase Admin SDK is initialized
+# Initialize FirestoreManager and other services AFTER Firebase Admin SDK is initialized
 try:
     if firebase_app:
-        firestore_manager = FirestoreManager()
-        # Pass the Firestore client and Firebase Auth instance
-        # Also, provide an app_id and a user_id for backend logs
+        firestore_db_client = firestore.client()
+        firestore_manager = FirestoreManager(db_instance=firestore_db_client, auth_instance=auth) # Pass the actual Firestore client and auth instance
+        user_manager = UserManager(firestore_manager=firestore_manager) # Instantiate UserManager
+        api_usage_service = ApiUsageService(firestore_manager=firestore_manager) # Instantiate ApiUsageService
+
+        # Pass the Firestore client and Firebase Auth instance for analytics
         current_app_id = firebase_app.name # Or a more specific app ID if you have one
         current_user_id_for_analytics = "backend_system_user" # A default user ID for backend-initiated logs
 
@@ -105,12 +116,19 @@ except Exception as e:
     logger.critical(f"Failed to initialize analytics tracker: {e}")
     exit(1)
 
+
 app = FastAPI(
     title="Intelli-Agent Backend",
     description="Backend services for the Intelli-Agent application, providing LLM, tool execution, and user management.",
     version="0.1.0",
 )
+
+# --- Dependency Overrides ---
+# Override the dependency functions defined in auth_middleware.py
 app.dependency_overrides[get_firestore_manager_dependency] = lambda: firestore_manager
+app.dependency_overrides[get_user_manager_dependency] = lambda: user_manager
+app.dependency_overrides[get_api_usage_service_dependency] = lambda: api_usage_service
+
 
 app.add_middleware(
     CORSMiddleware,
