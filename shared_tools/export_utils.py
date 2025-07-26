@@ -7,6 +7,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 import pandas as pd # For exporting DataFrames
 import shutil # For copying files
+from datetime import datetime, timezone # Added for mock timestamp in CLI test
 
 # Import UserProfile for type hinting
 from backend.models.user_models import UserProfile
@@ -28,8 +29,6 @@ def _generate_unique_filepath(user_id: str, section: Optional[str] = None, file_
     user_export_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
 
     # Generate a unique filename to prevent overwrites
-    # Using a combination of prefix, user_id, and a counter based on existing files in the directory
-    # A more robust solution might use a timestamp or UUID, but this is simpler for demonstration.
     # Using UUID for better uniqueness
     filename = f"{file_prefix}_{uuid.uuid4().hex}.{file_extension}"
     file_path = user_export_dir / filename
@@ -38,7 +37,7 @@ def _generate_unique_filepath(user_id: str, section: Optional[str] = None, file_
 
 def export_response(
     content: str,
-    user_context: UserProfile, # Changed to UserProfile
+    user_context: UserProfile,
     file_prefix: str = "response",
     file_extension: str = "md"
 ) -> str:
@@ -71,7 +70,7 @@ def export_response(
 
 def export_vector_results(
     results: List[Dict[str, Any]],
-    user_context: UserProfile, # Changed to UserProfile
+    user_context: UserProfile,
     section: str,
     file_prefix: str = "vector_results"
 ) -> str:
@@ -118,7 +117,7 @@ def export_vector_results(
 
 def export_chart_file(
     source_chart_path: str,
-    user_context: UserProfile, # Changed to UserProfile
+    user_context: UserProfile,
     chart_type: str = "chart",
     export_format: str = "png"
 ) -> str:
@@ -211,12 +210,31 @@ def export_dataframe_to_file(
         logger.error(f"An unexpected error occurred during data export: {e}", exc_info=True)
         return f"An unexpected error occurred during data export: {e}"
 
+def export_data_to_csv(data: List[Dict[str, Any]], user_id: str, section: str) -> str:
+    """
+    Exports a list of dictionaries to a CSV file. This is a wrapper around
+    export_dataframe_to_file for backward compatibility with older tests.
+
+    Args:
+        data (List[Dict[str, Any]]): A list of dictionaries to export.
+        user_id (str): The ID of the user.
+        section (str): The section name for the export path.
+
+    Returns:
+        str: The path to the exported CSV file or an error message.
+    """
+    # Convert list of dicts to JSON string as expected by export_dataframe_to_file
+    data_json = json.dumps(data)
+    # Create a dummy UserProfile for the wrapper, as the original test only passed user_id
+    user_profile = UserProfile(user_id=user_id, username="temp_user", email="temp@example.com", tier="free", roles=["user"])
+    return export_dataframe_to_file(data_json, user_profile, file_prefix=section, export_format="csv")
+
 
 # CLI Test (optional)
 if __name__ == "__main__":
     import shutil
     import os
-    from datetime import datetime, timezone
+    # from datetime import datetime, timezone # Already imported above
     from unittest.mock import MagicMock, patch
 
     # Mock firestore.SERVER_TIMESTAMP for local testing
@@ -318,6 +336,17 @@ if __name__ == "__main__":
         assert "Error: Unsupported export format 'xlsx'" in unsupported_format_result
         print("Test 7 Passed: Unsupported format handled.")
 
+        print("\n--- Testing export_data_to_csv (wrapper) function ---")
+        sample_data_for_wrapper = [{"id": 1, "value": "test"}, {"id": 2, "value": "another"}]
+        wrapper_csv_path = export_data_to_csv(sample_data_for_wrapper, mock_user_profile.user_id, "wrapper_test")
+        print(f"Wrapper CSV result: {wrapper_csv_path}")
+        assert isinstance(wrapper_csv_path, str) and Path(wrapper_csv_path.replace("Data exported to: `", "").replace("`", "")).exists()
+        assert wrapper_csv_path.endswith(".csv")
+        with open(Path(wrapper_csv_path.replace("Data exported to: `", "").replace("`", "")), 'r') as f:
+            content = f.read()
+            assert "id,value" in content
+            assert "1,test" in content
+        print("Test 8 Passed: export_data_to_csv wrapper works.")
 
         print("\nAll export_utils tests passed.")
 
