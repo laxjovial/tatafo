@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 from .crypto_tool import (
     get_crypto_price,
     get_crypto_info,
-    get_historical_crypto_prices, # Corrected: Plural form to match crypto_tool.py
+    get_historical_crypto_price, # Corrected: Changed to singular 'get_historical_crypto_price'
     crypto_search_web,
     crypto_query_uploaded_docs,
     crypto_summarize_document_by_path,
@@ -78,24 +78,24 @@ class CryptoTools:
         """
         return await get_crypto_info(crypto_id=crypto_id, user_context=user_context)
 
-    # Corrected method to match the plural function name and signature
-    async def get_historical_crypto_prices(
+    # Corrected method to match the singular function name and signature from crypto_tool.py
+    async def get_historical_crypto_price( # Corrected: Changed to singular 'get_historical_crypto_price'
         self,
-        coin_id: str,
+        crypto_id: str, # Corrected: Parameter name to match crypto_tool.py
+        date: str,       # Corrected: Parameter name to match crypto_tool.py
         vs_currency: str = "usd",
-        days: int = 30,
         user_context: Optional[UserProfile] = None,
         provider: str = "coingecko",
         user_api_keys: list = []
     ) -> str:
         """
-        Retrieves historical prices for a cryptocurrency.
+        Retrieves historical prices for a cryptocurrency for a specific date.
         """
-        # Call the standalone plural function
-        return await get_historical_crypto_prices(
-            coin_id=coin_id,
+        # Call the standalone singular function
+        return await get_historical_crypto_price( # Corrected: Call singular function
+            crypto_id=crypto_id,
+            date=date,
             vs_currency=vs_currency,
-            days=days,
             user_context=user_context,
             provider=provider,
             user_api_keys=user_api_keys
@@ -118,10 +118,12 @@ class CryptoTools:
         Queries previously uploaded and indexed cryptocurrency documents for a user using vector similarity search.
         """
         # This now calls the DocumentTools instance
-        return await self.document_tools.query_uploaded_docs(
+        # Note: The original __init__.py passed 'collection_name="crypto"' but crypto_tool.py uses 'section="crypto"'
+        # Ensure consistency or adjust if DocumentTools expects 'section'
+        return await self.document_tools.document_query_uploaded_docs( # Ensure this method name matches DocumentTools
             query_text=query,
             user_context=user_context,
-            collection_name="crypto", # Specific collection for crypto documents
+            section="crypto", # Changed to 'section' for consistency with crypto_tool.py and DocumentTools
             export=export,
             k=k
         )
