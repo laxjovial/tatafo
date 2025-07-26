@@ -3,6 +3,7 @@
 from fastapi import Header, HTTPException, status, Depends
 from typing import Optional, Dict, Any
 import logging
+from datetime import datetime, timezone # Import datetime and timezone
 
 # Import Firebase Admin SDK components
 from firebase_admin import auth
@@ -60,7 +61,8 @@ async def get_api_usage_service_dependency(
 
 async def get_current_user(
     id_token: Optional[str] = Header(None, alias="Authorization"),
-    user_manager: UserManager = Depends(get_user_manager_dependency)
+    user_manager: UserManager = Depends(get_user_manager_dependency),
+    api_usage_service: ApiUsageService = Depends(get_api_usage_service_dependency) # Add this line
 ) -> UserProfile:
     """
     FastAPI dependency to authenticate a user using Firebase ID Token.
@@ -104,31 +106,16 @@ async def get_current_user(
                 "last_login_at": datetime.now(timezone.utc).isoformat(),
                 "profile_data": {}
             }
-            create_result = await user_manager.create_user_profile(user_id, user_profile_data)
-            if create_result["success"]:
-                user_profile = user_profile_data
-                logger.info(f"Basic user profile created for new user: {user_id}")
-            else:
-                logger.error(f"Failed to create basic user profile for {user_id}: {create_result.get('message')}")
-                # Even if profile creation failed, we proceed with basic info from decoded token
-                # This could be problematic for capabilities, so ideally profile exists.
-                # For robustness, we will create a UserProfile object from decoded token if Firestore failed.
-                user_profile = {
-                    "user_id": user_id,
-                    "email": email,
-                    "username": decoded_token.get('name', email.split('@')[0] if email else f"user_{user_id[:8]}"),
-                    "tier": "free",
-                    "roles": ["user"],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "last_login_at": datetime.now(timezone.utc).isoformat(),
-                    "profile_data": {}
-                }
+            # Use create_or_update_user as it handles both creation and update logic
+            created_profile = await user_manager.create_or_update_user(user_id, email, user_profile_data["username"])
+            user_profile = created_profile.model_dump() # Convert back to dict for consistency with original flow if needed
+            logger.info(f"Basic user profile created for new user: {user_id}")
+
 
         # Update last_login_at
         await user_manager.update_user_last_login(user_id)
 
         # Increment API usage for authentication event
-        api_usage_service: ApiUsageService = Depends(get_api_usage_service_dependency)() # Get instance to increment usage
         await api_usage_service.increment_api_call_count(user_id, "authentication_success")
         
         # Log successful authentication
