@@ -38,3 +38,4 @@ lxml
 seaborn
 plotly
 langchain_google_genai
+python-multipart
