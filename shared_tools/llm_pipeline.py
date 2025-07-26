@@ -4,7 +4,8 @@ from domain_tools.finance_tools.finance_tool import FinanceTools
 from domain_tools.crypto_tools.crypto_tool import CryptoTools
 from backend.models.user_models import UserProfile # Assuming UserProfile is needed for tools
 
-def execute_pipeline(query: str, user_context: UserProfile) -> str:
+# The execute_pipeline function MUST be async because it uses 'await'
+async def execute_pipeline(query: str, user_context: UserProfile) -> str:
     """
     Executes the LLM pipeline to answer a user's query.
 
@@ -34,7 +35,8 @@ def execute_pipeline(query: str, user_context: UserProfile) -> str:
     Respond with a JSON object containing the tool name and the parameters.
     For example: {{"tool": "finance_get_historical_stock_prices", "params": {{"symbol": "AAPL", "start_date": "2023-01-01", "end_date": "2023-01-31"}}}}
     """
-    ai_response = get_ai_insight(data={}, prompt=prompt)
+    # Await the async call to get_ai_insight
+    ai_response = await get_ai_insight(data={}, prompt=prompt)
 
     try:
         import json
@@ -44,23 +46,26 @@ def execute_pipeline(query: str, user_context: UserProfile) -> str:
 
         result = "I'm sorry, I don't know how to answer that question." # Default response
 
-        # Pass user_context to all tool calls
+        # Await all async tool calls
         if tool_name == "finance_get_historical_stock_prices":
-            result = finance_tools.finance_get_historical_stock_prices(user_context=user_context, **params)
+            result = await finance_tools.finance_get_historical_stock_prices(user_context=user_context, **params)
         elif tool_name == "crypto_get_historical_crypto_price":
-            result = crypto_tools.crypto_get_historical_crypto_price(user_context=user_context, **params)
+            result = await crypto_tools.crypto_get_historical_crypto_price(user_context=user_context, **params)
         elif tool_name == "finance_get_stock_price":
-            result = finance_tools.finance_get_stock_price(user_context=user_context, **params)
+            result = await finance_tools.finance_get_stock_price(user_context=user_context, **params)
         elif tool_name == "finance_get_company_overview":
-            result = finance_tools.finance_get_company_overview(user_context=user_context, **params)
+            result = await finance_tools.finance_get_company_overview(user_context=user_context, **params)
         elif tool_name == "finance_get_forex_exchange_rate":
-            result = finance_tools.finance_get_forex_exchange_rate(user_context=user_context, **params)
+            result = await finance_tools.finance_get_forex_exchange_rate(user_context=user_context, **params)
         elif tool_name == "crypto_get_crypto_price":
-            result = crypto_tools.crypto_get_crypto_price(user_context=user_context, **params)
+            result = await crypto_tools.crypto_get_crypto_price(user_context=user_context, **params)
         
-        # Await the result since the tool methods are async
-        if hasattr(result, '__await__'):
-            result = await result
+        # The check 'if hasattr(result, '__await__'):' is generally not needed if you know
+        # the functions are always async and you're always awaiting them.
+        # If there's a mix of sync/async, this check can be useful, but for clarity
+        # and directness, it's often better to ensure all called functions are awaited.
+        # However, since the tools are defined as async, we must await them.
+        # The previous error was because execute_pipeline itself wasn't async.
 
         # Use the AI to generate a natural language response
         prompt = f"""
@@ -69,7 +74,8 @@ def execute_pipeline(query: str, user_context: UserProfile) -> str:
         Data:
         {result}
         """
-        return get_ai_insight(data={}, prompt=prompt)
+        # Await the async call to get_ai_insight
+        return await get_ai_insight(data={}, prompt=prompt)
 
     except Exception as e:
         return f"An error occurred while executing the pipeline: {e}"
