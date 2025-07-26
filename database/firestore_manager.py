@@ -53,13 +53,14 @@ class FirestoreManager:
             logger.error(f"Error getting document {collection_path}/{doc_id}: {e}", exc_info=True)
             return None
 
-    async def set_doc(self, doc_path: str, data: Dict[str, Any], merge: bool = False) -> bool:
+    async def set_doc(self, collection_path: str, doc_id: str, data: Dict[str, Any], merge: bool = False) -> bool:
         """
         Sets (creates or overwrites) a document in Firestore.
         If merge is True, it merges the data with existing document data.
 
         Args:
-            doc_path (str): The full path to the document (e.g., "users/user_id_123").
+            collection_path (str): The path to the collection (e.g., "users").
+            doc_id (str): The ID of the document to set.
             data (Dict[str, Any]): The data to set.
             merge (bool): If True, merges the data with existing document.
 
@@ -67,32 +68,33 @@ class FirestoreManager:
             bool: True if successful, False otherwise.
         """
         try:
-            doc_ref = self._db.document(doc_path)
+            doc_ref = self._db.collection(collection_path).document(doc_id)
             await asyncio.to_thread(doc_ref.set, data, merge=merge)
-            logger.info(f"Document set/updated: {doc_path} (merge={merge})")
+            logger.info(f"Document set/updated: {collection_path}/{doc_id} (merge={merge})")
             return True
         except Exception as e:
-            logger.error(f"Error setting document {doc_path}: {e}", exc_info=True)
+            logger.error(f"Error setting document {collection_path}/{doc_id}: {e}", exc_info=True)
             return False
 
-    async def update_doc(self, doc_path: str, data: Dict[str, Any]) -> bool:
+    async def update_doc(self, collection_path: str, doc_id: str, data: Dict[str, Any]) -> bool:
         """
         Updates an existing document in Firestore.
 
         Args:
-            doc_path (str): The full path to the document (e.g., "users/user_id_123").
+            collection_path (str): The path to the collection (e.g., "users").
+            doc_id (str): The ID of the document to update.
             data (Dict[str, Any]): The data to update.
 
         Returns:
             bool: True if successful, False otherwise.
         """
         try:
-            doc_ref = self._db.document(doc_path)
+            doc_ref = self._db.collection(collection_path).document(doc_id)
             await asyncio.to_thread(doc_ref.update, data)
-            logger.info(f"Document updated: {doc_path}")
+            logger.info(f"Document updated: {collection_path}/{doc_id}")
             return True
         except Exception as e:
-            logger.error(f"Error updating document {doc_path}: {e}", exc_info=True)
+            logger.error(f"Error updating document {collection_path}/{doc_id}: {e}", exc_info=True)
             return False
 
     async def add_doc(self, collection_path: str, data: Dict[str, Any]) -> Optional[str]:
@@ -115,23 +117,24 @@ class FirestoreManager:
             logger.error(f"Error adding document to {collection_path}: {e}", exc_info=True)
             return None
 
-    async def delete_doc(self, doc_path: str) -> bool:
+    async def delete_doc(self, collection_path: str, doc_id: str) -> bool:
         """
         Deletes a document from Firestore.
 
         Args:
-            doc_path (str): The full path to the document (e.g., "users/user_id_123").
+            collection_path (str): The path to the collection (e.g., "users").
+            doc_id (str): The ID of the document to delete.
 
         Returns:
             bool: True if successful, False otherwise.
         """
         try:
-            doc_ref = self._db.document(doc_path)
+            doc_ref = self._db.collection(collection_path).document(doc_id)
             await asyncio.to_thread(doc_ref.delete)
-            logger.info(f"Document deleted: {doc_path}")
+            logger.info(f"Document deleted: {collection_path}/{doc_id}")
             return True
         except Exception as e:
-            logger.error(f"Error deleting document {doc_path}: {e}", exc_info=True)
+            logger.error(f"Error deleting document {collection_path}/{doc_id}: {e}", exc_info=True)
             return False
 
     async def get_analytics_events(
@@ -219,31 +222,33 @@ if __name__ == "__main__":
 
     async def run_tests():
         # Instantiate FirestoreManager (it will use the initialized firebase_admin db)
-        manager = FirestoreManager()
+        # Pass the initialized auth instance as well
+        manager = FirestoreManager(auth_instance=firebase_admin.auth) 
 
-        test_doc_path = "test_collection/test_doc"
+        test_collection = "test_collection"
+        test_doc_id = "test_doc"
         test_data = {"name": "Test User", "age": 30, "timestamp": datetime.now(timezone.utc).isoformat()}
         updated_data = {"age": 31, "city": "New York"}
         
         # Test set_doc (create)
         print("\n--- Testing set_doc (create) ---")
-        success = await manager.set_doc(test_doc_path, test_data)
+        success = await manager.set_doc(test_collection, test_doc_id, test_data)
         print(f"set_doc (create) successful: {success}")
         assert success
 
         # Test get_doc
         print("\n--- Testing get_doc ---")
-        retrieved_data = await manager.get_doc(test_doc_path.split('/')[0], test_doc_path.split('/')[1])
+        retrieved_data = await manager.get_doc(test_collection, test_doc_id)
         print(f"get_doc data: {retrieved_data}")
         assert retrieved_data is not None
         assert retrieved_data["name"] == test_data["name"]
 
         # Test update_doc
         print("\n--- Testing update_doc ---")
-        success = await manager.update_doc(test_doc_path, updated_data)
+        success = await manager.update_doc(test_collection, test_doc_id, updated_data)
         print(f"update_doc successful: {success}")
         assert success
-        retrieved_data = await manager.get_doc(test_doc_path.split('/')[0], test_doc_path.split('/')[1])
+        retrieved_data = await manager.get_doc(test_collection, test_doc_id)
         print(f"get_doc after update: {retrieved_data}")
         assert retrieved_data["age"] == updated_data["age"]
         assert retrieved_data["city"] == updated_data["city"]
@@ -251,10 +256,10 @@ if __name__ == "__main__":
 
         # Test add_doc
         print("\n--- Testing add_doc ---")
-        new_doc_id = await manager.add_doc("test_collection", {"item": "new item", "value": 100})
+        new_doc_id = await manager.add_doc(test_collection, {"item": "new item", "value": 100})
         print(f"add_doc new ID: {new_doc_id}")
         assert new_doc_id is not None
-        new_item_data = await manager.get_doc("test_collection", new_doc_id)
+        new_item_data = await manager.get_doc(test_collection, new_doc_id)
         assert new_item_data["item"] == "new item"
 
         # Test get_analytics_events (basic)
@@ -279,15 +284,15 @@ if __name__ == "__main__":
 
         # Test delete_doc
         print("\n--- Testing delete_doc ---")
-        success = await manager.delete_doc(test_doc_path)
+        success = await manager.delete_doc(test_collection, test_doc_id)
         print(f"delete_doc successful: {success}")
         assert success
-        retrieved_data = await manager.get_doc(test_doc_path.split('/')[0], test_doc_path.split('/')[1])
+        retrieved_data = await manager.get_doc(test_collection, test_doc_id)
         assert retrieved_data is None
 
         # Clean up the added doc
         if new_doc_id:
-            await manager.delete_doc(f"test_collection/{new_doc_id}")
+            await manager.delete_doc(test_collection, new_doc_id)
 
         print("\nAll FirestoreManager tests completed.")
 
