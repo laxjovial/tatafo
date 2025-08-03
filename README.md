@@ -1,46 +1,100 @@
-# Intelli-Agent
+# Intelli-Agent: A Full-Stack AI Assistant
 
-Intelli-Agent is a powerful, extensible, and secure AI assistant designed to provide intelligent assistance across a wide range of domains. It is built with a modular architecture that allows for easy extension and customization.
+Welcome to the Intelli-Agent project! This is a powerful, AI-driven assistant platform built with a modern, full-stack architecture. This repository contains the complete codebase for both the React frontend and the FastAPI backend.
+
+This project has been extensively refactored to follow best practices for code quality, maintainability, and scalability.
+
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Features](#features)
+- [Technology Stack](#technology-stack)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Running the Application](#running-the-application)
+- [Project Structure](#project-structure)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+
+## Project Overview
+
+Intelli-Agent is a web application that provides users with a versatile AI assistant. It features a secure authentication system, a user-friendly dashboard, and a powerful admin panel for managing the application.
 
 ## Features
 
-- **AI Assistant:** A powerful AI assistant that can be used to perform a wide range of tasks.
-- **Diverse Domain-specific tools:** A rich set of domain-specific tools that can be used to perform a wide range of tasks.
-- **Comprehensive Analytics:** A comprehensive analytics system that can be used to track tool usage and other analytics.
-- **Robust RBAC:** A robust role-based access control system that can be used to control access to the different tools and features.
-- **Multi-factor Security:** A multi-factor security system that can be used to protect user accounts.
-- **Dynamic UI Customization:** A dynamic UI customization system that can be used to customize the look and feel of the application.
-- **AI-driven Unanswered Query Analysis & Tool Suggestion:** An AI-driven system that can be used to analyze unanswered queries and suggest new tools and functions.
-- **User/Global External API Management with Tiered Limits and Overrides:** A system that allows users to manage their own external API configurations and for the administrator to manage global/default external API configurations.
+*   **Secure User Authentication:** Users can register and log in securely.
+*   **AI Assistant:** A conversational AI that can answer questions and perform tasks.
+*   **User Profile Management:** Users can view and update their profile information.
+*   **Admin Dashboard:** A comprehensive dashboard for administrators to monitor analytics and manage users.
+*   **Role-Based Access Control:** The application distinguishes between regular users and administrators, with different levels of access.
 
-## Architecture
+## Technology Stack
 
-The application is divided into three main layers:
-
-- **Frontend:** The frontend is a React.js application that provides the user interface for the application.
-- **Backend:** The backend is a FastAPI application that provides the API endpoints for the application.
-- **Infrastructure & External Services:** The infrastructure and external services layer includes the authentication provider, cloud storage, and other external services.
+*   **Frontend:** React, React Router, Standard CSS
+*   **Backend:** FastAPI (Python)
+*   **Database & Auth:** Firebase, Firestore
+*   **Bundler:** Webpack
 
 ## Getting Started
 
-To get started with the application, you will need to have Python, Node.js, and npm/yarn installed on your system.
+### Prerequisites
 
-### Backend Setup
+*   Node.js and npm
+*   Python 3.8+ and pip
+*   A Firebase project
 
-1. Create a virtual environment: `python3 -m venv venv`
-2. Activate the virtual environment: `source venv/bin/activate`
-3. Install the dependencies: `pip install -r requirements.txt`
-4. Run the backend: `uvicorn backend.main:app --reload`
+### Installation
 
-### Frontend Setup
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository-url>
+    cd <repository-directory>
+    ```
 
-1. Install the dependencies: `npm install`
-2. Run the frontend: `npm start`
+2.  **Install frontend dependencies:**
+    ```bash
+    npm install
+    ```
+
+3.  **Install backend dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+### Running the Application
+
+1.  **Configure Firebase:** You will need to add your Firebase project configuration to the application.
+2.  **Start the backend server:**
+    ```bash
+    uvicorn backend.main:app --reload
+    ```
+3.  **Start the frontend development server:**
+    ```bash
+    npm start
+    ```
+
+The application will be available at `http://localhost:8080`.
+
+## Project Structure
+
+The repository is organized into several key directories:
+
+*   `src/`: The main source code for the React frontend.
+*   `backend/`: The source code for the FastAPI backend.
+*   `docs/`: Detailed documentation for the project.
+*   `public/`: Static assets for the frontend.
+
+## Documentation
+
+This project includes comprehensive documentation to help you understand and use the application:
+
+*   **[Owner's Guide](docs/OWNERS_GUIDE.md):** A technical overview for owners and administrators.
+*   **[User's Guide](docs/USERS_GUIDE.md):** A guide for end-users of the application.
+*   **[Admin Guide](docs/ADMIN_GUIDE.md):** A guide for administrators.
+*   **[Investor's Briefing](docs/INVESTORS_BRIEFING.md):** A high-level overview for stakeholders.
+*   **[Recruiter's Overview](docs/RECRUITERS_OVERVIEW.md):** A technical overview for recruiters.
 
 ## Contributing
 
-Contributions are welcome! Please read the [contributing guidelines](CONTRIBUTING.md) for more information.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
+Contributions are welcome! Please feel free to open an issue or submit a pull request.
