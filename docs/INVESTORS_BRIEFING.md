@@ -13,6 +13,10 @@ Intelli-Agent addresses the growing demand for intelligent, automated solutions 
 *   **Scalability:** Our modern, cloud-native architecture ensures that the platform can scale to meet the needs of a growing user base.
 *   **Data-Driven Insights:** We provide analytics tools that allow users to track their usage and gain insights into their activities.
 
+*   **Monetization Potential:** The tiered storage system provides a clear path to monetization through storage-based upgrades.
+
+
+
 ## 3. Target Market
 
 Our target market is broad and includes:
@@ -23,11 +27,19 @@ Our target market is broad and includes:
 
 ## 4. Key Features
 
+
+*   **AI Assistant:** A conversational AI that can answer questions, provide recommendations, and perform tasks, including file processing.
+*   **User-Friendly Dashboard:** A centralized hub for accessing all the application's features.
+*   **Secure Authentication:** User accounts are protected with industry-standard authentication.
+*   **Admin Dashboard:** A powerful tool for administrators to manage users, monitor analytics, and configure the application.
+*   **Tiered Subscriptions & Storage:** A flexible subscription model that allows users to choose the plan that best fits their needs, with corresponding storage limits.
+
 *   **AI Assistant:** A conversational AI that can answer questions, provide recommendations, and perform tasks.
 *   **User-Friendly Dashboard:** A centralized hub for accessing all the application's features.
 *   **Secure Authentication:** User accounts are protected with industry-standard authentication.
 *   **Admin Dashboard:** A powerful tool for administrators to manage users, monitor analytics, and configure the application.
 *   **Tiered Subscriptions:** A flexible subscription model that allows users to choose the plan that best fits their needs.
+
 
 ## 5. Technical Strengths
 
@@ -44,5 +56,8 @@ We are seeking investment to:
 *   Expand our feature set with more specialized AI tools.
 *   Grow our user base through targeted marketing campaigns.
 *   Scale our infrastructure to support a larger number of users.
+
+*   Enhance our subscription and billing systems.
+
 
 We believe that Intelli-Agent is well-positioned to become a leader in the AI assistant market. We invite you to join us on this exciting journey.

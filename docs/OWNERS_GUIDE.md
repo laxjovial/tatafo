@@ -29,6 +29,13 @@ The application is a modern web application with a decoupled frontend and backen
 *   **Database:** Firestore is used as the primary database.
 *   **API:** The backend provides a RESTful API for the frontend to consume.
 
+
+### 2.3. Storage Management
+
+*   **Tiered Storage Limits:** The application implements a tiered storage system. Storage limits for each tier are defined in `data/tiers.yaml`.
+*   **Admin Overrides:** Administrators can set custom storage limits for individual users, which will override the tier default.
+*   **Usage Tracking:** User storage usage is tracked in Firestore and updated when files are uploaded or deleted.
+
 ## 3. Key Technologies
 
 *   **React.js:** For building the user interface.
@@ -78,7 +85,11 @@ Firestore provides automatic backups. It is recommended to configure a regular b
 
 ## 6. Important Technical Considerations
 
+*   **Environment Variables:** The `FASTAPI_BASE_URL` is configured in `.streamlit/secrets.toml` and made available to the frontend. For production, ensure this is set correctly.
+*   **Firebase Configuration:** The Firebase configuration is also in `.streamlit/secrets.toml`.
+
 *   **Environment Variables:** The `FASTAPI_BASE_URL` is currently hardcoded in `src/config.js`. For production, this should be replaced with an environment variable to allow for different environments (development, staging, production).
 *   **Firebase Configuration:** The Firebase configuration is also included in the source code. This should be moved to environment variables for better security.
+
 *   **Security:** Ensure that all API endpoints are properly secured and that user roles are enforced on the backend. The frontend provides a `PrivateRoute` component, but the backend should always be the source of truth for authorization.
 *   **Scalability:** Both FastAPI and Firestore are highly scalable. As the application grows, you may need to optimize Firestore queries and add more backend instances.

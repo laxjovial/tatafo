@@ -24,8 +24,14 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
 ## Features
 
 *   **Secure User Authentication:** Users can register and log in securely.
+
+*   **AI Assistant:** A conversational AI that can answer questions and perform tasks, including file processing.
+*   **User Profile Management:** Users can view and update their profile information.
+*   **Tiered Storage Limits:** A tiered storage system with admin-configurable limits.
+
 *   **AI Assistant:** A conversational AI that can answer questions and perform tasks.
 *   **User Profile Management:** Users can view and update their profile information.
+
 *   **Admin Dashboard:** A comprehensive dashboard for administrators to monitor analytics and manage users.
 *   **Role-Based Access Control:** The application distinguishes between regular users and administrators, with different levels of access.
 
@@ -34,6 +40,9 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
 *   **Frontend:** React, React Router, Standard CSS
 *   **Backend:** FastAPI (Python)
 *   **Database & Auth:** Firebase, Firestore
+
+*   **Cloud Storage:** Google Cloud Storage
+
 *   **Bundler:** Webpack
 
 ## Getting Started
@@ -42,7 +51,11 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
 
 *   Node.js and npm
 *   Python 3.8+ and pip
+
+*   A Firebase project with Firestore and Google Cloud Storage enabled.
+
 *   A Firebase project
+
 
 ### Installation
 
@@ -64,7 +77,11 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
 
 ### Running the Application
 
+
+1.  **Configure Firebase & GCS:** You will need to add your Firebase project configuration and GCS bucket name to `.streamlit/secrets.toml`.
+
 1.  **Configure Firebase:** You will need to add your Firebase project configuration to the application.
+
 2.  **Start the backend server:**
     ```bash
     uvicorn backend.main:app --reload
