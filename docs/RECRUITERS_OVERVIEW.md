@@ -21,7 +21,9 @@ This project utilizes a modern, industry-standard technology stack:
 *   **Database & Services:**
     *   **Firebase Authentication:** For secure user authentication and management.
     *   **Firestore:** A flexible, scalable NoSQL database for storing application data.
+
     *   **Google Cloud Storage:** For file storage.
+
 
 *   **Testing:**
     *   **Jest & React Testing Library:** For unit and integration testing of React components.
@@ -33,7 +35,11 @@ The architecture of Intelli-Agent was designed with scalability, maintainability
 
 *   **Decoupled Frontend/Backend:** The frontend is a single-page application (SPA) that communicates with the backend via a RESTful API. This separation of concerns allows for independent development, deployment, and scaling of the two services.
 *   **Component-Based UI:** The React frontend is built using a modular, component-based architecture, which promotes reusability and makes the codebase easier to manage.
+
 *   **Service-Oriented Backend:** The backend is organized into services, with clear separation of concerns for different business logic (e.g., authentication, user management, analytics, storage).
+
+*   **Service-Oriented Backend:** The backend is organized into services, with clear separation of concerns for different business logic (e.g., authentication, user management, analytics).
+
 *   **Token-Based Authentication:** The application uses JSON Web Tokens (JWTs) issued by Firebase for secure authentication. This is a standard and secure method for protecting API endpoints.
 
 ## 4. Key Technical Features & Demonstrations of Skill
@@ -44,8 +50,10 @@ This project showcases a variety of technical skills and best practices:
 *   **API Design & Integration:** The project involves designing a RESTful API and integrating it with a frontend application.
 *   **Authentication & Authorization:** Implements a robust authentication system with role-based access control (admin vs. user).
 *   **Database Management:** Uses a NoSQL database (Firestore) to store and retrieve data.
+
 *   **Cloud Storage Integration:** Integrates with Google Cloud Storage for file uploads and management.
 *   **Tiered Feature System:** Implements a tiered system for managing user features and limits, including storage quotas.
+
 *   **Clean Code & Project Structure:** The codebase is well-organized and follows best practices for readability and maintainability.
 *   **Refactoring & Code Improvement:** The project involved a significant refactoring effort to improve the structure, remove technical debt, and convert from Tailwind CSS to standard CSS.
 *   **Comprehensive Documentation:** Includes detailed documentation for users, owners, and other developers.

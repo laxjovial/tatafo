@@ -18,12 +18,16 @@ The Admin Dashboard provides a list of all users in the system. From here, you c
 *   **Change user roles:** You can assign or revoke the "admin" role for other users.
 *   **Manage user status:** You can activate, disable, or suspend user accounts.
 
+
 ### 3.1. Managing Storage Limits
 
 The "User Storage Management" section of the Admin Dashboard allows you to manage storage quotas for individual users.
 
 *   **View Storage Usage:** You can see each user's current storage usage and their storage limit.
 *   **Update Storage Limit:** You can enter a new storage limit (in MB) for a user and it will be saved when you click away from the input field. This allows you to override the default limit for their tier.
+
+*(Note: The UI for these features will need to be implemented in the Admin Dashboard.)*
+
 
 ## 4. Monitoring Application Analytics
 
@@ -33,11 +37,18 @@ The Admin Dashboard includes a powerful analytics view that allows you to monito
 
 The main table displays a log of all analytics events, including:
 
+
 *   User logins and registrations
 *   Tool usage
 *   Page views
 *   Document uploads and deletions
 *   Storage usage checks
+
+*   User logins
+*   User registrations
+*   Tool usage
+*   Page views
+
 *   Errors
 
 ### 4.2. Filtering Analytics
