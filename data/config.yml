@@ -20,6 +20,10 @@ rag:
   chunk_overlap: 50 # Default chunk overlap for document splitting
   max_query_results_k: 5 # Default max documents to retrieve for RAG queries
 
+# Context Management Settings
+context:
+  max_messages: 20 # The maximum number of messages to include in the context
+
 # Web Scraping Settings
 web_scraping:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
