@@ -15,17 +15,18 @@ const IntegrationsPage = () => {
         setError(null);
         try {
             const idToken = await auth.currentUser.getIdToken(true);
-            const response = await fetch(`${FASTAPI_BASE_URL}/integrations/${provider}/connect`, {
-                method: 'POST',
+            const response = await fetch(`${FASTAPI_BASE_URL}/integrations/${provider}/connect/start`, {
                 headers: {
                     'Authorization': `Bearer ${idToken}`,
                 },
             });
 
             if (!response.ok) {
-                throw new Error(`Failed to connect to ${provider}.`);
+                throw new Error(`Failed to start connection process for ${provider}.`);
             }
-            // You could show a success message here
+
+            const data = await response.json();
+            window.location.href = data.authorization_url;
         } catch (err) {
             setError(err.message);
         } finally {

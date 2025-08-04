@@ -183,3 +183,22 @@ class CloudStorageUtilsWrapper:
         except Exception as e:
             logger.error(f"Error reading content of file '{blob_name}' from GCS: {e}", exc_info=True)
             return {"success": False, "message": f"Failed to read content of file '{blob_name}': {e}", "content": None}
+
+    async def list_user_files(self, user_id: str) -> Dict[str, Any]:
+        """Lists all files for a user and returns their total size."""
+        if not self._ensure_gcs_ready():
+            return {"success": False, "message": "GCS not available for listing files.", "files": [], "total_size_mb": 0}
+
+        try:
+            blobs = self._gcs_client.list_blobs(self._gcs_bucket_name, prefix=f"{user_id}/")
+            files = []
+            total_size_bytes = 0
+            for blob in blobs:
+                files.append({"name": blob.name, "size_mb": blob.size / (1024 * 1024)})
+                total_size_bytes += blob.size
+
+            total_size_mb = total_size_bytes / (1024 * 1024)
+            return {"success": True, "files": files, "total_size_mb": total_size_mb}
+        except Exception as e:
+            logger.error(f"Error listing files for user '{user_id}': {e}", exc_info=True)
+            return {"success": False, "message": f"Failed to list files: {e}", "files": [], "total_size_mb": 0}

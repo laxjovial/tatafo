@@ -44,3 +44,22 @@ async def connect_database(connection_string: str, current_user: Annotated[UserP
     """Placeholder endpoint for connecting to an external database."""
     # In a real implementation, you would validate the connection string and store it securely.
     return {"message": "Successfully connected to the database."}
+
+@router.get("/{provider}/connect/start")
+async def start_oauth_flow(provider: str, current_user: Annotated[UserProfile, Depends(get_current_user)]):
+    """
+    Starts the OAuth 2.0 flow for the given provider.
+    In a real application, this would redirect the user to the provider's authorization page.
+    """
+    # In a real app, you would generate the authorization URL here and redirect the user.
+    # For now, we'll just return a placeholder URL.
+    return {"authorization_url": f"https://example.com/oauth/authorize?provider={provider}"}
+
+@router.get("/{provider}/connect/callback")
+async def oauth_callback(provider: str, code: str, state: str, current_user: Annotated[UserProfile, Depends(get_current_user)]):
+    """
+    Handles the OAuth 2.0 callback from the provider.
+    In a real application, this would exchange the authorization code for an access token.
+    """
+    # In a real app, you would exchange the code for a token here and store it for the user.
+    return {"message": f"Successfully connected to {provider}."}
