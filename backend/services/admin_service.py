@@ -110,6 +110,22 @@ class AdminService:
 
         return {"success": True, "message": message}
 
+    async def assign_admin_role(self, user_id: str, current_admin: UserProfile) -> Dict[str, Any]:
+        """Assigns the 'admin' role to a user."""
+        logger.debug(f"Admin {current_admin.user_id} assigning admin role to user: {user_id}")
+
+        user_profile = await self.user_manager.get_user(user_id)
+        if not user_profile:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target user not found.")
+
+        current_roles = set(user_profile.get("roles", []))
+        current_roles.add("admin")
+
+        await self.user_manager.update_user_roles(user_id, list(current_roles))
+        message = f"Admin role assigned to user {user_id}."
+        logger.info(message)
+        return {"success": True, "message": message}
+
     async def delete_user(self, user_id: str, current_admin: UserProfile) -> Dict[str, Any]:
         """Deletes a user from Firebase Auth and Firestore."""
         logger.debug(f"Admin {current_admin.user_id} deleting user: {user_id}")

@@ -22,6 +22,17 @@ capabilities:
       enterprise: True
       admin: True
       dev: True
+
+  custom_system_prompt_enabled:
+    default: False
+    description: "Allows the user to set a custom system prompt for the LLM."
+    tiers:
+      pro: True
+      elite: True
+      premium: True
+      enterprise: True
+      admin: True
+      dev: True
   
   llm_default_temperature:
     default: 0.7 # Global default temperature if not overridden by tier/role
@@ -50,10 +61,11 @@ capabilities:
       admin: 1.0
       dev: 1.0
 
-  llm_model_selection_enabled:
+  llm_provider_selection_enabled:
     default: False
-    description: "Allows the user to select the LLM provider and model (e.g., OpenAI GPT-4o, Google Gemini Pro, Ollama Llama2)."
+    description: "Allows the user to select the LLM provider (e.g., Gemini, Together AI)."
     tiers:
+      pro: True
       elite: True
       premium: True
       enterprise: True

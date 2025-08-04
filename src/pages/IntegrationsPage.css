@@ -1,0 +1,62 @@
+.integrations-page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+.integrations-page h2 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.integrations-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 2rem;
+    margin-bottom: 3rem;
+}
+
+.integration-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    text-align: center;
+}
+
+.integration-card h3 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+}
+
+.query-section {
+    margin-bottom: 2rem;
+}
+
+.query-input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.375rem;
+    margin-bottom: 1rem;
+}
+
+.query-buttons {
+    display: flex;
+    gap: 1rem;
+}
+
+.results-section ul {
+    list-style: none;
+    padding: 0;
+}
+
+.results-section li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.database-section {
+    margin-top: 3rem;
+}

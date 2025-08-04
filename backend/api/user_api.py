@@ -100,6 +100,13 @@ async def update_user_profile(
     # Build update dictionary, excluding fields that should not be updated directly by user (e.g., uid, email, created_at)
     updates = user_update.model_dump(exclude_unset=True, exclude={'email', 'uid', 'created_at', 'tier', 'roles'})
 
+    # RBAC checks
+    if 'system_prompt' in updates and not user_manager.get_user_tier_capability(current_user.user_id, 'custom_system_prompt_enabled'):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your tier does not have permission to set a custom system prompt.")
+
+    if 'preferred_llm_provider' in updates and not user_manager.get_user_tier_capability(current_user.user_id, 'llm_provider_selection_enabled'):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your tier does not have permission to select an LLM provider.")
+
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid fields provided for update.")
 
