@@ -7,6 +7,7 @@
     overflow: hidden;
 }
 
+
 .ai-assistant-settings {
     display: flex;
     padding: 1rem;
@@ -27,6 +28,8 @@
     border: 1px solid #d1d5db;
     border-radius: 0.375rem;
 }
+
+
 
 .chat-history {
     flex-grow: 1;

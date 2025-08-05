@@ -117,6 +117,10 @@ const AIAssistant = () => {
                     <option value="togetherai">Together AI</option>
                 </select>
             </div>
+
+    return (
+        <div className="ai-assistant-container">
+
             <div className="chat-history">
                 {chatHistory.map((chat, index) => (
                     <div key={index} className={`chat-message ${chat.role}`}>

@@ -29,6 +29,10 @@ The application is a modern web application with a decoupled frontend and backen
 *   **Database:** Firestore is used as the primary database.
 *   **API:** The backend provides a RESTful API for the frontend to consume.
 
+
+
+
+
 ### 2.3. Storage Management
 
 *   **Tiered Storage Limits:** The application implements a tiered storage system. Storage limits for each tier are defined in `data/tiers.yaml`.
@@ -86,6 +90,13 @@ Firestore provides automatic backups. It is recommended to configure a regular b
 
 *   **Environment Variables:** The `FASTAPI_BASE_URL` is configured in `.streamlit/secrets.toml` and made available to the frontend. For production, ensure this is set correctly.
 *   **Firebase Configuration:** The Firebase configuration is also in `.streamlit/secrets.toml`.
+
 *   **Third-Party Integrations (OAuth 2.0):** To enable the third-party integrations (Google Drive, OneDrive), you will need to create OAuth 2.0 credentials for each service in their respective developer consoles. You will then need to add the client ID and client secret for each service to the `.streamlit/secrets.toml` file. The necessary keys are `google_drive_client_id`, `google_drive_client_secret`, `onedrive_client_id`, and `onedrive_client_secret`.
+
+
+*   **Environment Variables:** The `FASTAPI_BASE_URL` is currently hardcoded in `src/config.js`. For production, this should be replaced with an environment variable to allow for different environments (development, staging, production).
+*   **Firebase Configuration:** The Firebase configuration is also included in the source code. This should be moved to environment variables for better security.
+
+
 *   **Security:** Ensure that all API endpoints are properly secured and that user roles are enforced on the backend. The frontend provides a `PrivateRoute` component, but the backend should always be the source of truth for authorization.
 *   **Scalability:** Both FastAPI and Firestore are highly scalable. As the application grows, you may need to optimize Firestore queries and add more backend instances.
