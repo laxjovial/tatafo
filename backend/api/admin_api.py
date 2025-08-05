@@ -257,6 +257,40 @@ async def grant_admin_access(
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to grant admin access: {e}")
 
+@router.post("/users/{user_id}/assign-admin", status_code=status.HTTP_200_OK)
+async def assign_admin_role_endpoint(
+    user_id: str,
+    current_admin: Annotated[UserProfile, Depends(get_current_admin_user)],
+    admin_service: AdminService = Depends(get_admin_service_dependency)
+):
+    """
+    Assigns the 'admin' role to a user. Requires admin privileges.
+    """
+    logger.info(f"Admin user {current_admin.user_id} assigning admin role to user: {user_id}")
+    try:
+        result = await admin_service.assign_admin_role(user_id, current_admin)
+        await log_event(
+            'admin_action_assign_admin_role',
+            {'target_user_id': user_id},
+            user_id=current_admin.user_id,
+            success=True,
+            log_from_backend=True
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error assigning admin role to user {user_id} by admin {current_admin.user_id}: {e}", exc_info=True)
+        await log_event(
+            'admin_action_assign_admin_role',
+            {'target_user_id': user_id, 'error': str(e)},
+            user_id=current_admin.user_id,
+            success=False,
+            error_message=f"Failed to assign admin role: {e}",
+            log_from_backend=True
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to assign admin role: {e}")
+
 
 @router.get("/config/capabilities", response_model=Dict[str, Any])
 async def get_rbac_capabilities_admin(

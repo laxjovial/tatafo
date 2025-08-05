@@ -376,6 +376,11 @@ api_providers:
           data_map:
             date: "date"
             avg_temp_celsius: "avg_temp_c"
+
+llm:
+  togetherai:
+    base_url: "https://api.together.xyz/v1"
+    api_key_name: "togetherai_api_key"
             min_temp_celsius: "min_temp_c"
             max_temp_celsius: "max_temp_c"
             precipitation_mm: "total_precip_mm"

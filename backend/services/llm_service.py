@@ -12,7 +12,7 @@ from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.chat_models import ChatOllama
+from langchain_community.chat_models import ChatOllama, ChatTogether
 from langchain_core.tools import Tool
 
 # Import config_manager
@@ -25,6 +25,7 @@ from utils import analytics_tracker # Import analytics_tracker
 
 # NEW: Import ApiUsageService for API limit checks and usage tracking
 from backend.services.api_usage_service import ApiUsageService
+from backend.services.context_manager import ContextManager
 
 # Import all shared tools (these will be wrapped as Langchain Tools)
 from shared_tools.python_interpreter_tool import python_interpreter_with_rbac
@@ -47,9 +48,10 @@ from domain_tools.crypto_tools.crypto_tool import get_crypto_price, get_historic
 logger = logging.getLogger(__name__)
 
 class LLMService:
-    def __init__(self, user_manager: UserManager, api_usage_service: ApiUsageService):
+    def __init__(self, user_manager: UserManager, api_usage_service: ApiUsageService, context_manager: ContextManager):
         self.user_manager = user_manager
         self.api_usage_service = api_usage_service
+        self.context_manager = context_manager
         self.config_manager = config_manager # Access the global config_manager instance
         
         # Initialize ChartTools and DocumentTools once
@@ -80,6 +82,8 @@ class LLMService:
             return ChatGoogleGenerativeAI(model=model_name, temperature=0.7)
         elif model_name.startswith("ollama"):
             return ChatOllama(model=model_name, temperature=0.7)
+        elif model_name.startswith("togetherai"):
+            return ChatTogether(model=model_name, temperature=0.7)
         else:
             raise ValueError(f"Unsupported LLM model name: {model_name}")
 
@@ -304,14 +308,19 @@ class LLMService:
             self.agent_executor = self._create_agent_executor() # Re-create agent with new LLM
             self.config_manager.set_llm_model(model_name) # Optionally update config or just use for this session
 
-        # Convert chat history to Langchain format
-        langchain_chat_history = [self._convert_to_langchain_message(msg) for msg in chat_history]
+        # Build context using the ContextManager
+        context = self.context_manager.build_context(
+            prompt=user_query,
+            chat_history=chat_history,
+            user_profile=user_profile
+        )
+        langchain_chat_history = [self._convert_to_langchain_message(msg) for msg in context]
 
         try:
             # 2. Process Query with Agent
             logger.info(f"Processing query for user {user_id} with model {self.config_manager.get_llm_model()}")
             response = await self.agent_executor.ainvoke({
-                "input": user_query,
+                "input": user_query, # The input is still the raw user query
                 "chat_history": langchain_chat_history
             })
             result = response.get("output", "No response generated.")
@@ -350,9 +359,10 @@ class LLMService:
 # Dependency for FastAPI to inject LLMService
 async def get_llm_service_dependency(
     user_manager: UserManager = Depends(UserManager),
-    api_usage_service: ApiUsageService = Depends(ApiUsageService)
+    api_usage_service: ApiUsageService = Depends(ApiUsageService),
+    context_manager: ContextManager = Depends(ContextManager)
 ) -> LLMService:
     """
     FastAPI dependency that provides an LLMService instance.
     """
-    return LLMService(user_manager=user_manager, api_usage_service=api_usage_service)
+    return LLMService(user_manager=user_manager, api_usage_service=api_usage_service, context_manager=context_manager)

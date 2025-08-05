@@ -40,3 +40,5 @@ plotly
 langchain_google_genai
 python-multipart
 asynctest
+google-api-python-client
+requests-oauthlib
