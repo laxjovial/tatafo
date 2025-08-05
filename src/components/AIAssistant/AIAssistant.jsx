@@ -92,8 +92,35 @@ const AIAssistant = () => {
         }
     };
 
+    const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+    const [llmProvider, setLlmProvider] = useState('gemini');
+
+    const handleSystemPromptChange = (e) => {
+        setSystemPrompt(e.target.value);
+    };
+
+    const handleLlmProviderChange = (e) => {
+        setLlmProvider(e.target.value);
+    };
+
     return (
         <div className="ai-assistant-container">
+            <div className="ai-assistant-settings">
+                <textarea
+                    value={systemPrompt}
+                    onChange={handleSystemPromptChange}
+                    placeholder="Enter a system prompt..."
+                    className="system-prompt-input"
+                />
+                <select value={llmProvider} onChange={handleLlmProviderChange} className="llm-provider-select">
+                    <option value="gemini">Gemini</option>
+                    <option value="togetherai">Together AI</option>
+                </select>
+            </div>
+
+    return (
+        <div className="ai-assistant-container">
+
             <div className="chat-history">
                 {chatHistory.map((chat, index) => (
                     <div key={index} className={`chat-message ${chat.role}`}>

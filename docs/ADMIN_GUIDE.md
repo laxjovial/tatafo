@@ -26,7 +26,11 @@ The "User Storage Management" section of the Admin Dashboard allows you to manag
 *   **View Storage Usage:** You can see each user's current storage usage and their storage limit.
 *   **Update Storage Limit:** You can enter a new storage limit (in MB) for a user and it will be saved when you click away from the input field. This allows you to override the default limit for their tier.
 
+    *   **Assign Admin Role:** You can grant admin privileges to a user by clicking the "Make Admin" button next to their name.
+
+
 *(Note: The UI for these features will need to be implemented in the Admin Dashboard.)*
+
 
 
 ## 4. Monitoring Application Analytics
@@ -44,10 +48,12 @@ The main table displays a log of all analytics events, including:
 *   Document uploads and deletions
 *   Storage usage checks
 
+
 *   User logins
 *   User registrations
 *   Tool usage
 *   Page views
+
 
 *   Errors
 

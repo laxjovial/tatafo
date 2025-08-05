@@ -38,6 +38,8 @@ class UserProfile(BaseModel):
     status: str = Field("active", description="Account status (e.g., 'active', 'disabled', 'suspended').")
     created_at: Optional[datetime] = Field(None, description="Timestamp when the user account was created.")
     last_login_at: Optional[datetime] = Field(None, description="Timestamp of the user's last login.")
+    system_prompt: str = Field("You are a helpful assistant.", description="Custom system prompt for the LLM.")
+    preferred_llm_provider: str = Field("gemini", description="User's preferred LLM provider.")
     # Add other profile fields as needed (e.g., phone, address, bio - these might be in a nested 'profile_data' map in Firestore)
 
     class Config:
@@ -63,6 +65,8 @@ class UserUpdate(BaseModel):
     tier: Optional[str] = Field(None, description="New subscription tier for the user.")
     roles: Optional[List[str]] = Field(None, description="New list of roles for the user.")
     status: Optional[str] = Field(None, description="New account status (e.g., 'active', 'disabled', 'suspended').")
+    system_prompt: Optional[str] = Field(None, description="Custom system prompt for the LLM.")
+    preferred_llm_provider: Optional[str] = Field(None, description="User's preferred LLM provider.")
 
 
 class PasswordResetRequest(BaseModel):
