@@ -34,6 +34,9 @@ const Layout = ({ children }) => {
             <main className="main-content">
                 {children}
             </main>
+            <footer className="footer">
+                <p>&copy; 2024 Intelli-Agent. All rights reserved. This is a disclaimer text.</p>
+            </footer>
         </div>
     );
 };
