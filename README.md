@@ -2,6 +2,7 @@
 
 Welcome to the Intelli-Agent project! This is a powerful, AI-driven assistant platform built with a modern, full-stack architecture. This repository contains the complete codebase for both the React frontend and the FastAPI backend.
 
+
 This project has been extensively refactored to follow best practices for code quality, maintainability, and scalability.
 
 ## Table of Contents
@@ -18,6 +19,7 @@ This project has been extensively refactored to follow best practices for code q
 - [Contributing](#contributing)
 
 ## Project Overview
+
 
 Intelli-Agent is a web application that provides users with a versatile AI assistant. It features a secure authentication system, a user-friendly dashboard, and a powerful admin panel for managing the application.
 
@@ -36,11 +38,13 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
 *   **Backend:** FastAPI (Python)
 *   **Database & Auth:** Firebase, Firestore
 *   **Cloud Storage:** Google Cloud Storage
+
 *   **Bundler:** Webpack
 
 ## Getting Started
 
 ### Prerequisites
+
 
 *   Node.js and npm
 *   Python 3.8+ and pip
@@ -54,10 +58,12 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
     cd <repository-directory>
     ```
 
+
 2.  **Install frontend dependencies:**
     ```bash
     npm install
     ```
+
 
 3.  **Install backend dependencies:**
     ```bash
@@ -65,6 +71,7 @@ Intelli-Agent is a web application that provides users with a versatile AI assis
     ```
 
 ### Running the Application
+
 
 1.  **Configure Firebase & GCS:** You will need to add your Firebase project configuration and GCS bucket name to `.streamlit/secrets.toml`.
 2.  **Start the backend server:**
@@ -98,5 +105,6 @@ This project includes comprehensive documentation to help you understand and use
 *   **[Recruiter's Overview](docs/RECRUITERS_OVERVIEW.md):** A technical overview for recruiters.
 
 ## Contributing
+
 
 Contributions are welcome! Please feel free to open an issue or submit a pull request.

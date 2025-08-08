@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import useAuth from '../hooks/useAuth';
 import { FASTAPI_BASE_URL } from '../config';
@@ -124,6 +125,7 @@ const IntegrationsPage = () => {
             </div>
         </div>
     );
+
 };
 
 export default IntegrationsPage;

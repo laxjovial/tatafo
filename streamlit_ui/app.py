@@ -51,6 +51,7 @@ else:
     except Exception:
         page = st.sidebar.radio("Go to", ["AI Assistant", "User Profile", "Integrations"])
 
+
     st.sidebar.subheader("Chat Sessions")
     if 'sessions' not in st.session_state:
         st.session_state['sessions'] = []
@@ -96,6 +97,7 @@ else:
                 st.error(f"Failed to load session: {e}")
 
 
+
     if st.sidebar.button("Logout"):
         del st.session_state['user_token']
         del st.session_state['user_uid']
@@ -112,19 +114,23 @@ else:
                 st.markdown(chat['content'])
 
         prompt = st.chat_input("Ask the AI assistant...")
+
         if prompt and 'current_session_id' in st.session_state:
+
             st.session_state['chat_history'].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.spinner("Thinking..."):
                 try:
+
                     # Save user message
                     requests.post(
                         f"{FASTAPI_BASE_URL}/chat/sessions/{st.session_state['current_session_id']}/messages",
                         json={"role": "user", "content": prompt},
                         headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
                     )
+
 
                     response = requests.post(
                         f"{FASTAPI_BASE_URL}/tools/chat/agent",
@@ -141,18 +147,22 @@ else:
                         with st.chat_message("assistant"):
                             st.markdown(ai_response)
 
+
                         # Save assistant message
                         requests.post(
                             f"{FASTAPI_BASE_URL}/chat/sessions/{st.session_state['current_session_id']}/messages",
                             json={"role": "assistant", "content": ai_response},
                             headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
                         )
+
                     else:
                         st.error(f"Failed to get response: {response.json().get('detail')}")
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+
         elif prompt:
             st.warning("Please select a chat session or create a new one.")
+
 
     elif page == "User Profile":
         st.header("User Profile")

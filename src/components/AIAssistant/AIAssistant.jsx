@@ -7,8 +7,10 @@ const AIAssistant = () => {
     const { auth } = useAuth();
     const [message, setMessage] = useState('');
     const [chatHistory, setChatHistory] = useState([]);
+
     const [sessions, setSessions] = useState([]);
     const [currentSessionId, setCurrentSessionId] = useState(null);
+
     const [loading, setLoading] = useState(false);
     const chatEndRef = useRef(null);
 
@@ -19,6 +21,7 @@ const AIAssistant = () => {
     useEffect(() => {
         scrollToBottom();
     }, [chatHistory]);
+
 
     useEffect(() => {
         const fetchSessions = async () => {
@@ -90,6 +93,7 @@ const AIAssistant = () => {
         e.preventDefault();
         if (!message.trim() || !currentSessionId) return;
 
+
         const newChatHistory = [...chatHistory, { role: 'user', content: message }];
         setChatHistory(newChatHistory);
         setMessage('');
@@ -97,6 +101,7 @@ const AIAssistant = () => {
 
         try {
             const idToken = await auth.currentUser.getIdToken(true);
+
             // First, save the user's message
             await fetch(`${FASTAPI_BASE_URL}/chat/sessions/${currentSessionId}/messages`, {
                 method: 'POST',
@@ -108,6 +113,7 @@ const AIAssistant = () => {
             });
 
             // Then, get the AI's response
+
             const response = await fetch(`${FASTAPI_BASE_URL}/tools/chat/agent`, {
                 method: 'POST',
                 headers: {
@@ -127,6 +133,7 @@ const AIAssistant = () => {
                 throw new Error(data.detail || 'Failed to get response from AI assistant.');
             }
 
+
             const aiResponse = data.response;
             setChatHistory([...newChatHistory, { role: 'assistant', content: aiResponse }]);
 
@@ -139,6 +146,7 @@ const AIAssistant = () => {
                 },
                 body: JSON.stringify({ role: 'assistant', content: aiResponse })
             });
+
 
         } catch (error) {
             setChatHistory([...newChatHistory, { role: 'assistant', content: `Error: ${error.message}` }]);
@@ -195,6 +203,7 @@ const AIAssistant = () => {
     };
 
     return (
+
         <div className="ai-assistant-page">
             <div className="sessions-sidebar">
                 <h3>Chat Sessions</h3>
@@ -221,6 +230,7 @@ const AIAssistant = () => {
                     </select>
                 </div>
                 <div className="chat-history">
+
                 {chatHistory.map((chat, index) => (
                     <div key={index} className={`chat-message ${chat.role}`}>
                         <p><strong>{chat.role}:</strong> {chat.content}</p>
