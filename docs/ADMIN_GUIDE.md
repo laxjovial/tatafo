@@ -28,11 +28,6 @@ The "User Storage Management" section of the Admin Dashboard allows you to manag
 
     *   **Assign Admin Role:** You can grant admin privileges to a user by clicking the "Make Admin" button next to their name.
 
-
-*(Note: The UI for these features will need to be implemented in the Admin Dashboard.)*
-
-
-
 ## 4. Monitoring Application Analytics
 
 The Admin Dashboard includes a powerful analytics view that allows you to monitor application activity in real-time.
@@ -41,19 +36,11 @@ The Admin Dashboard includes a powerful analytics view that allows you to monito
 
 The main table displays a log of all analytics events, including:
 
-
 *   User logins and registrations
 *   Tool usage
 *   Page views
 *   Document uploads and deletions
 *   Storage usage checks
-
-
-*   User logins
-*   User registrations
-*   Tool usage
-*   Page views
-
 
 *   Errors
 

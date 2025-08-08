@@ -25,11 +25,6 @@ This project utilizes a modern, industry-standard technology stack:
     *   **Google Cloud Storage:** For file storage.
 
 
-
-    *   **Google Cloud Storage:** For file storage.
-
-
-
 *   **Testing:**
     *   **Jest & React Testing Library:** For unit and integration testing of React components.
     *   **Pytest:** For testing the FastAPI backend.
@@ -42,12 +37,6 @@ The architecture of Intelli-Agent was designed with scalability, maintainability
 *   **Component-Based UI:** The React frontend is built using a modular, component-based architecture, which promotes reusability and makes the codebase easier to manage.
 
 *   **Service-Oriented Backend:** The backend is organized into services, with clear separation of concerns for different business logic (e.g., authentication, user management, analytics, storage).
-
-
-*   **Service-Oriented Backend:** The backend is organized into services, with clear separation of concerns for different business logic (e.g., authentication, user management, analytics, storage).
-
-*   **Service-Oriented Backend:** The backend is organized into services, with clear separation of concerns for different business logic (e.g., authentication, user management, analytics).
-
 
 *   **Token-Based Authentication:** The application uses JSON Web Tokens (JWTs) issued by Firebase for secure authentication. This is a standard and secure method for protecting API endpoints.
 
@@ -62,11 +51,6 @@ This project showcases a variety of technical skills and best practices:
 
 *   **Cloud Storage Integration:** Integrates with Google Cloud Storage for file uploads and management.
 *   **Tiered Feature System:** Implements a tiered system for managing user features and limits, including storage quotas.
-
-
-*   **Cloud Storage Integration:** Integrates with Google Cloud Storage for file uploads and management.
-*   **Tiered Feature System:** Implements a tiered system for managing user features and limits, including storage quotas.
-
 
 *   **Clean Code & Project Structure:** The codebase is well-organized and follows best practices for readability and maintainability.
 *   **Refactoring & Code Improvement:** The project involved a significant refactoring effort to improve the structure, remove technical debt, and convert from Tailwind CSS to standard CSS.

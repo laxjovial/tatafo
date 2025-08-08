@@ -52,6 +52,52 @@ else:
         page = st.sidebar.radio("Go to", ["AI Assistant", "User Profile", "Integrations"])
 
 
+    st.sidebar.subheader("Chat Sessions")
+    if 'sessions' not in st.session_state:
+        st.session_state['sessions'] = []
+
+    def fetch_sessions():
+        try:
+            response = requests.get(
+                f"{FASTAPI_BASE_URL}/chat/sessions",
+                headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
+            )
+            if response.status_code == 200:
+                st.session_state['sessions'] = response.json()
+        except Exception as e:
+            st.sidebar.error(f"Failed to fetch sessions: {e}")
+
+    if not st.session_state['sessions']:
+        fetch_sessions()
+
+    if st.sidebar.button("+ New Chat"):
+        try:
+            response = requests.post(
+                f"{FASTAPI_BASE_URL}/chat/sessions",
+                json={"title": "New Chat"},
+                headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
+            )
+            if response.status_code == 201:
+                fetch_sessions()
+        except Exception as e:
+            st.sidebar.error(f"Failed to create session: {e}")
+
+    for session in st.session_state['sessions']:
+        if st.sidebar.button(session['title'], key=session['id']):
+            st.session_state['current_session_id'] = session['id']
+            # Load session messages
+            try:
+                response = requests.get(
+                    f"{FASTAPI_BASE_URL}/chat/sessions/{session['id']}",
+                    headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
+                )
+                if response.status_code == 200:
+                    st.session_state['chat_history'] = response.json()
+            except Exception as e:
+                st.error(f"Failed to load session: {e}")
+
+
+
     if st.sidebar.button("Logout"):
         del st.session_state['user_token']
         del st.session_state['user_uid']
@@ -68,13 +114,24 @@ else:
                 st.markdown(chat['content'])
 
         prompt = st.chat_input("Ask the AI assistant...")
-        if prompt:
+
+        if prompt and 'current_session_id' in st.session_state:
+
             st.session_state['chat_history'].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.spinner("Thinking..."):
                 try:
+
+                    # Save user message
+                    requests.post(
+                        f"{FASTAPI_BASE_URL}/chat/sessions/{st.session_state['current_session_id']}/messages",
+                        json={"role": "user", "content": prompt},
+                        headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
+                    )
+
+
                     response = requests.post(
                         f"{FASTAPI_BASE_URL}/tools/chat/agent",
                         json={
@@ -89,10 +146,23 @@ else:
                         st.session_state['chat_history'].append({"role": "assistant", "content": ai_response})
                         with st.chat_message("assistant"):
                             st.markdown(ai_response)
+
+
+                        # Save assistant message
+                        requests.post(
+                            f"{FASTAPI_BASE_URL}/chat/sessions/{st.session_state['current_session_id']}/messages",
+                            json={"role": "assistant", "content": ai_response},
+                            headers={"Authorization": f"Bearer {st.session_state['user_token']}"}
+                        )
+
                     else:
                         st.error(f"Failed to get response: {response.json().get('detail')}")
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+
+        elif prompt:
+            st.warning("Please select a chat session or create a new one.")
+
 
     elif page == "User Profile":
         st.header("User Profile")

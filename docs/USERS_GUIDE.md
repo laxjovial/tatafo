@@ -30,12 +30,6 @@ The dashboard is your main hub. From here, you can access all the application's 
 The AI Assistant is a powerful tool that can help you with a variety of tasks. Simply type your question or request into the input box and the assistant will provide a response. You can also upload files for the assistant to process.
 
 
-The AI Assistant is a powerful tool that can help you with a variety of tasks. Simply type your question or request into the input box and the assistant will provide a response. You can also upload files for the assistant to process.
-
-The AI Assistant is a powerful tool that can help you with a variety of tasks. Simply type your question or request into the input box and the assistant will provide a response.
-
-
-
 ### 2.3. User Profile
 
 On the User Profile page, you can view and update your personal information.
@@ -45,11 +39,6 @@ On the User Profile page, you can view and update your personal information.
 *   **Save your changes:** Click the "Save Changes" button to save your updates.
 
 *   **Storage Usage:** You can also see your current storage usage and your storage limit.
-
-
-
-*   **Storage Usage:** You can also see your current storage usage and your storage limit.
-
 
 
 ## 3. Account Management

@@ -7,9 +7,6 @@ This directory contains reusable React components that are used to build the use
 
 *   **`AIAssistant/`:** The main component for the AI assistant chat interface, including file uploads.
 
-*   **`AIAssistant/`:** The main component for the AI assistant chat interface, including file uploads.
-
-
 *   **`AnalyticsDashboard/`:** A component that displays analytics data.
 *   **`Layout/`:** The main layout component for the application, which includes the header, navigation, and main content area.
 *   **`LoginPage/`:** The component for the login page.
@@ -17,10 +14,6 @@ This directory contains reusable React components that are used to build the use
 *   **`RegisterPage/`:** The component for the registration page.
 
 *   **`StorageManager/`:** A component for admins to manage user storage limits.
-
-
-*   **`StorageManager/`:** A component for admins to manage user storage limits.
-
 
 *   **`UserProfile/`:** The component for the user profile page.
 
