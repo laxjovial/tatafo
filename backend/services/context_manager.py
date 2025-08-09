@@ -3,6 +3,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from backend.models.user_models import UserProfile
+from config import config_manager
 
 logger = logging.getLogger(__name__)
 
