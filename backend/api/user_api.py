@@ -17,6 +17,7 @@ from utils.user_manager import UserManager
 
 # Import Firebase Auth (for updating custom claims - if still used here, otherwise remove)
 from firebase_admin import auth # Keep if you update custom claims here, otherwise can remove
+from firebase_admin import exceptions as firebase_exceptions
 
 # Project imports for analytics
 from utils.analytics_tracker import log_event
