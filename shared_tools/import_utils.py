@@ -7,6 +7,7 @@ import os
 from typing import List, Dict, Any, Optional, Union
 import pandas as pd # For CSV/Excel
 import io # For handling uploaded file bytes
+from tests.mocks import MockSecrets, MockConfigManager
 
 # Document loaders (e.g., for PDF, DOCX)
 # from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
