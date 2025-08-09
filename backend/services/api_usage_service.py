@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
 from fastapi import HTTPException, status, Depends # Ensure 'Depends' is imported for injection
+from firebase_admin import firestore  # Or from google.cloud import firestore
 
 # Import FirestoreManager and ConfigManager
 from database.firestore_manager import FirestoreManager
