@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from fastapi import HTTPException, status
 from firebase_admin import auth, exceptions as firebase_exceptions # Import Firebase Auth for session management
+from utils.logging_utils import log_event
 
 # Import Managers and Services for dependency injection
 from database.firestore_manager import FirestoreManager
